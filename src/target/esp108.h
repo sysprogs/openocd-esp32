@@ -53,6 +53,7 @@ struct esp108_common {
 
 	enum FlashBootstrap flashBootstrap; /* 0 - don't care, 1 - TMS low, 2 - TMS high */
     int halt_requested;
+    int core_offline;
 };
 
 

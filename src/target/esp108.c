@@ -798,23 +798,26 @@ static int esp108_write_dirty_registers(struct target *target)
 static int xtensa_do_halt(struct target *target)
 {
     int res;
+    struct esp108_common *esp108 = target->arch_info;
+    
+    if (!esp108->core_offline)
+    {
+        LOG_DEBUG("%s", __func__);
+        if (target->state == TARGET_HALTED) {
+            LOG_DEBUG("%s: target was already halted", target->cmd_name);
+            return ERROR_OK;
+        }
 
-    LOG_DEBUG("%s", __func__);
-    if (target->state == TARGET_HALTED) {
-        LOG_DEBUG("%s: target was already halted", target->cmd_name);
-        return ERROR_OK;
-    }
+        esp108_queue_nexus_reg_write(target, NARADR_DCRSET, OCDDCR_DEBUGINTERRUPT);
+        esp108_queue_tdi_idle(target);
+        res = jtag_execute_queue();
 
-    esp108_queue_nexus_reg_write(target, NARADR_DCRSET, OCDDCR_DEBUGINTERRUPT);
-    esp108_queue_tdi_idle(target);
-    res = jtag_execute_queue();
-
-    if (res != ERROR_OK) {
-        LOG_ERROR("%s: Failed to set OCDDCR_DEBUGINTERRUPT. Can't halt.", target->cmd_name);
-        return ERROR_FAIL;
+        if (res != ERROR_OK) {
+            LOG_ERROR("%s: Failed to set OCDDCR_DEBUGINTERRUPT. Can't halt.", target->cmd_name);
+            return ERROR_FAIL;
+        }
     }
     
-    struct esp108_common *esp108 = target->arch_info;
     esp108->halt_requested = 1;
     
     return ERROR_OK;
@@ -866,55 +869,60 @@ static int xtensa_do_resume(struct target *target,
 			 int debug_execution)
 {
 	struct esp108_common *esp108=(struct esp108_common*)target->arch_info;
-	struct reg *reg_list=esp108->core_cache->reg_list;
-	int res=ERROR_OK;
-	size_t slot;
-	uint32_t bpena;
+    int res = ERROR_OK;
+    
+    if (!esp108->core_offline)
+    {
+        struct reg *reg_list = esp108->core_cache->reg_list;
+        size_t slot;
+        uint32_t bpena;
 
-	LOG_DEBUG("%s: %s current=%d address=%04" PRIx32, target->cmd_name, __func__, current, address);
+        LOG_DEBUG("%s: %s current=%d address=%04" PRIx32, target->cmd_name, __func__, current, address);
 
-	if (target->state != TARGET_HALTED) {
-		LOG_WARNING("%s: %s: target not halted", target->cmd_name, __func__);
-		return ERROR_TARGET_NOT_HALTED;
-	}
+        if (target->state != TARGET_HALTED) {
+            LOG_WARNING("%s: %s: target not halted", target->cmd_name, __func__);
+            return ERROR_TARGET_NOT_HALTED;
+        }
 
-	if(address && !current) {
-		esp108_reg_set(&reg_list[XT_REG_IDX_PC], address);
-	} else {
-		int cause=esp108_reg_get(&reg_list[XT_REG_IDX_DEBUGCAUSE]);
-		if (cause&DEBUGCAUSE_DB) {
-			//We stopped due to a watchpoint. We can't just resume executing the instruction again because
-			//that would trigger the watchpoint again. To fix this, we single-step, which ignores watchpoints.
-			xtensa_step(target, current, address, handle_breakpoints);
-		}
-	}
+        if (address && !current) {
+            esp108_reg_set(&reg_list[XT_REG_IDX_PC], address);
+        }
+        else {
+            int cause = esp108_reg_get(&reg_list[XT_REG_IDX_DEBUGCAUSE]);
+            if (cause&DEBUGCAUSE_DB) {
+            	//We stopped due to a watchpoint. We can't just resume executing the instruction again because
+            	//that would trigger the watchpoint again. To fix this, we single-step, which ignores watchpoints.
+                xtensa_step(target, current, address, handle_breakpoints);
+            }
+        }
 
-	//Write back hw breakpoints. Current FreeRTOS SMP code can set a hw breakpoint on an
-	//exception; we need to clear that and return to the breakpoints gdb has set on resume.
-	bpena=0;
-	for(slot = 0; slot < esp108->num_brps; slot++) {
-		if (esp108->hw_brps[slot]!=NULL) {
-			/* Write IBREAKA[slot] and set bit #slot in IBREAKENABLE */
-			esp108_reg_set(&reg_list[XT_REG_IDX_IBREAKA0+slot], esp108->hw_brps[slot]->address);
-			bpena|=(1<<slot);
-		}
-	}
-	esp108_reg_set(&reg_list[XT_REG_IDX_IBREAKENABLE], bpena);
+        	//Write back hw breakpoints. Current FreeRTOS SMP code can set a hw breakpoint on an
+        	//exception; we need to clear that and return to the breakpoints gdb has set on resume.
+        bpena = 0;
+        for (slot = 0; slot < esp108->num_brps; slot++) {
+            if (esp108->hw_brps[slot] != NULL) {
+            	/* Write IBREAKA[slot] and set bit #slot in IBREAKENABLE */
+                esp108_reg_set(&reg_list[XT_REG_IDX_IBREAKA0 + slot], esp108->hw_brps[slot]->address);
+                bpena |= (1 << slot);
+            }
+        }
+        esp108_reg_set(&reg_list[XT_REG_IDX_IBREAKENABLE], bpena);
 
-	res=esp108_write_dirty_registers(target);
-	if(res != ERROR_OK) {
-		LOG_ERROR("%s: Failed to write back register cache.", target->cmd_name);
-		return ERROR_FAIL;
-	}
+        res = esp108_write_dirty_registers(target);
+        if (res != ERROR_OK) {
+            LOG_ERROR("%s: Failed to write back register cache.", target->cmd_name);
+            return ERROR_FAIL;
+        }
 
-	//Execute return from debug exception instruction
-	esp108_queue_exec_ins(target, XT_INS_RFDO);
-	res=jtag_execute_queue();
-	if(res != ERROR_OK) {
-		LOG_ERROR("%s: Failed to clear OCDDCR_DEBUGINTERRUPT and resume execution.", target->cmd_name);
-		return ERROR_FAIL;
-	}
-	esp108_checkdsr(target);
+        	//Execute return from debug exception instruction
+        esp108_queue_exec_ins(target, XT_INS_RFDO);
+        res = jtag_execute_queue();
+        if (res != ERROR_OK) {
+            LOG_ERROR("%s: Failed to clear OCDDCR_DEBUGINTERRUPT and resume execution.", target->cmd_name);
+            return ERROR_FAIL;
+        }
+        esp108_checkdsr(target);
+    }
 
 	target->debug_reason = DBG_REASON_NOTHALTED;
 	if (!debug_execution)
@@ -1565,7 +1573,7 @@ static int xtensa_poll(struct target *target)
 	if (res!=ERROR_OK) return res;
 //	LOG_INFO("esp8266: ocdid 0x%X dsr 0x%X", intfromchars(ocdid), intfromchars(dsr));
 	
-    bool coreOffline = pwrstat == 0 && intfromchars(dsr) == 0;
+    esp108->core_offline = pwrstat == 0 && intfromchars(dsr) == 0;
     
     if (pwrstath&PWRSTAT_COREWASRESET)
     {
@@ -1617,14 +1625,15 @@ static int xtensa_poll(struct target *target)
             }
         }
     } 
-    else if (coreOffline)
+    else if (esp108->core_offline)
     {
         int oldstate = target->state;
-        if (esp108->halt_requested)
+        if (esp108->halt_requested && target->state != TARGET_HALTED)
         {
             target->state = TARGET_HALTED;
             esp108->halt_requested = 0;   
         
+            /*
             if (oldstate == TARGET_DEBUG_RUNNING)
             {
                 target_call_event_callbacks(target, TARGET_EVENT_DEBUG_HALTED);
@@ -1632,7 +1641,7 @@ static int xtensa_poll(struct target *target)
             else
             {
                 target_call_event_callbacks(target, TARGET_EVENT_HALTED);
-            }
+            }*/
         }
     }
     else {
@@ -1728,6 +1737,25 @@ COMMAND_HANDLER(esp108_cmd_chip_reset)
     int r;
 
     struct target *target = get_current_target(CMD_CTX);
+    struct esp108_common *esp108 = (struct esp108_common*)target->arch_info;
+    if (esp108->core_offline)
+    {
+        for (struct target_list *pLst = target->head; pLst; pLst = pLst->next)
+        {
+            struct target *pThisTarget = pLst->target;
+            if (!pThisTarget)
+                continue;
+
+            struct esp108_common *esp108 = (struct esp108_common*)pThisTarget->arch_info;
+            if (!esp108->core_offline)
+            {
+                CMD_CTX->current_target = pThisTarget->target_number;
+                target = pThisTarget;
+                break;
+            }
+        }
+    }
+    
     for (struct target_list *pLst = target->head; pLst; pLst = pLst->next)
     {
         struct target *pThisTarget = pLst->target;
