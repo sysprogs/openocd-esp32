@@ -52,6 +52,7 @@ struct esp108_common {
 	struct watchpoint **hw_wps;
 
 	enum FlashBootstrap flashBootstrap; /* 0 - don't care, 1 - TMS low, 2 - TMS high */
+    int halt_requested;
 };
 
 

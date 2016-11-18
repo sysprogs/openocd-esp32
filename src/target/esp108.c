@@ -418,6 +418,7 @@ struct esp108_reg_desc {
 /* Write Floating-Point Register */
 #define XT_INS_WFR(FR,T) _XT_INS_FORMAT_RRR(0xFA0000,((FR<<4)|0x5),T)
 
+static int s_DisableInterruptsForStepping;
 
 //forward declarations
 static int xtensa_step(struct target *target,
@@ -794,28 +795,71 @@ static int esp108_write_dirty_registers(struct target *target)
 	return res;
 }
 
-static int xtensa_halt(struct target *target)
+static int xtensa_do_halt(struct target *target)
 {
-	int res;
+    int res;
 
-	LOG_DEBUG("%s", __func__);
-	if (target->state == TARGET_HALTED) {
-		LOG_DEBUG("%s: target was already halted", target->cmd_name);
-		return ERROR_OK;
-	}
+    LOG_DEBUG("%s", __func__);
+    if (target->state == TARGET_HALTED) {
+        LOG_DEBUG("%s: target was already halted", target->cmd_name);
+        return ERROR_OK;
+    }
 
-	esp108_queue_nexus_reg_write(target, NARADR_DCRSET, OCDDCR_DEBUGINTERRUPT);
-	esp108_queue_tdi_idle(target);
-	res=jtag_execute_queue();
+    esp108_queue_nexus_reg_write(target, NARADR_DCRSET, OCDDCR_DEBUGINTERRUPT);
+    esp108_queue_tdi_idle(target);
+    res = jtag_execute_queue();
 
-	if(res != ERROR_OK) {
-		LOG_ERROR("%s: Failed to set OCDDCR_DEBUGINTERRUPT. Can't halt.", target->cmd_name);
-		return ERROR_FAIL;
-	}
-	return ERROR_OK;
+    if (res != ERROR_OK) {
+        LOG_ERROR("%s: Failed to set OCDDCR_DEBUGINTERRUPT. Can't halt.", target->cmd_name);
+        return ERROR_FAIL;
+    }
+    
+    struct esp108_common *esp108 = target->arch_info;
+    esp108->halt_requested = 1;
+    
+    return ERROR_OK;
 }
 
-static int xtensa_resume(struct target *target,
+static int xtensa_do_halt_if_runing_and_wait(struct target *target)
+{
+    if (target->state != TARGET_RUNNING)
+        return 0;
+    
+    int res = xtensa_do_halt(target);
+    int64_t start = timeval_ms();
+
+    while (target->state != TARGET_HALTED)
+    {
+        if ((timeval_ms() - start) > 500)
+        {
+            LOG_ERROR("Time-out waiting for target to halt");
+            return ERROR_TARGET_TIMEOUT;
+        }
+        xtensa_poll(target);
+    }
+    
+    return res;
+}
+
+
+static int xtensa_halt(struct target *target)
+{
+    if (target->smp && target->head)
+    {
+        for (struct target_list *pLst = target->head; pLst; pLst = pLst->next)
+        {
+            struct target *pThisTarget = pLst->target;
+            if (!pThisTarget)
+                continue;
+
+            xtensa_do_halt(pThisTarget);
+        }
+    }
+    else
+        xtensa_do_halt(target);
+}
+
+static int xtensa_do_resume(struct target *target,
 			 int current,
 			 uint32_t address,
 			 int handle_breakpoints,
@@ -882,6 +926,30 @@ static int xtensa_resume(struct target *target,
 	return res;
 }
 
+static int xtensa_resume(struct target *target,
+    int current,
+    uint32_t address,
+    int handle_breakpoints,
+    int debug_execution)
+{
+    if (target->smp && target->head)
+    {
+        for (struct target_list *pLst = target->head; pLst; pLst = pLst->next)
+        {
+            struct target *pThisTarget = pLst->target;
+            if (!pThisTarget || pThisTarget == target)
+                continue;
+
+            int ret = xtensa_do_resume(pThisTarget, 1, 0, 0, 0);
+            if (ret != ERROR_OK)
+            {
+                LOG_ERROR("Failed to resume SMP target #%d: error %d", pThisTarget->coreid, ret);
+            }
+        }
+    }
+    
+    return xtensa_do_resume(target, current, address, handle_breakpoints, debug_execution);
+}
 
 static int xtensa_read_memory(struct target *target,
 			      uint32_t address,
@@ -1266,6 +1334,16 @@ static int xtensa_step(struct target *target,
 	//Save old ps/pc
 	oldps=esp108_reg_get(&reg_list[XT_REG_IDX_PS]);
 	oldpc=esp108_reg_get(&reg_list[XT_REG_IDX_PC]);
+    
+    int originalIntmask;
+    if (s_DisableInterruptsForStepping)
+    {
+        originalIntmask = esp108_reg_get(&reg_list[XT_REG_IDX_INTENABLE]);
+        if (originalIntmask != 0)
+        {
+            esp108_reg_set(&reg_list[XT_REG_IDX_INTENABLE], 0);
+        }
+    }
 
 	//If intlevel precludes single-stepping, downgrade it
 	if ((oldps&0xF)==0xF) {
@@ -1355,6 +1433,10 @@ static int xtensa_step(struct target *target,
 
 	/* write ICOUNTLEVEL back to zero */
 	esp108_reg_set(&reg_list[XT_REG_IDX_ICOUNTLEVEL], 0);
+    if (originalIntmask != 0)
+    {
+        esp108_reg_set(&reg_list[XT_REG_IDX_INTENABLE], originalIntmask);
+    }
 	res=esp108_write_dirty_registers(target);
 
 	//Make sure the poll routine will pick up that something has changed by artificially
@@ -1457,7 +1539,10 @@ static int xtensa_poll(struct target *target)
 	res=jtag_execute_queue();
 	if (res!=ERROR_OK) return res;
 	if (!(esp108->prevpwrstat&PWRSTAT_DEBUGWASRESET) && pwrstat&PWRSTAT_DEBUGWASRESET) LOG_INFO("%s: Debug controller was reset (pwrstat=0x%02X, after clear 0x%02X).", target->cmd_name, pwrstat, pwrstath);
-	if (!(esp108->prevpwrstat&PWRSTAT_COREWASRESET) && pwrstat&PWRSTAT_COREWASRESET) LOG_INFO("%s: Core was reset (pwrstat=0x%02X, after clear 0x%02X).", target->cmd_name, pwrstat, pwrstath);
+    if (!(esp108->prevpwrstat&PWRSTAT_COREWASRESET) && pwrstat&PWRSTAT_COREWASRESET)
+    {
+        LOG_INFO("%s: Core was reset (pwrstat=0x%02X, after clear 0x%02X).", target->cmd_name, pwrstat, pwrstath);
+    }
 	esp108->prevpwrstat=pwrstath;
 
 	//Enable JTAG, set reset if needed
@@ -1480,32 +1565,77 @@ static int xtensa_poll(struct target *target)
 	if (res!=ERROR_OK) return res;
 //	LOG_INFO("esp8266: ocdid 0x%X dsr 0x%X", intfromchars(ocdid), intfromchars(dsr));
 	
-	if (pwrstath&PWRSTAT_COREWASRESET) {
-		target->state = TARGET_RESET;
-	} else if (intfromchars(dsr)&OCDDSR_STOPPED) {
-		if(target->state != TARGET_HALTED) {
-			int oldstate=target->state;
-			target->state = TARGET_HALTED;
+    bool coreOffline = pwrstat == 0 && intfromchars(dsr) == 0;
+    
+    if (pwrstath&PWRSTAT_COREWASRESET)
+    {
+        target->state = TARGET_RESET;
+    }
+    else if (intfromchars(dsr)&OCDDSR_STOPPED)
+    {
+        if (target->state != TARGET_HALTED)
+        {
+            int oldstate = target->state;
+            target->state = TARGET_HALTED;
+            esp108->halt_requested = 0;
 			
-			//LOG_INFO("%s: %s: Target halted (dsr=%08X). Fetching register contents.", target->cmd_name, __FUNCTION__, intfromchars(dsr));
-			esp108_fetch_all_regs(target);
-			LOG_INFO("%s: Target halted, pc=0x%08X", target->cmd_name, esp108_reg_get(&reg_list[XT_REG_IDX_PC]));
+            //LOG_INFO("%s: %s: Target halted (dsr=%08X). Fetching register contents.", target->cmd_name, __FUNCTION__, intfromchars(dsr));
+            esp108_fetch_all_regs(target);
+            LOG_INFO("%s: Target halted, pc=0x%08X", target->cmd_name, esp108_reg_get(&reg_list[XT_REG_IDX_PC]));
 
-			//Examine why the target was halted
-			int cause=esp108_reg_get(&reg_list[XT_REG_IDX_DEBUGCAUSE]);
-			target->debug_reason = DBG_REASON_DBGRQ;
-			if (cause&DEBUGCAUSE_IC) target->debug_reason = DBG_REASON_SINGLESTEP;
-			if (cause&(DEBUGCAUSE_IB|DEBUGCAUSE_BN|DEBUGCAUSE_BI)) target->debug_reason = DBG_REASON_BREAKPOINT;
-			if (cause&DEBUGCAUSE_DB) target->debug_reason = DBG_REASON_WATCHPOINT;
+            			//Examine why the target was halted
+            int cause = esp108_reg_get(&reg_list[XT_REG_IDX_DEBUGCAUSE]);
+            target->debug_reason = DBG_REASON_DBGRQ;
+            if (cause&DEBUGCAUSE_IC) target->debug_reason = DBG_REASON_SINGLESTEP;
+            if (cause&(DEBUGCAUSE_IB | DEBUGCAUSE_BN | DEBUGCAUSE_BI)) target->debug_reason = DBG_REASON_BREAKPOINT;
+            if (cause&DEBUGCAUSE_DB) target->debug_reason = DBG_REASON_WATCHPOINT;
 			
-			//Call any event callbacks that are applicable
-			if(oldstate == TARGET_DEBUG_RUNNING) {
-				target_call_event_callbacks(target, TARGET_EVENT_DEBUG_HALTED);
-			} else {
-				target_call_event_callbacks(target, TARGET_EVENT_HALTED);
-			}
-		}
-	} else {
+            //Call any event callbacks that are applicable
+            if (oldstate == TARGET_DEBUG_RUNNING)
+            {
+                target_call_event_callbacks(target, TARGET_EVENT_DEBUG_HALTED);
+            }
+            else
+            {
+                target_call_event_callbacks(target, TARGET_EVENT_HALTED);
+            }
+    		
+            if (target->smp && target->head)
+            {
+                //Halt other cores to they don't mess up the memory while this target is stopped
+                for (struct target_list *pLst = target->head; pLst; pLst = pLst->next)
+                {
+                    struct target *pThisTarget = pLst->target;
+                    if (!pThisTarget || pThisTarget == target)
+                        continue;
+
+                    if (!((struct esp108_common*)pThisTarget->arch_info)->halt_requested)
+                    {
+                        xtensa_do_halt(pThisTarget);
+                    }
+                }
+            }
+        }
+    } 
+    else if (coreOffline)
+    {
+        int oldstate = target->state;
+        if (esp108->halt_requested)
+        {
+            target->state = TARGET_HALTED;
+            esp108->halt_requested = 0;   
+        
+            if (oldstate == TARGET_DEBUG_RUNNING)
+            {
+                target_call_event_callbacks(target, TARGET_EVENT_DEBUG_HALTED);
+            }
+            else
+            {
+                target_call_event_callbacks(target, TARGET_EVENT_HALTED);
+            }
+        }
+    }
+    else {
 		target->debug_reason = DBG_REASON_NOTHALTED;
 		if (target->state!=TARGET_RUNNING && target->state!=TARGET_DEBUG_RUNNING) {
 			//LOG_INFO("%s: Core running again.", target->cmd_name);
@@ -1593,6 +1723,240 @@ COMMAND_HANDLER(esp108_cmd_smpbreak)
 	return res;
 }
 
+COMMAND_HANDLER(esp108_cmd_chip_reset)
+{
+    int r;
+
+    struct target *target = get_current_target(CMD_CTX);
+    for (struct target_list *pLst = target->head; pLst; pLst = pLst->next)
+    {
+        struct target *pThisTarget = pLst->target;
+        if (!pThisTarget)
+            continue;
+
+        r = xtensa_do_halt(target);
+        if (r != ERROR_OK)
+        {
+            command_print(CMD_CTX, "Failed to halt target #%d before reset: error %d", target->coreid, r);
+            return r;
+        }
+    }
+
+    int delay = 100;
+    if (CMD_ARGC >= 1)
+        delay = atoi(CMD_ARGV[0]);
+    
+    unsigned value = 0x80000000;
+    r = xtensa_write_memory(target, 0x3ff48000, 4, 1, (uint8_t*)&value);
+    if (r != ERROR_OK)
+    {
+        command_print(CMD_CTX, "Failed to trigger a chip reset: error %d", r);
+        return r;
+    }
+    
+    int64_t start = timeval_ms();
+    while ((timeval_ms() - start) < delay)
+    {
+        for (struct target_list *pLst = target->head; pLst; pLst = pLst->next)
+        {
+            struct target *pThisTarget = pLst->target;
+            if (!pThisTarget)
+                continue;
+            xtensa_poll(pThisTarget);
+        }
+    }    
+    
+    for (struct target_list *pLst = target->head; pLst; pLst = pLst->next)
+    {
+        struct target *pThisTarget = pLst->target;
+        if (!pThisTarget)
+            continue;
+
+        r = xtensa_do_halt(target);
+        if (r != ERROR_OK)
+        {
+            command_print(CMD_CTX, "Failed to halt target #%d before reset: error %d", target->coreid, r);
+            return r;
+        }
+    }
+    
+    return ERROR_OK;
+}
+
+static COMMAND_HELPER(esp108_no_interrupts_during_steps, const char **sep, const char **name)
+{
+    if (CMD_ARGC > 1)
+        return ERROR_COMMAND_SYNTAX_ERROR;
+    if (CMD_ARGC == 1) 
+        COMMAND_PARSE_ENABLE(CMD_ARGV[0], s_DisableInterruptsForStepping);
+	
+    command_print(CMD_CTX, "Interrupt suppression during single-stepping is %s%s", (CMD_ARGC == 1) ? "now " : "", s_DisableInterruptsForStepping ? "enabled" : "disabled");
+
+    return ERROR_OK;
+}
+
+struct stall_state
+{
+    unsigned OPTIONS0;
+    unsigned SW_CPU_STALL;
+};
+
+enum
+{
+    RTC_CNTL_SW_CPU_STALL = 0x3ff480ac,
+    RTC_CNTL_SW_OPTIONS0  = 0x3ff48000,
+};
+
+static int apply_stall_state(struct target *target, struct stall_state *state)
+{
+    int err;
+    err = target_write_memory(target, RTC_CNTL_SW_CPU_STALL, 4, 1, (uint8_t*)&state->SW_CPU_STALL);
+    if (err != ERROR_OK)
+        return err;
+    err = target_write_memory(target, RTC_CNTL_SW_OPTIONS0, 4, 1, (uint8_t*)&state->OPTIONS0);
+    return err;
+}
+
+static int read_stall_state(struct target *target, struct stall_state *state)
+{
+    int err;
+    err = target_read_memory(target, RTC_CNTL_SW_CPU_STALL, 4, 1, (uint8_t*)&state->SW_CPU_STALL);
+    if (err != ERROR_OK)
+        return err;
+    err = target_read_memory(target, RTC_CNTL_SW_OPTIONS0, 4, 1, (uint8_t*)&state->OPTIONS0);
+    return err;
+}
+
+#define REPLACE_MASKED_VALUE(var, mask, offset, value) (var) = (((var) & (~((mask) << (offset)))) | (((value) & (mask)) << offset))
+
+COMMAND_HANDLER(esp108_cmd_run_alg)
+{
+    if (CMD_ARGC != 2)
+        return ERROR_COMMAND_SYNTAX_ERROR;
+    
+    unsigned addr = strtol(CMD_ARGV[0], NULL, 0);
+    unsigned timeout = strtol(CMD_ARGV[1], NULL, 0);
+    int err;
+    if (!addr)
+    {
+        command_print(CMD_CTX, "Invalid or missing address to run");
+        return ERROR_COMMAND_SYNTAX_ERROR;
+    }
+
+    if (!timeout)
+    {
+        command_print(CMD_CTX, "Invalid or missing timeout");
+        return ERROR_COMMAND_SYNTAX_ERROR;
+    }
+
+    struct target *target = get_current_target(CMD_CTX);
+    if (target->state != TARGET_HALTED) 
+    {
+        LOG_WARNING("target not halted");
+        return ERROR_TARGET_NOT_HALTED;
+    }
+    
+    struct stall_state oldState;
+    err = read_stall_state(target, &oldState);
+    if (err != ERROR_OK)
+    {
+        command_print(CMD_CTX, "failed to read target state");
+        return err;
+    }
+    
+    struct stall_state newState = oldState;
+    bool stall0 = target->coreid != 0;
+    bool stall1 = target->coreid == 0;
+
+    REPLACE_MASKED_VALUE(newState.OPTIONS0, 0x03, 2, stall0 ? 2 : 0);
+    REPLACE_MASKED_VALUE(newState.OPTIONS0, 0x03, 0, stall1 ? 2 : 0);
+    
+    REPLACE_MASKED_VALUE(newState.SW_CPU_STALL, 0x3F, 26, stall0 ? 0x21 : 0);
+    REPLACE_MASKED_VALUE(newState.SW_CPU_STALL, 0x3F, 20, stall1 ? 0x21 : 0);
+    
+    err = apply_stall_state(target, &newState);
+    if (err != ERROR_OK)
+    {
+        command_print(CMD_CTX, "failed to read target state");
+        return err;
+    }
+    
+    struct esp108_common *esp108 = (struct esp108_common*)target->arch_info;
+    struct reg *reg_list = esp108->core_cache->reg_list;
+
+    int originalIntmask = esp108_reg_get(&reg_list[XT_REG_IDX_INTENABLE]);
+    if (originalIntmask != 0)
+        esp108_reg_set(&reg_list[XT_REG_IDX_INTENABLE], 0);
+    
+    esp108_write_dirty_registers(target);
+    
+    err = xtensa_resume(target, 0, addr, 1, 1);
+    if (err != ERROR_OK)
+    {
+        command_print(CMD_CTX, "Failed to resume target");
+        return ERROR_COMMAND_SYNTAX_ERROR;
+    }
+    
+    int64_t start = timeval_ms();
+    err = ERROR_TARGET_FAILURE;
+    for (int iter = 0; iter < 10; iter++)
+    {
+        do
+        {
+            for (struct target_list *pLst = target->head; pLst; pLst = pLst->next)
+            {
+                struct target *pThisTarget = pLst->target;
+                if (!pThisTarget)
+                    continue;
+                xtensa_poll(pThisTarget);
+            }
+        } while ((timeval_ms() - start) < timeout && target->state != TARGET_HALTED);  
+        
+        if (target->state != TARGET_HALTED)
+        {
+            err = ERROR_TARGET_NOT_HALTED;
+            break;
+        }
+        
+        if (esp108_reg_get(&reg_list[XT_REG_IDX_PC]) == addr)
+        {
+            //BUG: sometimes the target is immediately reported as stopped. Resume it again.
+            err = xtensa_resume(target, 0, addr, 1, 1);
+            if (err != ERROR_OK)
+            {
+                command_print(CMD_CTX, "Failed to resume target");
+                return ERROR_COMMAND_SYNTAX_ERROR;
+            }
+        }
+        else
+        {
+            err = ERROR_OK;   
+            break;
+        }
+    }
+    
+    if (err == ERROR_OK)
+    {
+        command_print(CMD_CTX, "Algorithm completed");
+        command_print(CMD_CTX, "PC = 0x%x", esp108_reg_get(&reg_list[XT_REG_IDX_PC]));
+        command_print(CMD_CTX, "A0 = 0x%x", esp108_reg_get(&reg_list[XT_REG_IDX_A0]));
+    }
+    else
+    {
+        command_print(CMD_CTX, "Target did not halt within %d msec", timeout);
+        xtensa_halt(target);
+        target_wait_state(target, TARGET_HALTED, 100);
+    }
+    
+    err = apply_stall_state(target, &oldState);
+    if (err != ERROR_OK)
+        LOG_WARNING("failed to read target state");
+    
+    if (originalIntmask != 0)
+        esp108_reg_set(&reg_list[XT_REG_IDX_INTENABLE], originalIntmask);
+    
+    return err;
+}
 
 COMMAND_HANDLER(esp108_cmd_tracestart)
 {
@@ -1835,6 +2199,27 @@ static const struct command_registration esp108_any_command_handlers[] = {
 		.help = "Set the idle state of the TMS pin, which at reset also is the voltage selector for the flash chip.",
 		.usage = "none|1.8|3.3|high|low",
 	},
+    {
+        .name = "chip_reset",
+        .handler = esp108_cmd_chip_reset,
+        .mode = COMMAND_ANY,
+        .help = "Performs a chip reset and halts both CPUs",
+        .usage = "",
+    },
+    {
+        .name = "no_interrupts_during_steps",
+        .handler = esp108_no_interrupts_during_steps,
+        .mode = COMMAND_ANY,
+        .help = "Controls whether interrupts are suppressed during single-stepping",
+        .usage = "",
+    },
+    {
+        .name = "run_alg",
+        .handler = esp108_cmd_run_alg,
+        .mode = COMMAND_ANY,
+        .help = "Runs an algorithm at the specified address on the current core",
+        .usage = "address timeout",
+    },
 	COMMAND_REGISTRATION_DONE
 };
 

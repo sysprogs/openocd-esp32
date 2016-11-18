@@ -34,6 +34,7 @@ extern struct rtos_type Linux_os;
 extern struct rtos_type ChibiOS_rtos;
 extern struct rtos_type embKernel_rtos;
 extern struct rtos_type mqx_rtos;
+extern struct rtos_type multicore_rtos;
 
 static struct rtos_type *rtos_types[] = {
 	&ThreadX_rtos,
@@ -43,6 +44,7 @@ static struct rtos_type *rtos_types[] = {
 	&ChibiOS_rtos,
 	&embKernel_rtos,
 	&mqx_rtos,
+    &multicore_rtos,
 	NULL
 };
 
@@ -245,7 +247,7 @@ int rtos_qsymbol(struct connection *connection, char const *packet, int packet_s
 			goto done;
 		}
 
-		if (os->type->detect_rtos(target)) {
+    	if (os->type->detect_rtos && os->type->detect_rtos(target)) {
 			LOG_INFO("Auto-detected RTOS: %s", os->type->name);
 			rtos_detected = 1;
 			goto done;
