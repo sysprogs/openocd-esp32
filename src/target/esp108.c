@@ -1859,7 +1859,7 @@ static int read_stall_state(struct target *target, struct stall_state *state)
 
 COMMAND_HANDLER(esp108_cmd_run_alg)
 {
-    if (CMD_ARGC != 2)
+    if (CMD_ARGC < 2)
         return ERROR_COMMAND_SYNTAX_ERROR;
     
     unsigned addr = strtol(CMD_ARGV[0], NULL, 0);
@@ -1918,6 +1918,34 @@ COMMAND_HANDLER(esp108_cmd_run_alg)
     
     esp108_write_dirty_registers(target);
     
+    for (int i = 2; i < CMD_ARGC; i++)
+    {
+        char *p = strchr(CMD_ARGV[i], '=');
+        if (p)
+        {
+            p[0] = 0;
+            unsigned value = strtoul(p + 1, 0, 0);
+            bool found = false;
+            for (int j = 0; j < esp108->core_cache->num_regs; j++)
+            {
+                if (!stricmp(reg_list[j].name, CMD_ARGV[i]))
+                {
+                    esp108_reg_set(&reg_list[j], value);
+                    found = true;
+                    break;
+                }
+            }
+            
+            if (!found)
+            {
+                command_print(CMD_CTX, "Invalid register: %s", CMD_ARGV[i]);
+                return ERROR_COMMAND_SYNTAX_ERROR;
+            }
+            
+            p[0] = '=';
+        }
+    }
+    
     err = xtensa_resume(target, 0, addr, 1, 1);
     if (err != ERROR_OK)
     {
@@ -1966,8 +1994,21 @@ COMMAND_HANDLER(esp108_cmd_run_alg)
     if (err == ERROR_OK)
     {
         command_print(CMD_CTX, "Algorithm completed");
-        command_print(CMD_CTX, "PC = 0x%x", esp108_reg_get(&reg_list[XT_REG_IDX_PC]));
-        command_print(CMD_CTX, "A0 = 0x%x", esp108_reg_get(&reg_list[XT_REG_IDX_A0]));
+        for (int i = 2; i < CMD_ARGC; i++)
+        {
+            char *p = strchr(CMD_ARGV[i], '=');
+            if (!p)
+            {
+                for (int j = 0; j < esp108->core_cache->num_regs; j++)
+                {
+                    if (!stricmp(reg_list[j].name, CMD_ARGV[i]))
+                    {
+                        command_print(CMD_CTX, "%s = 0x%x", reg_list[j].name, esp108_reg_get(&reg_list[j]));
+                        break;
+                    }
+                }
+            }
+        }
     }
     else
     {
