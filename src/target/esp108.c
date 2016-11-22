@@ -1529,6 +1529,14 @@ static int xtensa_examine(struct target *target)
 	return ERROR_OK;
 }
 
+int xtensa_write_hwreg(struct target *target, int address, int value)
+{
+    int res = xtensa_write_memory(target, address, 4, 1, (uint8_t *)&value);
+    if (res != ERROR_OK)
+        LOG_WARNING("Failed to write memory at 0x%x: %d", address, res);
+    return res;
+}
+
 
 static int xtensa_poll(struct target *target)
 {
@@ -1607,6 +1615,14 @@ static int xtensa_poll(struct target *target)
             {
                 target_call_event_callbacks(target, TARGET_EVENT_HALTED);
             }
+            
+            //Disable watchdogs. The TCL-level hook for this does not work reliably, so we do it explicitly here.
+            xtensa_write_hwreg(target, 0x3FF5F064, 0x50d83aa1); //TIMG1 WDT
+            xtensa_write_hwreg(target, 0x3FF5F048, 0);
+            xtensa_write_hwreg(target, 0x3FF60064, 0x50d83aa1); //TIMG2 WDT
+            xtensa_write_hwreg(target, 0x3FF60048, 0);
+            xtensa_write_hwreg(target, 0x3ff480a4, 0x50d83aa1); //RTC WDT
+            xtensa_write_hwreg(target, 0x3ff4808c, 0);
     		
             if (target->smp && target->head)
             {
@@ -1732,6 +1748,17 @@ COMMAND_HANDLER(esp108_cmd_smpbreak)
 	return res;
 }
 
+static void poll_all_targets(struct target *target)
+{
+    for (struct target_list *pLst = target->head; pLst; pLst = pLst->next)
+    {
+        struct target *pThisTarget = pLst->target;
+        if (!pThisTarget)
+            continue;
+        xtensa_poll(pThisTarget);
+    }
+}
+
 COMMAND_HANDLER(esp108_cmd_chip_reset)
 {
     int r;
@@ -1770,28 +1797,31 @@ COMMAND_HANDLER(esp108_cmd_chip_reset)
         }
     }
 
-    int delay = 100;
+    int delay = 300;    //A value of 100 causes a strange reset loop. 200 seems to work.
     if (CMD_ARGC >= 1)
         delay = atoi(CMD_ARGV[0]);
     
-    unsigned value = 0x80000000;
-    r = xtensa_write_memory(target, 0x3ff48000, 4, 1, (uint8_t*)&value);
-    if (r != ERROR_OK)
+    int64_t start = timeval_ms();
+    for (;;)
     {
-        command_print(CMD_CTX, "Failed to trigger a chip reset: error %d", r);
-        return r;
+        unsigned value = 0x80000000;
+        r = xtensa_write_memory(target, 0x3ff48000, 4, 1, (uint8_t*)&value);
+        if (r == ERROR_OK)
+            break;
+        
+        if ((timeval_ms() - start) > 500)
+        {
+            command_print(CMD_CTX, "Failed to trigger a chip reset: error %d", r);
+            return r;
+        }
+        
+        poll_all_targets(target);
     }
     
-    int64_t start = timeval_ms();
+    start = timeval_ms();
     while ((timeval_ms() - start) < delay)
     {
-        for (struct target_list *pLst = target->head; pLst; pLst = pLst->next)
-        {
-            struct target *pThisTarget = pLst->target;
-            if (!pThisTarget)
-                continue;
-            xtensa_poll(pThisTarget);
-        }
+        poll_all_targets(target);
     }    
     
     for (struct target_list *pLst = target->head; pLst; pLst = pLst->next)
@@ -1800,12 +1830,23 @@ COMMAND_HANDLER(esp108_cmd_chip_reset)
         if (!pThisTarget)
             continue;
 
-        r = xtensa_do_halt(target);
+        r = xtensa_do_halt(pThisTarget);
         if (r != ERROR_OK)
         {
-            command_print(CMD_CTX, "Failed to halt target #%d before reset: error %d", target->coreid, r);
+            command_print(CMD_CTX, "Failed to halt target #%d after reset: error %d", pThisTarget->coreid, r);
             return r;
         }
+        
+        start = timeval_ms();
+        while ((timeval_ms() - start) < 500)
+        {
+            xtensa_poll(pThisTarget);
+            if (pThisTarget->state == TARGET_HALTED)
+                break;
+        } 
+        
+        if (pThisTarget->state != TARGET_HALTED)
+            command_print(CMD_CTX, "Target #%d did not halt after reset", pThisTarget->coreid);
     }
     
     return ERROR_OK;
