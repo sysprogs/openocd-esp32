@@ -43,6 +43,7 @@ add_library(target
 	dsp5680xx.c
 	embeddedice.c
 	esp108.c
+	esp108_apptrace.c
 	etb.c
 	etm.c
 	etm_dummy.c

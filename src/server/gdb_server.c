@@ -2641,6 +2641,9 @@ static void gdb_sig_halted(struct connection *connection)
 	gdb_put_packet(connection, sig_reply, 3);
 }
 
+extern int ctrl_c_pending;
+
+
 static int gdb_input_inner(struct connection *connection)
 {
 	/* Do not allocate this on the stack */
@@ -2653,6 +2656,19 @@ static int gdb_input_inner(struct connection *connection)
 	int retval;
 	struct gdb_connection *gdb_con = connection->priv;
 	static int extended_protocol;
+    
+    if (ctrl_c_pending) {
+        if (target->state == TARGET_RUNNING) {
+            retval = target_halt(target);
+            if (retval != ERROR_OK)
+                target_call_event_callbacks(target, TARGET_EVENT_GDB_HALT);
+            ctrl_c_pending = 0;
+        }
+        else {
+            LOG_INFO("The target is not running when halt was requested, stopping GDB.");
+            target_call_event_callbacks(target, TARGET_EVENT_GDB_HALT);
+        }
+    }
 
 	/* drain input buffer. If one of the packets fail, then an error
 	 * packet is replied, if applicable.

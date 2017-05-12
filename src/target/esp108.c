@@ -1721,11 +1721,12 @@ static int read_stall_state(struct target *target, struct stall_state *state)
 
 COMMAND_HANDLER(esp108_cmd_run_alg)
 {
-    if (CMD_ARGC < 2)
+    if (CMD_ARGC < 3)
         return ERROR_COMMAND_SYNTAX_ERROR;
     
     unsigned addr = strtol(CMD_ARGV[0], NULL, 0);
-    unsigned timeout = strtol(CMD_ARGV[1], NULL, 0);
+    unsigned loop_addr = strtol(CMD_ARGV[1], NULL, 0);
+    unsigned timeout = strtol(CMD_ARGV[2], NULL, 0);
     int err;
     if (!addr)
     {
@@ -1740,36 +1741,28 @@ COMMAND_HANDLER(esp108_cmd_run_alg)
     }
 
     struct target *target = get_current_target(CMD_CTX);
+    
     if (target->state != TARGET_HALTED) 
     {
         LOG_WARNING("target not halted");
         return ERROR_TARGET_NOT_HALTED;
     }
     
-    struct stall_state oldState;
-    err = read_stall_state(target, &oldState);
-    if (err != ERROR_OK)
+    for (struct target_list *pLst = target->head; pLst; pLst = pLst->next)
     {
-        command_print(CMD_CTX, "failed to read target state");
-        return err;
-    }
-    
-    struct stall_state newState = oldState;
-    bool stall0 = target->coreid != 0;
-    bool stall1 = target->coreid == 0;
-
-    REPLACE_MASKED_VALUE(newState.OPTIONS0, 0x03, 2, stall0 ? 2 : 0);
-    REPLACE_MASKED_VALUE(newState.OPTIONS0, 0x03, 0, stall1 ? 2 : 0);
-    
-    REPLACE_MASKED_VALUE(newState.SW_CPU_STALL, 0x3F, 26, stall0 ? 0x21 : 0);
-    REPLACE_MASKED_VALUE(newState.SW_CPU_STALL, 0x3F, 20, stall1 ? 0x21 : 0);
-    
-    err = apply_stall_state(target, &newState);
-    if (err != ERROR_OK)
-    {
-        command_print(CMD_CTX, "failed to read target state");
-        return err;
-    }
+        struct target *pThisTarget = pLst->target;
+        if (!pThisTarget || pThisTarget == target)
+            continue;
+        
+        struct esp108_common *esp108 = (struct esp108_common*)pThisTarget->arch_info;
+        struct reg *reg_list = esp108->core_cache->reg_list;
+        esp108_reg_set(&reg_list[XT_REG_IDX_PC], loop_addr);
+        int originalIntmask = esp108_reg_get(&reg_list[XT_REG_IDX_INTENABLE]);
+        if (originalIntmask != 0)
+            esp108_reg_set(&reg_list[XT_REG_IDX_INTENABLE], 0);
+        esp108_write_dirty_registers(pThisTarget);
+        xtensa_poll(pThisTarget);
+    }   
     
     struct esp108_common *esp108 = (struct esp108_common*)target->arch_info;
     struct reg *reg_list = esp108->core_cache->reg_list;
@@ -1778,9 +1771,11 @@ COMMAND_HANDLER(esp108_cmd_run_alg)
     if (originalIntmask != 0)
         esp108_reg_set(&reg_list[XT_REG_IDX_INTENABLE], 0);
     
+    esp108_reg_set(&reg_list[XT_REG_IDX_PS], 0x60820);
+    
     esp108_write_dirty_registers(target);
     
-    for (int i = 2; i < CMD_ARGC; i++)
+    for (int i = 3; i < CMD_ARGC; i++)
     {
         char *p = strchr(CMD_ARGV[i], '=');
         if (p)
@@ -1878,10 +1873,6 @@ COMMAND_HANDLER(esp108_cmd_run_alg)
         xtensa_halt(target);
         target_wait_state(target, TARGET_HALTED, 100);
     }
-    
-    err = apply_stall_state(target, &oldState);
-    if (err != ERROR_OK)
-        LOG_WARNING("failed to read target state");
     
     if (originalIntmask != 0)
         esp108_reg_set(&reg_list[XT_REG_IDX_INTENABLE], originalIntmask);
