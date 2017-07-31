@@ -209,7 +209,33 @@
 #include "esp108_dbg_regs.h"
 #include "esp32.h"
 #include "esp108_apptrace.h"
+
+#ifdef _WIN32
+#include <windows.h>
+typedef CRITICAL_SECTION pthread_mutex_t;
+typedef HANDLE pthread_t;
+
+#define pthread_mutex_lock(section) (EnterCriticalSection(section), 0)
+#define pthread_mutex_unlock(section) (LeaveCriticalSection(section), 0)
+#define pthread_mutex_init(section, unused) (InitializeCriticalSection(section), 0)
+#define pthread_mutex_trylock(section) (!TryEnterCriticalSection(section))
+#define pthread_mutex_destroy DeleteCriticalSection
+#define pthread_join(thread, unused) WaitForSingleObject(thread, INFINITE);
+
+static int pthread_create(HANDLE *pThread,
+    void *unused,
+    LPTHREAD_START_ROUTINE threadFunc,
+    void *ctx)
+{
+    DWORD threadID;
+    *pThread = CreateThread(NULL, 0, threadFunc, ctx, 0, &threadID);
+    return *pThread == NULL;
+}
+
+#else
 #include <pthread.h>
+#endif
+
 
 #define ESP_SYSVIEW_OPTIMIZE	1
 
@@ -399,7 +425,13 @@ struct esp_apptrace_cmd_ctx {
 extern int shutdown_openocd;
 
 static int esp_sysview_process_data(struct esp_apptrace_cmd_ctx *ctx, int core_id, uint8_t *data, uint32_t data_len);
+
+#ifdef _WIN32
+static DWORD WINAPI esp_apptrace_data_processor(void *arg);
+#else
 static void *esp_apptrace_data_processor(void *arg);
+#endif
+
 static int esp_apptrace_handle_trace_block(struct esp_apptrace_cmd_ctx *ctx, struct esp_apptrace_block *block);
 
 /*********************************************************************
@@ -1847,8 +1879,11 @@ static int esp_apptrace_handle_trace_block(struct esp_apptrace_cmd_ctx *ctx, str
 	return ERROR_OK;
 }
 
+#ifdef _WIN32
+static DWORD WINAPI esp_apptrace_data_processor(void *arg)
+#else
 static void *esp_apptrace_data_processor(void *arg)
-{
+#endif{
 	long res = ERROR_OK;
 	struct esp_apptrace_cmd_ctx *ctx = (struct esp_apptrace_cmd_ctx *)arg;
 
