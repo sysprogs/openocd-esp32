@@ -354,6 +354,8 @@ static int remove_services(void)
 	return ERROR_OK;
 }
 
+int ctrl_c_pending = 0;
+
 int server_loop(struct command_context *command_context)
 {
 	struct service *service;
@@ -488,7 +490,7 @@ int server_loop(struct command_context *command_context)
 				struct connection *c;
 
 				for (c = service->connections; c; ) {
-					if ((FD_ISSET(c->fd, &read_fds)) || c->input_pending) {
+    				if ((FD_ISSET(c->fd, &read_fds)) || c->input_pending || ctrl_c_pending) {
 						retval = service->input(c);
 						if (retval != ERROR_OK) {
 							struct connection *next = c->next;
@@ -522,10 +524,14 @@ int server_loop(struct command_context *command_context)
 	return shutdown_openocd != 2 ? ERROR_OK : ERROR_FAIL;
 }
 
+
 #ifdef _WIN32
 BOOL WINAPI ControlHandler(DWORD dwCtrlType)
 {
-	shutdown_openocd = 1;
+    if (dwCtrlType == CTRL_C_EVENT)
+        ctrl_c_pending = 1;        
+    else
+	    shutdown_openocd = 1;
 	return TRUE;
 }
 #endif
@@ -533,6 +539,12 @@ BOOL WINAPI ControlHandler(DWORD dwCtrlType)
 void sig_handler(int sig)
 {
 	/* store only first signal that hits us */
+    if (sig == SIGINT)
+    {
+        ctrl_c_pending = 1;        
+        return;
+    }
+    
 	if (!last_signal)
 		last_signal = sig;
 	shutdown_openocd = 1;
