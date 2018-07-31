@@ -81,9 +81,8 @@
 #include "target/esp32.h"
 
 #define ESP32_FLASH_MIN_OFFSET 		0x1000 // protect secure boot digest data
-#define ESP32_ALGORITHM_EXIT_TMO	60000 // ms
-#define ESP32_TARGET_STATE_TMO		5000 // ms
-#define ESP32_RW_TMO				6000 // ms
+#define ESP32_RW_TMO				20000 // ms
+#define ESP32_ERASE_TMO				60000 // ms
 
 struct esp32_flash_bank {
 	int 		probed;
@@ -229,10 +228,10 @@ static int esp32_blank_check(struct flash_bank *bank)
 		LOG_ERROR("Failed to check erase flash (%d)!", run.ret_code);
 		ret = ERROR_FAIL;
 	} else {
-			for (int i = 0; i < bank->num_sectors; i++) {
+		for (int i = 0; i < bank->num_sectors; i++) {
 			bank->sectors[i].is_erased = mp.value[i];
-			}
 		}
+	}
 	destroy_mem_param(&mp);
 	return ret;
 }
@@ -327,7 +326,7 @@ static int esp32_erase(struct flash_bank *bank, int first, int last)
 	if (ret != ERROR_OK) {
 		LOG_ERROR("Faied to init flasher image (%d)!", ret);
 		return ret;
-		}
+	}
 	ret = esp32_run_func_image(bank->target, &run, &flasher_image, 3,
 	                           ESP32_STUB_CMD_FLASH_ERASE, 		// cmd
 	                           esp32_info->flash_base + first*ESP32_FLASH_SECTOR_SIZE,// start addr
@@ -375,15 +374,15 @@ static int esp32_rw_do(struct target *target, void *priv)
 					return ERROR_FAIL;
 				}
 			} else {
-			// if no transfer check tmo
+				// if no transfer check tmo
 				if (duration_measure(&tmo_time) != 0) {
-				LOG_ERROR("Failed to stop algo run measurement!");
-				return ERROR_FAIL;
-			}
+					LOG_ERROR("Failed to stop algo run measurement!");
+					return ERROR_FAIL;
+				}
 				if (1000*duration_elapsed(&tmo_time) > ESP32_RW_TMO) {
-				LOG_ERROR("Transfer data tmo!");
-				return ERROR_WAIT;
-			}
+					LOG_ERROR("Transfer data tmo!");
+					return ERROR_WAIT;
+				}
 			}
 		} else if (retval != ERROR_OK) {
 			LOG_ERROR("Failed to transfer flash data block (%d)!", retval);
@@ -473,7 +472,7 @@ static void esp32_write_state_cleanup(struct target *target, struct esp32_algo_r
 }
 
 static int esp32_write(struct flash_bank *bank, const uint8_t *buffer,
-		uint32_t offset, uint32_t count)
+                       uint32_t offset, uint32_t count)
 {
 	struct esp32_flash_bank *esp32_info = bank->driver_priv;
 	struct esp32_algo_image flasher_image;
@@ -520,7 +519,7 @@ static int esp32_write(struct flash_bank *bank, const uint8_t *buffer,
 	if (ret != ERROR_OK) {
 		LOG_ERROR("Faied to run flasher stub (%d)!", ret);
 		return ret;
-		}
+	}
 	if (run.ret_code != ESP32_STUB_ERR_OK) {
 		LOG_ERROR("Failed to write flash (%d)!", run.ret_code);
 		ret = ERROR_FAIL;
@@ -542,8 +541,8 @@ static int esp32_read_xfer(struct target *target, uint32_t block_id, uint32_t le
 		return retval;
 	}
 	LOG_DEBUG("DATA (%d/%d): %x %x %x %x %x %x %x %x", len, ESP32_TRACEMEM_BLOCK_SZ,
-		state->rd_buf[0], state->rd_buf[1], state->rd_buf[2], state->rd_buf[3],
-		state->rd_buf[4], state->rd_buf[5], state->rd_buf[6], state->rd_buf[7]);
+	          state->rd_buf[0], state->rd_buf[1], state->rd_buf[2], state->rd_buf[3],
+	          state->rd_buf[4], state->rd_buf[5], state->rd_buf[6], state->rd_buf[7]);
 
 	uint8_t *ptr = state->rd_buf;
 	while (ptr < state->rd_buf + len) {
@@ -560,7 +559,7 @@ static int esp32_read_xfer(struct target *target, uint32_t block_id, uint32_t le
 }
 
 static int esp32_read(struct flash_bank *bank, uint8_t *buffer,
-		uint32_t offset, uint32_t count)
+                      uint32_t offset, uint32_t count)
 {
 	struct esp32_flash_bank *esp32_info = bank->driver_priv;
 	struct esp32_algo_image flasher_image;
@@ -606,7 +605,7 @@ static int esp32_read(struct flash_bank *bank, uint8_t *buffer,
 	if (ret != ERROR_OK) {
 		LOG_ERROR("Faied to run flasher stub (%d)!", ret);
 		return ret;
-		}
+	}
 	if (run.ret_code != ESP32_STUB_ERR_OK) {
 		LOG_ERROR("Failed to read flash (%d)!", run.ret_code);
 		ret = ERROR_FAIL;
@@ -628,7 +627,7 @@ static int esp32_probe(struct flash_bank *bank)
 	}
 
 	LOG_DEBUG("Flash size = %d KB @ 0x%x '%s' - '%s'", bank->size/1024, bank->base,
-		target_name(bank->target), target_state_name(bank->target));
+	          target_name(bank->target), target_state_name(bank->target));
 
 	if (bank->sectors) {
 		free(bank->sectors);
@@ -675,21 +674,21 @@ static int esp32_probe(struct flash_bank *bank)
 		}
 		LOG_INFO("Auto-detected flash size %d KB", bank->size/1024);
 	}
-		LOG_INFO("Using flash size %d KB", bank->size/1024);
+	LOG_INFO("Using flash size %d KB", bank->size/1024);
 
 	bank->num_sectors = bank->size / ESP32_FLASH_SECTOR_SIZE;
-		bank->sectors = malloc(sizeof(struct flash_sector) * bank->num_sectors);
+	bank->sectors = malloc(sizeof(struct flash_sector) * bank->num_sectors);
 	if (bank->sectors == NULL) {
 		LOG_ERROR("Failed to alloc mem for sectors!");
 		return ERROR_FAIL;
 	}
-		for (int i = 0; i < bank->num_sectors; i++) {
+	for (int i = 0; i < bank->num_sectors; i++) {
 		bank->sectors[i].offset = i*ESP32_FLASH_SECTOR_SIZE;
 		bank->sectors[i].size = ESP32_FLASH_SECTOR_SIZE;
-			bank->sectors[i].is_erased = -1;
-			bank->sectors[i].is_protected = 0;
-		}
-		LOG_DEBUG("allocated %d sectors", bank->num_sectors);
+		bank->sectors[i].is_erased = -1;
+		bank->sectors[i].is_protected = 0;
+	}
+	LOG_DEBUG("allocated %d sectors", bank->num_sectors);
 	esp32_info->probed = 1;
 
 	return ERROR_OK;

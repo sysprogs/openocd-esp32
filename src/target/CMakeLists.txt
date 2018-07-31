@@ -81,5 +81,6 @@ add_library(target
 	esp108_common.c
 	esp32.c
 	esp108_apptrace.c)
+target_include_directories(target PRIVATE ../..)
 	
 SET_TARGET_PROPERTIES(target PROPERTIES COMPILE_FLAGS -I${CMAKE_CURRENT_BINARY_DIR})
