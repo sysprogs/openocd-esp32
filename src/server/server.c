@@ -427,6 +427,7 @@ int server_loop(struct command_context *command_context)
 				FD_ZERO(&read_fds);
 			else {
 				LOG_ERROR("error during select: %s", strerror(errno));
+				target_call_exit_callbacks();
 				exit(-1);
 			}
 #else
@@ -435,6 +436,7 @@ int server_loop(struct command_context *command_context)
 				FD_ZERO(&read_fds);
 			else {
 				LOG_ERROR("error during select: %s", strerror(errno));
+				target_call_exit_callbacks();
 				exit(-1);
 			}
 #endif
@@ -521,6 +523,7 @@ int server_loop(struct command_context *command_context)
 #endif
 	}
 
+	target_call_exit_callbacks();
 	return shutdown_openocd != 2 ? ERROR_OK : ERROR_FAIL;
 }
 

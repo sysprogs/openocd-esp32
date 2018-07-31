@@ -44,6 +44,7 @@
 #include "breakpoints.h"
 #include "algorithm.h"
 
+extern bool esp108_permissive_mode;
 
 #define XT_INS_NUM_BITS 24
 #define XT_DEBUGLEVEL	 6 /* XCHAL_DEBUGLEVEL in xtensa-config.h */
@@ -108,9 +109,8 @@ void esp108_queue_exec_ins(struct target *target, int32_t ins);
 uint32_t esp108_reg_get(struct reg *reg);
 void esp108_reg_set(struct reg *reg, uint32_t value);
 int esp108_do_checkdsr(struct target *target, const char *function, const int line);
+int esp108_clear_dsr(struct target *target, uint32_t bits);
 
-// Read and clear the DSR register
-unsigned int xtensa_read_dsr(struct target *target);
 int xtensa_get_core_reg(struct reg *reg);
 int xtensa_set_core_reg(struct reg *reg, uint8_t *buf);
 
@@ -167,6 +167,7 @@ struct esp108_reg_desc {
 struct xtensa_algorithm {
 	enum xtensa_mode core_mode;
 	uint32_t context[XT_NUM_REGS];
+	enum target_debug_reason ctx_debug_reason;
 };
 
 /* Special register number macro for DDR register.
@@ -198,6 +199,11 @@ struct xtensa_algorithm {
 						| ((S & 0x0F) << 8 )	\
 						| ((T & 0x0F) << 4 ))
 
+#define _XT_INS_FORMAT_RRI4(OPCODE,IMM4,R,S,T) (OPCODE \
+						| ((IMM4 & 0x0F) << 20) \
+						| ((R & 0x0F) << 12) \
+						| ((S & 0x0F) << 8)	\
+						| ((T & 0x0F) << 4))
 
 
 /* Xtensa processor instruction opcodes
@@ -246,11 +252,24 @@ struct xtensa_algorithm {
 /* Write Floating-Point Register */
 #define XT_INS_WFR(FR,T) _XT_INS_FORMAT_RRR(0xFA0000,((FR<<4)|0x5),T)
 
+/* 32-bit break */
+#define XT_INS_BREAK(IMM1,IMM2)  _XT_INS_FORMAT_RRR(0x004000,IMM1,IMM2)
+/* 16-bit break */
+#define XT_INS_BREAKN(IMM4)  _XT_INS_FORMAT_RRRN(0x00000D,IMM4,0x2,0xF)
+
 #define XT_PS_RING(_v_)			((uint32_t)((_v_) & 0x3) << 6)
 #define XT_PS_RING_MSK			(0x3 << 6)
 #define XT_PS_RING_GET(_v_)		(((_v_) >> 6) & 0x3)
 #define XT_PS_CALLINC_MSK		(0x3 << 16)
 #define XT_PS_OWB_MSK			(0xF << 8)
+
+#define XT_INS_L32E(R,S,T) _XT_INS_FORMAT_RRI4(0x90000,0,R,S,T)
+#define XT_INS_S32E(R,S,T) _XT_INS_FORMAT_RRI4(0x490000,0,R,S,T)
+#define XT_INS_L32E_S32E_MASK   0xFF000F
+
+#define XT_INS_RFWO 0x3400
+#define XT_INS_RFWU 0x3500
+#define XT_INS_RFWO_RFWU_MASK	0xFFFFFF
 
 
 /* ESP32 memory map */
@@ -273,11 +292,6 @@ struct xtensa_algorithm {
 #define ESP32_RTC_DATA_LOW  0x50000000
 #define ESP32_RTC_DATA_HIGH 0x50002000
 
-/* ESP32 dport regs */
-#define ESP32_DR_REG_DPORT_BASE         0x3ff00000
-#define ESP32_DPORT_APPCPU_CTRL_B_REG   (ESP32_DR_REG_DPORT_BASE + 0x030)
-#define ESP32_DPORT_APPCPU_CLKGATE_EN	(1 << 0)
-
 typedef enum
 {
 	INVALID,
@@ -286,5 +300,27 @@ typedef enum
 } addr_type_t;
 
 addr_type_t esp108_get_addr_type(uint32_t address);
+
+#define ESP108_MAX_PERF_COUNTERS 2
+#define ESP108_MAX_PERF_SELECT 32
+#define ESP108_MAX_PERF_MASK 0xffff
+
+struct esp108_perfmon_config {
+	int select;
+	int mask;
+	int kernelcnt;
+	int tracelevel;
+};
+
+struct esp108_perfmon_result {
+	uint64_t value;
+	bool overflow;
+};
+
+int esp108_perfmon_enable(struct target* target,
+	int counter_id, const struct esp108_perfmon_config* config);
+
+int esp108_perfmon_dump(struct target* target,
+	int counter_id, struct esp108_perfmon_result* out_result);
 
 #endif // XTENSA_ESP108_COMMON_H

@@ -25,6 +25,8 @@
 #include "esp108_common.h"
 #include "esp108_dbg_regs.h"
 
+bool esp108_permissive_mode;
+
 //Convert a register index that's indexed relative to windowbase, to the real address.
 enum xtensa_reg_idx windowbase_offset_to_canonical(const enum xtensa_reg_idx reg, const int windowbase)
 {
@@ -192,31 +194,18 @@ int esp108_do_checkdsr(struct target *target, const char *function, const int li
 	return ERROR_OK;
 }
 
-unsigned int xtensa_read_dsr(struct target *target)
+int esp108_clear_dsr(struct target *target, uint32_t bits)
 {
-	uint8_t dsr[4];
-	int res;
-
-	esp108_queue_nexus_reg_write(target, NARADR_DCRSET, OCDDCR_ENABLEOCD);
-	esp108_queue_nexus_reg_read(target, NARADR_DSR, dsr);
+	esp108_queue_nexus_reg_write(target, NARADR_DSR, bits);
 	esp108_queue_tdi_idle(target);
-	res = jtag_execute_queue();
+	int res = jtag_execute_queue();
 	if (res != ERROR_OK)
 	{
-		LOG_ERROR("%s: Failed to read NARADR_DSR. Can't halt.", target->cmd_name);
-		return res;
-	}
-	uint32_t regval = intfromchars(dsr);
-	esp108_queue_nexus_reg_write(target, NARADR_DSR, regval);
-	esp108_queue_tdi_idle(target);
-	res = jtag_execute_queue();
-	if (res != ERROR_OK)
-	{
-		LOG_ERROR("%s: Failed to write NARADR_DSR. Can't halt.", target->cmd_name);
+		LOG_ERROR("%s: Failed to write NARADR_DSR bits 0x%08x (%d)!", target->cmd_name, bits, res);
 		return res;
 	}
 
-	return intfromchars(dsr);
+	return ERROR_OK;
 }
 
 int xtensa_get_core_reg(struct reg *reg)
@@ -251,20 +240,6 @@ int xtensa_examine(struct target *target)
 	return ERROR_OK;
 }
 
-uint32_t xtensa_read_reg_direct(struct target *target, uint8_t reg)
-{
-	uint32_t result = 0xdeadface;
-	uint8_t dsr[4];
-	//XT_REG_IDX_DEBUGCAUSE
-
-	esp108_queue_nexus_reg_read(target, reg, dsr);
-	esp108_queue_tdi_idle(target);
-	int res = jtag_execute_queue();
-	if (res != ERROR_OK) return result;
-	result = intfromchars(dsr);
-	return result;
-}
-
 int read_reg_direct(struct target *target, uint8_t addr)
 {
 	uint8_t dsr[4];
@@ -273,7 +248,6 @@ int read_reg_direct(struct target *target, uint8_t addr)
 	jtag_execute_queue();
 	return intfromchars(dsr);
 }
-
 
 int xtensa_write_uint32(struct target *target, uint32_t addr, uint32_t val)
 {
@@ -302,7 +276,6 @@ int xtensa_start_algorithm_generic(struct target *target,
 	void *arch_info, struct reg_cache *core_cache)
 {
 	struct xtensa_algorithm *algorithm_info = arch_info;
-	enum xtensa_mode core_mode;;
 	int retval = ERROR_OK;
 	int usr_ps = 0;
 
@@ -318,6 +291,8 @@ int xtensa_start_algorithm_generic(struct target *target,
 	for (unsigned i = 0; i < core_cache->num_regs; i++) {
 		algorithm_info->context[i] = esp108_reg_get(&core_cache->reg_list[i]);
 	}
+	/* save debug reason, it will be changed */
+	algorithm_info->ctx_debug_reason = target->debug_reason;
 	/* write mem params */
 	for (int i = 0; i < num_mem_params; i++) {
 		if (mem_params[i].direction != PARAM_IN) {
@@ -346,22 +321,19 @@ int xtensa_start_algorithm_generic(struct target *target,
 		esp108_reg_set(reg, buf_get_u32(reg_params[i].value, 0, 32));
 		reg->valid = 1;
 	}
-	uint32_t ps = esp108_reg_get(&core_cache->reg_list[XT_REG_IDX_PS]);
-	uint32_t new_ps = ps;
 	// ignore custom core mode if custom PS value is specified
 	if (!usr_ps) {
-		core_mode = XT_PS_RING_GET(ps);
+		uint32_t ps = esp108_reg_get(&core_cache->reg_list[XT_REG_IDX_PS]);
+		enum xtensa_mode core_mode = XT_PS_RING_GET(ps);
 		if (algorithm_info->core_mode != XT_MODE_ANY && algorithm_info->core_mode != core_mode) {
 			LOG_DEBUG("setting core_mode: 0x%x", algorithm_info->core_mode);
-			new_ps = (new_ps & ~XT_PS_RING_MSK) | XT_PS_RING(algorithm_info->core_mode);
+			uint32_t new_ps = (ps & ~XT_PS_RING_MSK) | XT_PS_RING(algorithm_info->core_mode);
 			/* save previous core mode */
 			algorithm_info->core_mode = core_mode;
+			esp108_reg_set(&core_cache->reg_list[XT_REG_IDX_PS], new_ps);
+			core_cache->reg_list[XT_REG_IDX_PS].valid = 1;
 		}
 	}
-	esp108_reg_set(&core_cache->reg_list[XT_REG_IDX_PS], new_ps);
-	core_cache->reg_list[XT_REG_IDX_PS].valid = 1;
-
-	retval = target_resume(target, 0, entry_point, 1, 1);
 
 	return retval;
 }
@@ -404,7 +376,7 @@ int xtensa_wait_algorithm_generic(struct target *target,
 	for (int i = 0; i < num_mem_params; i++) {
 		LOG_DEBUG("Check mem param @ 0x%x", mem_params[i].address);
 		if (mem_params[i].direction != PARAM_OUT) {
-			LOG_USER("Read mem param @ 0x%x", mem_params[i].address);
+			LOG_DEBUG("Read mem param @ 0x%x", mem_params[i].address);
 			retval = target_read_buffer(target, mem_params[i].address,
 					mem_params[i].size,
 					mem_params[i].value);
@@ -432,21 +404,23 @@ int xtensa_wait_algorithm_generic(struct target *target,
 	for (int i = core_cache->num_regs - 1; i >= 0; i--) {
 		uint32_t regvalue;
 		regvalue = esp108_reg_get(&core_cache->reg_list[i]);
-		// LOG_DEBUG("check register %s with value 0x%x -> 0x%8.8" PRIx32,
-		// 		core_cache->reg_list[i].name, regvalue, algorithm_info->context[i]);
 		if (i == XT_REG_IDX_DEBUGCAUSE) {
 			//FIXME: restoring DEBUGCAUSE causes exception when executing corresponding instruction in DIR
-			LOG_DEBUG("Skip restoring register %s with value 0x%x -> 0x%8.8" PRIx32,
+			LOG_DEBUG("Skip restoring register %s: 0x%x -> 0x%8.8" PRIx32,
 					core_cache->reg_list[i].name, regvalue, algorithm_info->context[i]);
+			esp108_reg_set(&core_cache->reg_list[XT_REG_IDX_DEBUGCAUSE], 0);
+			core_cache->reg_list[XT_REG_IDX_DEBUGCAUSE].dirty = 0;
+			core_cache->reg_list[XT_REG_IDX_DEBUGCAUSE].valid = 0;
 			continue;
 		}
 		if (regvalue != algorithm_info->context[i]) {
-			LOG_DEBUG("restoring register %s with value 0x%x -> 0x%8.8" PRIx32,
+			LOG_DEBUG("restoring register %s: 0x%x -> 0x%8.8" PRIx32,
 					core_cache->reg_list[i].name, regvalue, algorithm_info->context[i]);
 			esp108_reg_set(&core_cache->reg_list[i], algorithm_info->context[i]);
 			core_cache->reg_list[i].valid = 1;
 		}
 	}
+	target->debug_reason = algorithm_info->ctx_debug_reason;
 
 	return retval;
 }
@@ -677,3 +651,83 @@ inline uint32_t intfromchars(uint8_t *c)
 {
 	return c[0] + (c[1] << 8) + (c[2] << 16) + (c[3] << 24);
 }
+
+int esp108_perfmon_enable(struct target* target,
+	int counter_id, const struct esp108_perfmon_config* config)
+{
+	int res;
+	uint32_t pmg = 0x1; // enable performance monitor
+	esp108_queue_nexus_reg_write(target, NARADR_PMG, pmg);
+	uint32_t pmcnt = 0; // reset counter
+	esp108_queue_nexus_reg_write(target, NARADR_PM0 + counter_id, pmcnt);
+	uint32_t pmctrl = ((config->tracelevel) << 4) +
+		(config->select << 8) +
+		(config->mask << 16) +
+		(config->kernelcnt << 3);
+	esp108_queue_nexus_reg_write(target, NARADR_PMCTRL0 + counter_id, pmctrl);
+	uint8_t pmstat_u8[4];
+	esp108_queue_nexus_reg_read(target, NARADR_PMSTAT0 + counter_id, pmstat_u8);
+	esp108_queue_tdi_idle(target);
+	res = jtag_execute_queue();
+	if (res != ERROR_OK) {
+		LOG_ERROR("Failed to exec JTAG queue!");
+		return res;
+	}
+
+	return ERROR_OK;
+}
+
+int esp108_perfmon_dump(struct target* target,
+	int counter_id, struct esp108_perfmon_result* out_result)
+{
+	uint8_t pmstat[4];
+	uint8_t pmcount[4];
+	int res;
+
+	esp108_queue_nexus_reg_read(target, NARADR_PMSTAT0 + counter_id, pmstat);
+	esp108_queue_nexus_reg_read(target, NARADR_PM0 + counter_id, pmcount);
+	esp108_queue_tdi_idle(target);
+	res = jtag_execute_queue();
+	if (res != ERROR_OK) {
+		LOG_ERROR("Failed to exec JTAG queue!");
+		return res;
+	}
+
+	uint32_t stat = (uint32_t) intfromchars(pmstat);
+	uint64_t result = (uint64_t) intfromchars(pmcount);
+
+	// TODO: if counter # counter_id+1 has 'select' set to 1, use its value as the
+	// high 32 bits of the counter.
+
+	out_result->overflow = ((stat & 1) != 0);
+	out_result->value = result;
+
+	return ERROR_OK;
+}
+
+
+COMMAND_HANDLER(handle_set_esp108_permissive_mode)
+{
+	if (CMD_ARGC != 1) {
+		return ERROR_COMMAND_SYNTAX_ERROR;
+	}
+	bool is_one = strcmp(CMD_ARGV[0], "1") == 0;
+	if (!is_one && strcmp(CMD_ARGV[0], "0") != 0) {
+		return ERROR_COMMAND_SYNTAX_ERROR; // 0 or 1 only
+	}
+	esp108_permissive_mode = is_one;
+	return ERROR_OK;
+}
+
+const struct command_registration esp108_common_command_handlers[] = {
+	{
+		.name = "set_permissive",
+		.handler = handle_set_esp108_permissive_mode,
+		.mode = COMMAND_ANY,
+		.help = "When set to 1, enable ESP108 permissive mode (less client-side checks)",
+		.usage = "[0|1]",
+	},
+	COMMAND_REGISTRATION_DONE
+};
+
+

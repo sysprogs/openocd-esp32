@@ -263,6 +263,7 @@ int esp108_write_dirty_registers(struct target *target)
 	uint32_t regval, windowbase;
 	struct esp108_common *esp108=(struct esp108_common*)target->arch_info;
 	struct reg *reg_list=esp108->core_cache->reg_list;
+	bool scratch_reg_dirty = false;
 
 	LOG_DEBUG("%s: %s", target->cmd_name, __FUNCTION__);
 
@@ -270,7 +271,8 @@ int esp108_write_dirty_registers(struct target *target)
 	//Start by writing the SFR/user registers.
 	for (i=0; i<XT_NUM_REGS; i++) {
 		if (reg_list[i].dirty) {
-			if (esp108_regs[i].type==XT_REG_SPECIAL || esp108_regs[i].type==XT_REG_USER) {
+			if (esp108_regs[i].type==XT_REG_SPECIAL || esp108_regs[i].type==XT_REG_USER || esp108_regs[i].type==XT_REG_FR) {
+				scratch_reg_dirty = true;
 				regval=esp108_reg_get(&reg_list[i]);
 				LOG_DEBUG("%s: Writing back reg %s val %08X", target->cmd_name, esp108_regs[i].name, regval);
 				esp108_queue_nexus_reg_write(target, NARADR_DDR, regval);
@@ -285,6 +287,9 @@ int esp108_write_dirty_registers(struct target *target)
 				reg_list[i].dirty=0;
 			}
 		}
+	}
+	if (scratch_reg_dirty) {
+		esp108_mark_register_dirty(target, XT_REG_IDX_A3);
 	}
 
 	//Grab the windowbase, we need it.
@@ -322,7 +327,7 @@ int esp108_write_dirty_registers(struct target *target)
 				regval=esp108_reg_get(&reg_list[realadr]);
 				LOG_DEBUG("%s: Writing back reg %s value %08X", target->cmd_name, esp108_regs[realadr].name, regval);
 				esp108_queue_nexus_reg_write(target, NARADR_DDR, regval);
-				esp108_queue_exec_ins(target, XT_INS_RSR(XT_SR_DDR, esp108_regs[XT_REG_IDX_AR0+i+j].reg_num));
+				esp108_queue_exec_ins(target, XT_INS_RSR(XT_SR_DDR, esp108_regs[XT_REG_IDX_AR0+i].reg_num));
 				reg_list[realadr].dirty=0;
 			}
 		}
@@ -443,7 +448,7 @@ static int xtensa_read_memory(struct target *target,
 	int res;
 	uint8_t *albuff;
 
-	if (esp108_get_addr_type(address) == INVALID) {
+	if (esp108_get_addr_type(address) == INVALID && !esp108_permissive_mode) {
 		LOG_DEBUG("%s: address 0x%08x not readable", __func__, address);
 		return ERROR_FAIL;
 	}
@@ -517,7 +522,7 @@ static int xtensa_write_memory(struct target *target,
 	int res;
 	uint8_t *albuff;
 
-	if (esp108_get_addr_type(address) != READWRITE) {
+	if (esp108_get_addr_type(address) != READWRITE && !esp108_permissive_mode) {
 		LOG_DEBUG("%s: address 0x%08x not writable", __func__, address);
 		return ERROR_FAIL;
 	}
@@ -1096,8 +1101,13 @@ static int xtensa_start_algorithm(struct target *target,
 {
 	struct esp108_common *esp108 = (struct esp108_common*)target->arch_info;
 
-	return xtensa_start_algorithm_generic(target, num_mem_params, mem_params, num_reg_params,
+	int retval = xtensa_start_algorithm_generic(target, num_mem_params, mem_params, num_reg_params,
 		reg_params, entry_point, exit_point, arch_info, esp108->core_cache);
+	if (retval != ERROR_OK) {
+		return retval;
+	}
+
+	return target_resume(target, 0, entry_point, 1, 1);
 }
 
 /** Waits for an algorithm in the target. */
@@ -1444,6 +1454,8 @@ static const struct command_registration esp108_any_command_handlers[] = {
 	COMMAND_REGISTRATION_DONE
 };
 
+extern const struct command_registration esp108_common_command_handlers[];
+
 static const struct command_registration esp108_command_handlers[] = {
 	{
 		.name = "esp108",
@@ -1451,6 +1463,9 @@ static const struct command_registration esp108_command_handlers[] = {
 		.help = "ESP108 command group",
 		.usage = "",
 		.chain = esp108_any_command_handlers,
+	},
+	{
+		.chain = esp108_common_command_handlers,
 	},
 	COMMAND_REGISTRATION_DONE
 };
