@@ -1,12 +1,13 @@
 stages:
   - build
+  - test
   - deploy
 
 before_script:
   # add gitlab ssh key (on Linux only)
   - >
     test $(uname -s) != "Darwin" &&
-    echo "Setting up Gitlab SSH key"
+    echo "Setting up Gitlab SSH key" &&
     mkdir -p ~/.ssh &&
     chmod 700 ~/.ssh &&
     echo -n $GITLAB_KEY > ~/.ssh/id_rsa_base64 &&
@@ -85,10 +86,10 @@ build_windows:
     - ./bootstrap
     - export LIBUSB1_CFLAGS=-I$PWD/$LIBUSB_VER/dist/include/libusb-1.0
     - export LIBUSB1_LIBS=-L$PWD/$LIBUSB_VER/dist/lib
-    - export LDFLAGS=-static
     - ./configure --prefix=$PWD/openocd-esp32 --host=i686-w64-mingw32 $OPENOCD_CONFIGURE_OPTS
     - make -j `nproc`
     - make install-strip
+    - cp /usr/i686-w64-mingw32/lib/libwinpthread-1.dll openocd-esp32/bin/
     - export REL_NAME=openocd-esp32-win32-`git describe --always`
     - zip -r $REL_NAME.zip openocd-esp32/
     - mkdir -p dist
@@ -140,3 +141,59 @@ push_master_to_github:
     - git remote add github git@github.com:espressif/openocd-esp32.git
     - git push github HEAD:master
 
+build_test_app:
+  stage: build
+  image: $CI_DOCKER_REGISTRY/esp32-ci-env
+  tags:
+    - build
+
+  artifacts:
+    paths:
+      - testing/esp/test_apps/gen_ut_app/output/default/gen_ut_app.elf
+      - testing/esp/test_apps/gen_ut_app/output/default/gen_ut_app.bin
+      - testing/esp/test_apps/gen_ut_app/output/default/partitions_singleapp.bin
+      - testing/esp/test_apps/gen_ut_app/output/default/bootloader/bootloader.bin
+      - testing/esp/test_apps/gen_ut_app/output/single_core/gen_ut_app.elf
+      - testing/esp/test_apps/gen_ut_app/output/single_core/gen_ut_app.bin
+      - testing/esp/test_apps/gen_ut_app/output/single_core/partitions_singleapp.bin
+      - testing/esp/test_apps/gen_ut_app/output/single_core/bootloader/bootloader.bin
+    expire_in: 2 weeks
+
+  script:
+      # Prepare ESP-IDF
+      - rm -rf esp-idf
+      - git clone $GITLAB_SSH_SERVER/idf/esp-idf.git
+      - pushd esp-idf
+      - tools/ci/mirror-submodule-update.sh
+      - export IDF_PATH=$PWD
+      - popd
+      # Build generic test app
+      - pushd testing/esp/test_apps/gen_ut_app
+      - make ut-apply-config-default
+      - make V=1 ut-build-default
+      - make ut-apply-config-single_core
+      - make V=1 ut-build-single_core
+      - popd
+
+run_autotests:
+  stage: test
+  image: $CI_DOCKER_REGISTRY/esp32-ci-env
+  tags:
+    - test_jtag
+
+  artifacts:
+    paths:
+      - testing/esp/debug_backend_tests.log
+    when: always
+    expire_in: 1 week
+
+  script:
+      # Run tests
+      - mkdir -p dist/tmp
+      - pushd dist/tmp
+      - tar xzvf ../openocd-esp32-linux64-*.tar.gz
+      - export DIST_DIR=$PWD/openocd-esp32
+      - popd
+      - pushd testing/esp
+      - ./run_tests.py -o $DIST_DIR/bin/openocd -s $DIST_DIR/share/openocd/scripts -a $PWD/test_apps -d 4 -l ./debug_backend_tests.log
+      - popd
