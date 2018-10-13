@@ -2181,7 +2181,7 @@ int esp_cmd_apptrace_generic(struct target *target, int mode, const char **argv,
 				return res;
 			}
 		}
-		res = esp_apptrace_connect_targets(&s_at_cmd_ctx, true, true);
+		res = esp_apptrace_connect_targets(&s_at_cmd_ctx, true, old_state == TARGET_RUNNING);
 		if (res != ERROR_OK) {
 			LOG_ERROR("Failed to connect to targets (%d)!", res);
 			s_at_cmd_ctx.running = 0;
