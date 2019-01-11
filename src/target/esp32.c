@@ -140,6 +140,8 @@ static int xtensa_do_step(struct target *target,
 static int xtensa_poll(struct target *target);
 static int xtensa_assert_reset(struct target *target);
 static int xtensa_deassert_reset(struct target *target);
+static int xtensa_smpbreak_set(struct target *target);
+static int xtensa_smpbreak_set_core(struct target *target, int core);
 static int xtensa_read_memory(struct target *target,
 	uint32_t address,
 	uint32_t size,
@@ -850,22 +852,30 @@ static int xtensa_assert_reset(struct target *target)
 
 static int xtensa_smpbreak_set(struct target *target)
 {
+	int res = ERROR_OK;
+	for (int core = 0; core < ESP32_CPU_COUNT && res == ERROR_OK; core++)
+	{
+		res = xtensa_smpbreak_set_core(target, core);
+	}
+	return res;
+}
+
+static int xtensa_smpbreak_set_core(struct target *target, int core)
+{
 	struct esp32_common *esp32 = (struct esp32_common*)target->arch_info;
 	int res;
 	uint32_t dsr_data = 0x00110000;
 	uint32_t set = 0, clear = 0;
-	set |= OCDDCR_BREAKINEN | OCDDCR_BREAKOUTEN | OCDDCR_RUNSTALLINEN;
+	set |= OCDDCR_BREAKINEN | OCDDCR_BREAKOUTEN | OCDDCR_RUNSTALLINEN | OCDDCR_ENABLEOCD;
 	clear = set ^ (OCDDCR_BREAKINEN | OCDDCR_BREAKOUTEN | OCDDCR_RUNSTALLINEN | OCDDCR_DEBUGMODEOUTEN);
 
-	for (int core = 0; core < ESP32_CPU_COUNT; core++)
-	{
-		esp108_queue_nexus_reg_write(esp32->esp32_targets[core], NARADR_DCRSET, set);
-		esp108_queue_nexus_reg_write(esp32->esp32_targets[core], NARADR_DCRCLR, clear);
-		esp108_queue_nexus_reg_write(esp32->esp32_targets[core], NARADR_DSR, dsr_data);
-		esp108_queue_tdi_idle(esp32->esp32_targets[core]);
-	}
+	esp108_queue_nexus_reg_write(esp32->esp32_targets[core], NARADR_DCRSET, set);
+	esp108_queue_nexus_reg_write(esp32->esp32_targets[core], NARADR_DCRCLR, clear);
+	esp108_queue_nexus_reg_write(esp32->esp32_targets[core], NARADR_DSR, dsr_data);
+	esp108_queue_tdi_idle(esp32->esp32_targets[core]);
 	res = jtag_execute_queue();
-	LOG_DEBUG("%s[%s] set smpbreak=%i, state=%i", __func__, target->cmd_name, set, target->state);
+
+	LOG_DEBUG("%s[%s] core %d, set smpbreak=%x, state=%i", __func__, target->cmd_name, core, set, target->state);
 	return res;
 }
 
@@ -963,7 +973,7 @@ static struct esp32_sw_breakpoint * esp32_add_sw_breakpoint(struct target *targe
 
 	int ret = target_read_buffer(target, breakpoint->address, 3, break_insn.d8);
 	if (ret != ERROR_OK) {
-		LOG_ERROR("%s: Faied to read insn (%d)!", target->cmd_name, ret);
+		LOG_ERROR("%s: Failed to read insn (%d)!", target->cmd_name, ret);
 		return NULL;
 	}
 	struct esp32_sw_breakpoint *sw_bp = malloc(sizeof(struct esp32_flash_sw_breakpoint));
@@ -979,7 +989,7 @@ static struct esp32_sw_breakpoint * esp32_add_sw_breakpoint(struct target *targe
 
 	ret = target_write_buffer(target, breakpoint->address, sw_bp->insn_sz, break_insn.d8);
 	if (ret != ERROR_OK) {
-		LOG_ERROR("%s: Faied to read insn (%d)!", target->cmd_name, ret);
+		LOG_ERROR("%s: Failed to read insn (%d)!", target->cmd_name, ret);
 		free(sw_bp);
 		return NULL;
 	}
@@ -991,7 +1001,7 @@ static int esp32_remove_sw_breakpoint(struct target *target, struct esp32_sw_bre
 {
 	int ret = target_write_buffer(target, breakpoint->oocd_bp->address, breakpoint->insn_sz, breakpoint->insn);
 	if (ret != ERROR_OK) {
-		LOG_ERROR("%s: Faied to read insn (%d)!", target->cmd_name, ret);
+		LOG_ERROR("%s: Failed to read insn (%d)!", target->cmd_name, ret);
 		return ret;
 	}
 	free(breakpoint);
@@ -1014,7 +1024,7 @@ static int xtensa_add_breakpoint(struct target *target, struct breakpoint *break
 		}
 		esp32->sw_brps[slot] = esp32_add_sw_breakpoint(target, breakpoint);
 		if (esp32->sw_brps[slot] == NULL) {
-			LOG_ERROR("%s: Faied to add SW BP!", target->cmd_name);
+			LOG_ERROR("%s: Failed to add SW BP!", target->cmd_name);
 			return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
 		}
 		LOG_DEBUG("%s: placed SW breakpoint %d at 0x%X", target->cmd_name, (int)slot, breakpoint->address);
@@ -1436,6 +1446,7 @@ static int xtensa_target_create(struct target *target, Jim_Interp *interp)
 	esp32->hw_wps = calloc(XT_NUM_WATCHPOINTS, sizeof(struct watchpoint *));
 	esp32->flash_sw_brps = calloc(ESP32_FLASH_SW_BREAKPOINTS_MAX_NUM, sizeof(struct esp32_flash_sw_breakpoint *));
 	esp32->sw_brps = calloc(ESP32_SW_BREAKPOINTS_MAX_NUM, sizeof(struct esp32_sw_breakpoint	*));
+	esp32->appimage_flash_base = (uint32_t)-1;
 
 	//Create the register cache
 	cache->name = "Xtensa registers";
@@ -1566,26 +1577,57 @@ static int xtensa_poll(struct target *target)
 	int res, cmd;
 	uint8_t traxstat[ESP32_CPU_COUNT][4] = {{0}}, traxctl[ESP32_CPU_COUNT][4] = {{0}};
 	unsigned int dsr[ESP32_CPU_COUNT] = {0};
+	uint32_t idcode[ESP32_CPU_COUNT] = {0};
 
 	//Read reset state
+	uint32_t core_poweron_mask = 0;
 	for (size_t i = 0; i < ESP32_CPU_COUNT; i++)
 	{
+		esp108_queue_idcode_read(esp32->esp32_targets[i], (uint8_t*) &idcode[i]);
 		esp108_queue_pwrstat_readclear(esp32->esp32_targets[i], &pwrstat[i]);
 		//Read again, to see if the state holds...
 		esp108_queue_pwrstat_readclear(esp32->esp32_targets[i], &pwrstath[i]);
 		esp108_queue_tdi_idle(esp32->esp32_targets[i]);
 		res = jtag_execute_queue();
 		if (res != ERROR_OK) return res;
+		if (idcode[i] != 0xffffffff && idcode[i] != 0) {
+			core_poweron_mask |= (1 << i);
+		}
 	}
-	if (!(esp32->prevpwrstat&PWRSTAT_DEBUGWASRESET) && pwrstat[ESP32_PRO_CPU_ID] & PWRSTAT_DEBUGWASRESET) {
-		LOG_INFO("%s: Debug controller was reset (pwrstat=0x%02X, after clear 0x%02X).", target->cmd_name, pwrstat[ESP32_PRO_CPU_ID], pwrstath[ESP32_PRO_CPU_ID]);
+
+	// Target might be held in reset by external signal.
+	// Sanity check target responses using idcode (checking CPU0 is sufficient).
+	if (core_poweron_mask == 0) {
+		if (target->state != TARGET_UNKNOWN) {
+			LOG_INFO("%s: Target offline", __func__);
+			target->state = TARGET_UNKNOWN;
+		}
+		memset(esp32->prevpwrstat, 0, sizeof(esp32->prevpwrstat));
+		esp32->core_poweron_mask = 0;
+		return ERROR_TARGET_FAILURE;
 	}
-	if (!(esp32->prevpwrstat&PWRSTAT_COREWASRESET) && pwrstat[ESP32_PRO_CPU_ID] & PWRSTAT_COREWASRESET) {
-		LOG_INFO("%s: Core was reset (pwrstat=0x%02X, after clear 0x%02X).", target->cmd_name, pwrstat[ESP32_PRO_CPU_ID], pwrstath[ESP32_PRO_CPU_ID]);
-		esp32->cores_num = 0; // unknown
-		memset(&esp32->dbg_stubs, 0, sizeof(struct esp32_dbg_stubs));
+	uint32_t cores_came_online = core_poweron_mask & (~esp32->core_poweron_mask);
+	esp32->core_poweron_mask = core_poweron_mask;
+	if (cores_came_online != 0) {
+		LOG_DEBUG("%s: core_poweron_mask=%x", __func__, core_poweron_mask);
 	}
-	esp32->prevpwrstat = pwrstath[ESP32_PRO_CPU_ID];
+
+	for (size_t i = 0; i < ESP32_CPU_COUNT; i++)
+	{
+		if (!(esp32->prevpwrstat[i]&PWRSTAT_DEBUGWASRESET) && pwrstat[i] & PWRSTAT_DEBUGWASRESET) {
+			LOG_INFO("%s: Debug controller %d was reset (pwrstat=0x%02X, after clear 0x%02X).", target->cmd_name, (int)i, pwrstat[i], pwrstath[i]);
+			esp32->core_poweron_mask &= ~(1 << i);
+			//esp32->core_poweron_mask = 0;
+		}
+		if (!(esp32->prevpwrstat[i]&PWRSTAT_COREWASRESET) && pwrstat[i] & PWRSTAT_COREWASRESET) {
+			LOG_INFO("%s: Core %d was reset (pwrstat=0x%02X, after clear 0x%02X).", target->cmd_name, (int)i, pwrstat[i], pwrstath[i]);
+			if (esp32->cores_num > 0) {
+				esp32->cores_num = 0; // unknown
+				memset(&esp32->dbg_stubs, 0, sizeof(struct esp32_dbg_stubs));
+			}
+		}
+		esp32->prevpwrstat[i] = pwrstath[i];
+	}
 
 	//Enable JTAG, set reset if needed
 	cmd=PWRCTL_DEBUGWAKEUP|PWRCTL_MEMWAKEUP|PWRCTL_COREWAKEUP;
@@ -1604,6 +1646,11 @@ static int xtensa_poll(struct target *target)
 
 	for (size_t i = 0; i < ESP32_CPU_COUNT; i++)
 	{
+		if (cores_came_online & (1 << i)) {
+			LOG_DEBUG("%s: Core %d came online, setting up DCR", __func__, (int) i);
+			xtensa_smpbreak_set_core(target, i);
+		}
+
 		uint8_t dsr_buf[4] = {0};
 		esp108_queue_nexus_reg_write(esp32->esp32_targets[i], NARADR_DCRSET, OCDDCR_ENABLEOCD);
 		esp108_queue_nexus_reg_read(esp32->esp32_targets[i], NARADR_DSR, dsr_buf);
@@ -1624,7 +1671,9 @@ static int xtensa_poll(struct target *target)
 		bool algo_stopped = false;
 		if (target->state == TARGET_DEBUG_RUNNING) {
 			if (cores_num == ESP32_CPU_COUNT) {
-				algo_stopped = (dsr[0] & OCDDSR_STOPPED) && (dsr[1] & OCDDSR_STOPPED);
+				/* algo can be run on any CPU while other one can be stalled by SW run on target, in this case OCDDSR_STOPPED will not be set for other CPU;
+				 situation when target is in TARGET_DEBUG_RUNNING and both CPUs are stalled is impossible (one must run algo). */
+				algo_stopped = (dsr[0] & (OCDDSR_STOPPED|OCDDSR_RUNSTALLSAMPLE)) && (dsr[1] & (OCDDSR_STOPPED|OCDDSR_RUNSTALLSAMPLE));
 			} else {
 				algo_stopped = (dsr[0] & OCDDSR_STOPPED);
 			}
@@ -1733,6 +1782,38 @@ static int xtensa_poll(struct target *target)
 	return ERROR_OK;
 }
 
+int xtensa_esp32_examine(struct target *target)
+{
+	struct esp32_common *esp32=(struct esp32_common*)target->arch_info;
+	int res, cmd;
+	uint32_t idcode[ESP32_CPU_COUNT] = {0}, dsr[ESP32_CPU_COUNT] = {0};
+
+	cmd = PWRCTL_DEBUGWAKEUP | PWRCTL_MEMWAKEUP | PWRCTL_COREWAKEUP;
+	for (size_t i = 0; i < ESP32_CPU_COUNT; i++)
+	{
+		esp108_queue_pwrctl_set(esp32->esp32_targets[i], cmd);
+		esp108_queue_pwrctl_set(esp32->esp32_targets[i], cmd | PWRCTL_JTAGDEBUGUSE);
+		esp108_queue_nexus_reg_write(esp32->esp32_targets[i], NARADR_DCRSET, OCDDCR_ENABLEOCD);
+		esp108_queue_nexus_reg_read(esp32->esp32_targets[i], NARADR_DSR, (uint8_t*) &dsr[i]);
+		esp108_queue_idcode_read(esp32->esp32_targets[i], (uint8_t*) &idcode[i]);
+		esp108_queue_tdi_idle(esp32->esp32_targets[i]);
+		res = jtag_execute_queue();
+		if (res != ERROR_OK) {
+			return res;
+		}
+	}
+	if (idcode[0] == 0xffffffff || idcode[0] == 0) {
+		LOG_DEBUG("%s: Target idcode=%08x", __func__, idcode[0]);
+		return ERROR_TARGET_FAILURE;
+	}
+
+
+	if (!target_was_examined(target)) {
+		target_set_examined(target);
+	}
+	return ERROR_OK;
+}
+
 static int xtensa_arch_state(struct target *target)
 {
 	LOG_DEBUG("%s", __func__);
@@ -1800,7 +1881,7 @@ static int esp32_dbgstubs_update_info(struct target *target)
 		}
 	}
 	if (esp32->dbg_stubs.entries_count < (ESP32_DBG_STUB_ENTRY_MAX-ESP32_DBG_STUB_TABLE_START)) {
-		LOG_INFO("Not full dbg stub table %d of %d", esp32->dbg_stubs.entries_count, (ESP32_DBG_STUB_ENTRY_MAX-ESP32_DBG_STUB_TABLE_START));
+		LOG_DEBUG("Not full dbg stub table %d of %d", esp32->dbg_stubs.entries_count, (ESP32_DBG_STUB_ENTRY_MAX-ESP32_DBG_STUB_TABLE_START));
 		esp32->dbg_stubs.entries_count = 0;
 		return ERROR_OK;
 	}
@@ -1860,7 +1941,7 @@ static int esp32_stub_load(struct target *target, struct esp32_algo_image *algo_
 
 	if (algo_image) {
 		//TODO: add description of how to build proper ELF image to to be loaded to workspace
-		LOG_DEBUG("stub: base 0x%x, start 0x%x, %d sections", (unsigned)algo_image->image.base_address, algo_image->image.start_address, algo_image->image.num_sections);
+		LOG_DEBUG("stub: base 0x%x, start 0x%x, %d sections", algo_image->image.base_address_set ? (unsigned) algo_image->image.base_address : 0, algo_image->image.start_address, algo_image->image.num_sections);
 		stub->entry = algo_image->image.start_address;
 		for (int i = 0; i < algo_image->image.num_sections; i++) {
 			struct imagesection *section = &algo_image->image.sections[i];
@@ -2134,7 +2215,7 @@ static int esp32_algo_run(struct target *target, struct esp32_algo_image *image,
 			run->priv.stub.tramp_addr, 0,
 			&run->priv.stub.ainfo);
 	if (retval != ERROR_OK) {
-		LOG_ERROR("Faied to start algorithm (%d)!", retval);
+		LOG_ERROR("Failed to start algorithm (%d)!", retval);
 		goto _cleanup;
 	}
 
@@ -2154,9 +2235,8 @@ static int esp32_algo_run(struct target *target, struct esp32_algo_image *image,
 			0, run->tmo ? run->tmo : ESP32_ALGORITHM_EXIT_TMO,
 			&run->priv.stub.ainfo);
 	if (retval != ERROR_OK) {
-		LOG_ERROR("Faied to wait algorithm (%d)!", retval);
-		target_halt(target);
-		target_wait_state(target, TARGET_HALTED, ESP32_TARGET_STATE_TMO);
+		LOG_ERROR("Failed to wait algorithm (%d)!", retval);
+		// target has been forced to stop in target_wait_algorithm()
 	}
 #if ESP32_STUB_STACK_DEBUG
 	retval = esp32_stub_check_stack(target, run->priv.stub.stack_addr - run->stack_size, run->stack_size, ESP32_STUB_STACK_DEBUG);
@@ -2281,7 +2361,7 @@ static int esp32_run_do(struct target *target, struct esp32_algo_run_data *run, 
 
 	int retval = run->algo_func(target, run, algo_arg);
 	if (retval != ERROR_OK) {
-		LOG_ERROR("Algorithm run faied (%d)!", retval);
+		LOG_ERROR("Algorithm run failed (%d)!", retval);
 	} else {
 		run->ret_code = buf_get_u32(run->priv.stub.reg_params[ESP32_STUB_ARGS_FUNC_START+0].value, 0, 32);
 		LOG_DEBUG("Got algorithm RC %x", run->ret_code);
@@ -2684,7 +2764,7 @@ COMMAND_HANDLER(handle_perfmon_dump)
 	struct target* target = get_current_target(CMD_CTX);
 	struct esp32_common *esp32=(struct esp32_common*)target->arch_info;
 	int res;
-	
+
 	if (CMD_ARGC > 1) {
 		return ERROR_COMMAND_SYNTAX_ERROR;
 	}
@@ -2758,7 +2838,6 @@ COMMAND_HANDLER(handle_esp32_a_mask_interrupts_command)
 
 	return ERROR_OK;
 }
-
 
 static const struct command_registration esp32_any_command_handlers[] = {
 	{
@@ -2912,7 +2991,7 @@ struct target_type esp32_target = {
 
 	.target_create = xtensa_target_create,
 	.init_target = xtensa_init_target,
-	.examine = xtensa_examine,
+	.examine = xtensa_esp32_examine,
 
 	.commands = esp32_command_handlers,
 

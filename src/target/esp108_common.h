@@ -69,7 +69,6 @@ enum FlashBootstrap {
 #define ESP108_COMMON_FIELDS	enum xtensa_state state;\
 	struct reg_cache *core_cache;\
 	struct target *target;\
-	uint8_t prevpwrstat;\
 	int resetAsserted;\
 	int traceActive;\
 	/* Number of breakpoints available */\
@@ -83,6 +82,7 @@ enum FlashBootstrap {
 struct esp108_common {
 	//	struct jtag_tap *tap;
 	ESP108_COMMON_FIELDS;
+	uint8_t prevpwrstat;
 };
 
 /* Only supported in cores with in-CPU MMU. None of Espressif chips as of now. */
@@ -106,6 +106,7 @@ void esp108_queue_nexus_reg_read(struct target *target, const uint8_t reg, uint8
 void esp108_queue_pwrctl_set(struct target *target, uint8_t value);
 void esp108_queue_pwrstat_readclear(struct target *target, uint8_t *value);
 void esp108_queue_exec_ins(struct target *target, int32_t ins);
+void esp108_queue_idcode_read(struct target *target, uint8_t* value);
 uint32_t esp108_reg_get(struct reg *reg);
 void esp108_reg_set(struct reg *reg, uint32_t value);
 int esp108_do_checkdsr(struct target *target, const char *function, const int line);
