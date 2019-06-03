@@ -1,6 +1,6 @@
 add_library(openrisc openrisc/or1k.c openrisc/or1k_du_adv.c openrisc/or1k_tap_mohor.c openrisc/or1k_tap_vjtag.c openrisc/or1k_tap_xilinx_bscan.c openrisc/jsp_server.c)
 
-add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/xscale_debug.inc COMMAND run-sh ARGS -c "${CMAKE_CURRENT_SOURCE_DIR}/../helper/bin2char.sh < ${CMAKE_CURRENT_SOURCE_DIR}/xscale/debug_handler.bin > ${CMAKE_CURRENT_BINARY_DIR}/xscale_debug.inc" MAIN_DEPENDENCY xscale/debug_handler.bin)
+#add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/xscale_debug.inc COMMAND run-sh ARGS -c "${CMAKE_CURRENT_SOURCE_DIR}/../helper/bin2char.sh < ${CMAKE_CURRENT_SOURCE_DIR}/xscale/debug_handler.bin > ${CMAKE_CURRENT_BINARY_DIR}/xscale_debug.inc" MAIN_DEPENDENCY xscale/debug_handler.bin)
 
 add_library(target
 	adi_v5_jtag.c
@@ -77,10 +77,28 @@ add_library(target
 	trace.c
 	x86_32_common.c
 	xscale.c
-	${CMAKE_CURRENT_BINARY_DIR}/xscale_debug.inc
 	esp108_common.c
 	esp32.c
-	esp108_apptrace.c)
+	esp108_apptrace.c
+	arm_cti.c
+	arm_dap.c
+	armv7a_mmu.c
+	armv8.c
+	armv8_cache.c
+	armv8_dpm.c
+	armv8_opcodes.c
+	esirisc.c
+	esirisc_jtag.c
+	esirisc_trace.c
+	mem_ap.c
+	semihosting_common.c
+	stm8.c
+	riscv/batch.c
+	riscv/program.c
+	riscv/riscv.c
+	riscv/riscv_semihosting.c
+	riscv/riscv-011.c
+	riscv/riscv-013.c)
 target_include_directories(target PRIVATE ../..)
 	
 SET_TARGET_PROPERTIES(target PROPERTIES COMPILE_FLAGS -I${CMAKE_CURRENT_BINARY_DIR})

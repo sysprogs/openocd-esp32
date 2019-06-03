@@ -1,4 +1,4 @@
-add_library(ocdflashnor 
+add_library(ocdflashnor
 	aduc702x.c
 	aducm360.c
 	ambiqmicro.c
@@ -7,39 +7,50 @@ add_library(ocdflashnor
 	at91sam4l.c
 	at91sam7.c
 	at91samd.c
+	ath79.c
 	atsamv.c
 	avrf.c
+	bluenrg-x.c
+	cc26xx.c
+	cc3220sf.c
 	cfi.c
 	core.c
 	drivers.c
 	dsp5680xx_flash.c
 	efm32.c
 	em357.c
+	esirisc_flash.c
 	esp32.c
 	faux.c
+	fespi.c
 	fm3.c
 	fm4.c
 	jtagspi.c
 	kinetis.c
 	kinetis_ke.c
-	lpc2000.c
 	lpc288x.c
+	lpc2000.c
 	lpc2900.c
 	lpcspifi.c
+	max32xxx.c
 	mdr.c
 	mrvlqspi.c
+	msp432.c
 	niietcm4.c
 	non_cfi.c
-	nrf51.c
+	nrf5.c
 	numicro.c
 	ocl.c
 	pic32mx.c
 	psoc4.c
+	psoc5lp.c
+	psoc6.c
 	sim3x.c
 	spi.c
 	stellaris.c
 	stm32f1x.c
 	stm32f2x.c
+	stm32h7x.c
 	stm32l4x.c
 	stm32lx.c
 	stmsmi.c
@@ -49,6 +60,8 @@ add_library(ocdflashnor
 	tcl.c
 	tms470.c
 	virtual.c
+	w600.c
+	xcf.c
 	xmc1xxx.c
 	xmc4xxx.c)
 
