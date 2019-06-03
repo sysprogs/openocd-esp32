@@ -242,7 +242,8 @@ static int icdi_send_remote_cmd(void *handle, const char *data)
 	struct icdi_usb_handle_s *h = handle;
 
 	size_t cmd_len = sprintf(h->write_buffer, PACKET_START "qRcmd,");
-	cmd_len += hexify(h->write_buffer + cmd_len, data, 0, h->max_packet - cmd_len);
+	cmd_len += hexify(h->write_buffer + cmd_len, (const uint8_t *)data,
+		strlen(data), h->max_packet - cmd_len);
 
 	return icdi_send_packet(handle, cmd_len);
 }
@@ -266,7 +267,7 @@ static int icdi_get_cmd_result(void *handle)
 
 	if (h->read_buffer[offset] == 'E') {
 		/* get error code */
-		char result;
+		uint8_t result;
 		if (unhexify(&result, h->read_buffer + offset + 1, 1) != 1)
 			return ERROR_FAIL;
 		return result;
@@ -328,7 +329,7 @@ static int icdi_usb_version(void *handle)
 	}
 
 	/* convert reply */
-	if (unhexify(version, h->read_buffer + 2, 4) != 4) {
+	if (unhexify((uint8_t *)version, h->read_buffer + 2, 4) != 4) {
 		LOG_WARNING("unable to get ICDI version");
 		return ERROR_OK;
 	}
@@ -495,7 +496,7 @@ static int icdi_usb_read_reg(void *handle, int num, uint32_t *val)
 
 	/* convert result */
 	uint8_t buf[4];
-	if (unhexify((char *)buf, h->read_buffer + 2, 4) != 4) {
+	if (unhexify(buf, h->read_buffer + 2, 4) != 4) {
 		LOG_ERROR("failed to convert result");
 		return ERROR_FAIL;
 	}
@@ -512,7 +513,7 @@ static int icdi_usb_write_reg(void *handle, int num, uint32_t val)
 	h_u32_to_le(buf, val);
 
 	int cmd_len = snprintf(cmd, sizeof(cmd), "P%x=", num);
-	hexify(cmd + cmd_len, (const char *)buf, 4, sizeof(cmd));
+	hexify(cmd + cmd_len, buf, 4, sizeof(cmd));
 
 	result = icdi_send_cmd(handle, cmd);
 	if (result != ERROR_OK)
@@ -687,14 +688,18 @@ static int icdi_usb_open(struct hl_interface_param_s *param, void **fd)
 	}
 
 	LOG_DEBUG("transport: %d vid: 0x%04x pid: 0x%04x", param->transport,
-		param->vid, param->pid);
+		  param->vid[0], param->pid[0]);
+
+	/* TODO: convert libusb_ calls to jtag_libusb_ */
+	if (param->vid[1])
+		LOG_WARNING("Bad configuration: 'hla_vid_pid' command does not accept more than one VID PID pair on ti-icdi!");
 
 	if (libusb_init(&h->usb_ctx) != 0) {
 		LOG_ERROR("libusb init failed");
 		goto error_open;
 	}
 
-	h->usb_dev = libusb_open_device_with_vid_pid(h->usb_ctx, param->vid, param->pid);
+	h->usb_dev = libusb_open_device_with_vid_pid(h->usb_ctx, param->vid[0], param->pid[0]);
 	if (!h->usb_dev) {
 		LOG_ERROR("open failed");
 		goto error_open;

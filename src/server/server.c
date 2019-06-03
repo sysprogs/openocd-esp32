@@ -46,9 +46,13 @@
 
 static struct service *services;
 
-/* shutdown_openocd == 1: exit the main event loop, and quit the
- * debugger; 2: quit with non-zero return code */
-int shutdown_openocd;
+enum shutdown_reason {
+	CONTINUE_MAIN_LOOP,			/* stay in main event loop */
+	SHUTDOWN_REQUESTED,			/* set by shutdown command; exit the event loop and quit the debugger */
+	SHUTDOWN_WITH_ERROR_CODE,	/* set by shutdown command; quit with non-zero return code */
+	SHUTDOWN_WITH_SIGNAL_CODE	/* set by sig_handler; exec shutdown then exit with signal as return code */
+};
+enum shutdown_reason shutdown_openocd = CONTINUE_MAIN_LOOP;
 
 /* store received signal to exit application by killing ourselves */
 static int last_signal;
@@ -132,7 +136,9 @@ static int add_connection(struct service *service, struct command_context *cmd_c
 		free(out_file);
 		if (c->fd_out == -1) {
 			LOG_ERROR("could not open %s", service->port);
-			exit(1);
+			command_done(c->cmd_ctx);
+			free(c);
+			return ERROR_FAIL;
 		}
 
 		LOG_INFO("accepting '%s' connection from pipe %s", service->name, service->port);
@@ -191,7 +197,13 @@ static int remove_connection(struct service *service, struct connection *connect
 	return ERROR_OK;
 }
 
-/* FIX! make service return error instead of invoking exit() */
+static void free_service(struct service *c)
+{
+	free(c->name);
+	free(c->port);
+	free(c);
+}
+
 int add_service(char *name,
 	const char *port,
 	int max_connections,
@@ -235,7 +247,8 @@ int add_service(char *name,
 		c->fd = socket(AF_INET, SOCK_STREAM, 0);
 		if (c->fd == -1) {
 			LOG_ERROR("error creating socket: %s", strerror(errno));
-			exit(-1);
+			free_service(c);
+			return ERROR_FAIL;
 		}
 
 		setsockopt(c->fd,
@@ -250,20 +263,24 @@ int add_service(char *name,
 		c->sin.sin_family = AF_INET;
 
 		if (bindto_name == NULL)
-			c->sin.sin_addr.s_addr = INADDR_ANY;
+			c->sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 		else {
 			hp = gethostbyname(bindto_name);
 			if (hp == NULL) {
 				LOG_ERROR("couldn't resolve bindto address: %s", bindto_name);
-				exit(-1);
+				close_socket(c->fd);
+				free_service(c);
+				return ERROR_FAIL;
 			}
 			memcpy(&c->sin.sin_addr, hp->h_addr_list[0], hp->h_length);
 		}
 		c->sin.sin_port = htons(c->portnumber);
 
 		if (bind(c->fd, (struct sockaddr *)&c->sin, sizeof(c->sin)) == -1) {
-			LOG_ERROR("couldn't bind %s to socket: %s", name, strerror(errno));
-			exit(-1);
+			LOG_ERROR("couldn't bind %s to socket on port %d: %s", name, c->portnumber, strerror(errno));
+			close_socket(c->fd);
+			free_service(c);
+			return ERROR_FAIL;
 		}
 
 #ifndef _WIN32
@@ -281,8 +298,17 @@ int add_service(char *name,
 
 		if (listen(c->fd, 1) == -1) {
 			LOG_ERROR("couldn't listen on socket: %s", strerror(errno));
-			exit(-1);
+			close_socket(c->fd);
+			free_service(c);
+			return ERROR_FAIL;
 		}
+
+		struct sockaddr_in addr_in;
+		addr_in.sin_port = 0;
+		socklen_t addr_in_size = sizeof(addr_in);
+		if (getsockname(c->fd, (struct sockaddr *)&addr_in, &addr_in_size) == 0)
+			LOG_INFO("Listening on port %hu for %s connections",
+				 ntohs(addr_in.sin_port), name);
 	} else if (c->type == CONNECTION_STDINOUT) {
 		c->fd = fileno(stdin);
 
@@ -302,13 +328,15 @@ int add_service(char *name,
 		/* we currenty do not support named pipes under win32
 		 * so exit openocd for now */
 		LOG_ERROR("Named pipes currently not supported under this os");
-		exit(1);
+		free_service(c);
+		return ERROR_FAIL;
 #else
 		/* Pipe we're reading from */
 		c->fd = open(c->port, O_RDONLY | O_NONBLOCK);
 		if (c->fd == -1) {
 			LOG_ERROR("could not open %s", c->port);
-			exit(1);
+			free_service(c);
+			return ERROR_FAIL;
 		}
 #endif
 	}
@@ -321,6 +349,50 @@ int add_service(char *name,
 	return ERROR_OK;
 }
 
+static void remove_connections(struct service *service)
+{
+	struct connection *connection;
+
+	connection = service->connections;
+
+	while (connection) {
+		struct connection *tmp;
+
+		tmp = connection->next;
+		remove_connection(service, connection);
+		connection = tmp;
+	}
+}
+
+int remove_service(const char *name, const char *port)
+{
+	struct service *tmp;
+	struct service *prev;
+
+	prev = services;
+
+	for (tmp = services; tmp; prev = tmp, tmp = tmp->next) {
+		if (!strcmp(tmp->name, name) && !strcmp(tmp->port, port)) {
+			remove_connections(tmp);
+
+			if (tmp == services)
+				services = tmp->next;
+			else
+				prev->next = tmp->next;
+
+			if (tmp->type != CONNECTION_STDINOUT)
+				close_socket(tmp->fd);
+
+			free(tmp->priv);
+			free_service(tmp);
+
+			return ERROR_OK;
+		}
+	}
+
+	return ERROR_OK;
+}
+
 static int remove_services(void)
 {
 	struct service *c = services;
@@ -328,6 +400,8 @@ static int remove_services(void)
 	/* loop service */
 	while (c) {
 		struct service *next = c->next;
+
+		remove_connections(c);
 
 		if (c->name)
 			free(c->name);
@@ -354,8 +428,6 @@ static int remove_services(void)
 	return ERROR_OK;
 }
 
-int ctrl_c_pending = 0;
-
 int server_loop(struct command_context *command_context)
 {
 	struct service *service;
@@ -374,7 +446,7 @@ int server_loop(struct command_context *command_context)
 		LOG_ERROR("couldn't set SIGPIPE to SIG_IGN");
 #endif
 
-	while (!shutdown_openocd) {
+	while (shutdown_openocd == CONTINUE_MAIN_LOOP) {
 		/* monitor sockets for activity */
 		fd_max = 0;
 		FD_ZERO(&read_fds);
@@ -427,8 +499,7 @@ int server_loop(struct command_context *command_context)
 				FD_ZERO(&read_fds);
 			else {
 				LOG_ERROR("error during select: %s", strerror(errno));
-				target_call_exit_callbacks();
-				exit(-1);
+				return ERROR_FAIL;
 			}
 #else
 
@@ -436,8 +507,7 @@ int server_loop(struct command_context *command_context)
 				FD_ZERO(&read_fds);
 			else {
 				LOG_ERROR("error during select: %s", strerror(errno));
-				target_call_exit_callbacks();
-				exit(-1);
+				return ERROR_FAIL;
 			}
 #endif
 		}
@@ -468,7 +538,7 @@ int server_loop(struct command_context *command_context)
 		for (service = services; service; service = service->next) {
 			/* handle new connections on listeners */
 			if ((service->fd != -1)
-			    && (FD_ISSET(service->fd, &read_fds))) {
+				&& (FD_ISSET(service->fd, &read_fds))) {
 				if (service->max_connections != 0)
 					add_connection(service, command_context);
 				else {
@@ -492,7 +562,7 @@ int server_loop(struct command_context *command_context)
 				struct connection *c;
 
 				for (c = service->connections; c; ) {
-    				if ((FD_ISSET(c->fd, &read_fds)) || c->input_pending || ctrl_c_pending) {
+					if ((FD_ISSET(c->fd, &read_fds)) || c->input_pending) {
 						retval = service->input(c);
 						if (retval != ERROR_OK) {
 							struct connection *next = c->next;
@@ -500,7 +570,7 @@ int server_loop(struct command_context *command_context)
 									service->type == CONNECTION_STDINOUT) {
 								/* if connection uses a pipe then
 								 * shutdown openocd on error */
-								shutdown_openocd = 1;
+								shutdown_openocd = SHUTDOWN_REQUESTED;
 							}
 							remove_connection(service, c);
 							LOG_INFO("dropped '%s' connection",
@@ -518,40 +588,48 @@ int server_loop(struct command_context *command_context)
 		MSG msg;
 		while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
 			if (msg.message == WM_QUIT)
-				shutdown_openocd = 1;
+				shutdown_openocd = SHUTDOWN_WITH_SIGNAL_CODE;
 		}
 #endif
 	}
 
-	target_call_exit_callbacks();
-	return shutdown_openocd != 2 ? ERROR_OK : ERROR_FAIL;
+	/* when quit for signal or CTRL-C, run (eventually user implemented) "shutdown" */
+	if (shutdown_openocd == SHUTDOWN_WITH_SIGNAL_CODE)
+		command_run_line(command_context, "shutdown");
+
+	return shutdown_openocd == SHUTDOWN_WITH_ERROR_CODE ? ERROR_FAIL : ERROR_OK;
+}
+
+void sig_handler(int sig)
+{
+	/* store only first signal that hits us */
+	if (shutdown_openocd == CONTINUE_MAIN_LOOP) {
+		shutdown_openocd = SHUTDOWN_WITH_SIGNAL_CODE;
+		last_signal = sig;
+		LOG_DEBUG("Terminating on Signal %d", sig);
+	} else
+		LOG_DEBUG("Ignored extra Signal %d", sig);
 }
 
 
 #ifdef _WIN32
 BOOL WINAPI ControlHandler(DWORD dwCtrlType)
 {
-    if (dwCtrlType == CTRL_C_EVENT)
-        ctrl_c_pending = 1;        
-    else
-	    shutdown_openocd = 1;
+	shutdown_openocd = SHUTDOWN_WITH_SIGNAL_CODE;
 	return TRUE;
+}
+#else
+static void sigkey_handler(int sig)
+{
+	/* ignore keystroke generated signals if not in foreground process group */
+
+	if (tcgetpgrp(STDIN_FILENO) > 0)
+		sig_handler(sig);
+	else
+		LOG_DEBUG("Ignored Signal %d", sig);
 }
 #endif
 
-void sig_handler(int sig)
-{
-	/* store only first signal that hits us */
-    if (sig == SIGINT)
-    {
-        ctrl_c_pending = 1;        
-        return;
-    }
-    
-	if (!last_signal)
-		last_signal = sig;
-	shutdown_openocd = 1;
-}
 
 int server_preinit(void)
 {
@@ -567,15 +645,20 @@ int server_preinit(void)
 
 	if (WSAStartup(wVersionRequested, &wsaData) != 0) {
 		LOG_ERROR("Failed to Open Winsock");
-		exit(-1);
+		return ERROR_FAIL;
 	}
 
 	/* register ctrl-c handler */
 	SetConsoleCtrlHandler(ControlHandler, TRUE);
 
 	signal(SIGBREAK, sig_handler);
-#endif
 	signal(SIGINT, sig_handler);
+#else
+	signal(SIGHUP, sig_handler);
+	signal(SIGPIPE, sig_handler);
+	signal(SIGQUIT, sigkey_handler);
+	signal(SIGINT, sigkey_handler);
+#endif
 	signal(SIGTERM, sig_handler);
 	signal(SIGABRT, sig_handler);
 
@@ -585,10 +668,18 @@ int server_preinit(void)
 int server_init(struct command_context *cmd_ctx)
 {
 	int ret = tcl_init();
-	if (ERROR_OK != ret)
+
+	if (ret != ERROR_OK)
 		return ret;
 
-	return telnet_init("Open On-Chip Debugger");
+	ret = telnet_init("Open On-Chip Debugger");
+
+	if (ret != ERROR_OK) {
+		remove_services();
+		return ret;
+	}
+
+	return ERROR_OK;
 }
 
 int server_quit(void)
@@ -605,6 +696,13 @@ int server_quit(void)
 
 	/* return signal number so we can kill ourselves */
 	return last_signal;
+}
+
+void server_free(void)
+{
+	tcl_service_free();
+	telnet_service_free();
+	jsp_service_free();
 }
 
 void exit_on_signal(int sig)
@@ -641,11 +739,11 @@ COMMAND_HANDLER(handle_shutdown_command)
 {
 	LOG_USER("shutdown command invoked");
 
-	shutdown_openocd = 1;
+	shutdown_openocd = SHUTDOWN_REQUESTED;
 
 	if (CMD_ARGC == 1) {
 		if (!strcmp(CMD_ARGV[0], "error")) {
-			shutdown_openocd = 2;
+			shutdown_openocd = SHUTDOWN_WITH_ERROR_CODE;
 			return ERROR_FAIL;
 		}
 	}
@@ -702,7 +800,7 @@ static const struct command_registration server_command_handlers[] = {
 		.mode = COMMAND_ANY,
 		.usage = "[name]",
 		.help = "Specify address by name on which to listen for "
-		    "incoming TCP/IP connections",
+			"incoming TCP/IP connections",
 	},
 	COMMAND_REGISTRATION_DONE
 };

@@ -21,11 +21,33 @@
 #ifndef GEN_UT_APP_H
 #define GEN_UT_APP_H
 
+#define MAKE_UT_IDF_VER(t,x,y,z)	(((t & 0xFF) << 24) | ((x & 0xFF) << 16) | ((y & 0xFF) << 8) | (Z & 0xFF))
+#define UT_IDF_VER_LATEST           MAKE_UT_IDF_VER(0xFF,0xFF,0xFF,0xFF)
+
+#include "ut_idf_ver.h"
+
+#ifndef UT_IDF_VER
+#error !UT_IDF_VER
+#endif
+
 #define TEST_BREAK_LOC(_nm_)  \
     volatile static const int _nm_ ## _break_ln = __LINE__; \
     s_tmp_ln = _nm_ ## _break_ln;
 
 // used to prevent linker from optimizing out the variables holding BP line numbers
 volatile static int s_tmp_ln = 0;
+
+#define LABEL_SYMBOL(name) __asm__ volatile(".global " name "\n.type " name ",@function\n" name":");
+
+typedef enum {
+	UT_OK,
+	UT_FAIL,
+	UT_UNSUPPORTED
+} ut_result_t;
+
+typedef ut_result_t (*test_func_t)(int test_num);
+
+void test_timer_init(int timer_group, int timer_idx, uint32_t period);
+void test_timer_rearm(int timer_group, int timer_idx);
 
 #endif //GEN_UT_APP_H

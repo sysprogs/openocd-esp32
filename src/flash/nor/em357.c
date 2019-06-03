@@ -702,6 +702,11 @@ static int em357_probe(struct flash_bank *bank)
 			num_pages = 128;
 			page_size = 2048;
 			break;
+		case 0x80000:
+			/* 512k -- 256 2k pages */
+			num_pages = 256;
+			page_size = 2048;
+			break;
 		default:
 			LOG_WARNING("No size specified for em357 flash driver, assuming 192k!");
 			num_pages = 96;
@@ -936,4 +941,5 @@ struct flash_driver em357_flash = {
 	.auto_probe = em357_auto_probe,
 	.erase_check = default_flash_blank_check,
 	.protect_check = em357_protect_check,
+	.free_driver_priv = default_flash_free_driver_priv,
 };

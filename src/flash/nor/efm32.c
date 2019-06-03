@@ -38,16 +38,8 @@
 #include <target/armv7m.h>
 #include <target/cortex_m.h>
 
-/* keep family IDs in decimal */
-#define EFM_FAMILY_ID_GECKO             71
 #define EFM_FAMILY_ID_GIANT_GECKO       72
-#define EFM_FAMILY_ID_TINY_GECKO        73
 #define EFM_FAMILY_ID_LEOPARD_GECKO     74
-#define EFM_FAMILY_ID_WONDER_GECKO      75
-#define EFM_FAMILY_ID_ZERO_GECKO        76
-#define EFM_FAMILY_ID_HAPPY_GECKO	77
-#define EZR_FAMILY_ID_WONDER_GECKO		120
-#define EZR_FAMILY_ID_LEOPARD_GECKO		121
 
 #define EFM32_FLASH_ERASE_TMO           100
 #define EFM32_FLASH_WDATAREADY_TMO      100
@@ -62,7 +54,7 @@
 #define EFM32_MSC_LOCK_BITS             (EFM32_MSC_INFO_BASE+0x4000)
 #define EFM32_MSC_DEV_INFO              (EFM32_MSC_INFO_BASE+0x8000)
 
-/* PAGE_SIZE is only present in Leopard, Giant and Wonder Gecko MCUs */
+/* PAGE_SIZE is not present in Zero, Happy and the original Gecko MCU */
 #define EFM32_MSC_DI_PAGE_SIZE          (EFM32_MSC_DEV_INFO+0x1e7)
 #define EFM32_MSC_DI_FLASH_SZ           (EFM32_MSC_DEV_INFO+0x1f8)
 #define EFM32_MSC_DI_RAM_SZ             (EFM32_MSC_DEV_INFO+0x1fa)
@@ -71,30 +63,50 @@
 #define EFM32_MSC_DI_PROD_REV           (EFM32_MSC_DEV_INFO+0x1ff)
 
 #define EFM32_MSC_REGBASE               0x400c0000
-#define EFM32_MSC_WRITECTRL             (EFM32_MSC_REGBASE+0x008)
+#define EFM32_MSC_REGBASE_SERIES1       0x400e0000
+#define EFM32_MSC_REG_WRITECTRL         0x008
 #define EFM32_MSC_WRITECTRL_WREN_MASK   0x1
-#define EFM32_MSC_WRITECMD              (EFM32_MSC_REGBASE+0x00c)
+#define EFM32_MSC_REG_WRITECMD          0x00c
 #define EFM32_MSC_WRITECMD_LADDRIM_MASK 0x1
 #define EFM32_MSC_WRITECMD_ERASEPAGE_MASK 0x2
 #define EFM32_MSC_WRITECMD_WRITEONCE_MASK 0x8
-#define EFM32_MSC_ADDRB                 (EFM32_MSC_REGBASE+0x010)
-#define EFM32_MSC_WDATA                 (EFM32_MSC_REGBASE+0x018)
-#define EFM32_MSC_STATUS                (EFM32_MSC_REGBASE+0x01c)
+#define EFM32_MSC_REG_ADDRB             0x010
+#define EFM32_MSC_REG_WDATA             0x018
+#define EFM32_MSC_REG_STATUS            0x01c
 #define EFM32_MSC_STATUS_BUSY_MASK      0x1
 #define EFM32_MSC_STATUS_LOCKED_MASK    0x2
 #define EFM32_MSC_STATUS_INVADDR_MASK   0x4
 #define EFM32_MSC_STATUS_WDATAREADY_MASK 0x8
 #define EFM32_MSC_STATUS_WORDTIMEOUT_MASK 0x10
 #define EFM32_MSC_STATUS_ERASEABORTED_MASK 0x20
-#define EFM32_MSC_LOCK                  (EFM32_MSC_REGBASE+0x03c)
+#define EFM32_MSC_REG_LOCK              0x03c
+#define EFM32_MSC_REG_LOCK_SERIES1      0x040
 #define EFM32_MSC_LOCK_LOCKKEY          0x1b71
+
+struct efm32_family_data {
+	int family_id;
+	const char *name;
+
+	/* EFM32 series (EFM32LG995F is the "old" series 0, while EFR32MG12P132
+	   is the "new" series 1). Determines location of MSC registers. */
+	int series;
+
+	/* Page size in bytes, or 0 to read from EFM32_MSC_DI_PAGE_SIZE */
+	int page_size;
+
+	/* MSC register base address, or 0 to use default */
+	uint32_t msc_regbase;
+};
 
 struct efm32x_flash_bank {
 	int probed;
 	uint32_t lb_page[LOCKBITS_PAGE_SZ/4];
+	uint32_t reg_base;
+	uint32_t reg_lock;
 };
 
 struct efm32_info {
+	const struct efm32_family_data *family_data;
 	uint16_t flash_sz_kib;
 	uint16_t ram_sz_kib;
 	uint16_t part_num;
@@ -102,6 +114,64 @@ struct efm32_info {
 	uint8_t prod_rev;
 	uint16_t page_size;
 };
+
+static const struct efm32_family_data efm32_families[] = {
+		{ 16, "EFR32MG1P Mighty", .series = 1 },
+		{ 17, "EFR32MG1B Mighty", .series = 1 },
+		{ 18, "EFR32MG1V Mighty", .series = 1 },
+		{ 19, "EFR32MG1P Blue", .series = 1 },
+		{ 20, "EFR32MG1B Blue", .series = 1 },
+		{ 21, "EFR32MG1V Blue", .series = 1 },
+		{ 25, "EFR32FG1P Flex", .series = 1 },
+		{ 26, "EFR32FG1B Flex", .series = 1 },
+		{ 27, "EFR32FG1V Flex", .series = 1 },
+		{ 28, "EFR32MG2P Mighty", .series = 1 },
+		{ 29, "EFR32MG2B Mighty", .series = 1 },
+		{ 30, "EFR32MG2V Mighty", .series = 1 },
+		{ 31, "EFR32BG12P Blue", .series = 1 },
+		{ 32, "EFR32BG12B Blue", .series = 1 },
+		{ 33, "EFR32BG12V Blue", .series = 1 },
+		{ 37, "EFR32FG12P Flex", .series = 1 },
+		{ 38, "EFR32FG12B Flex", .series = 1 },
+		{ 39, "EFR32FG12V Flex", .series = 1 },
+		{ 40, "EFR32MG13P Mighty", .series = 1 },
+		{ 41, "EFR32MG13B Mighty", .series = 1 },
+		{ 42, "EFR32MG13V Mighty", .series = 1 },
+		{ 43, "EFR32BG13P Blue", .series = 1 },
+		{ 44, "EFR32BG13B Blue", .series = 1 },
+		{ 45, "EFR32BG13V Blue", .series = 1 },
+		{ 49, "EFR32FG13P Flex", .series = 1 },
+		{ 50, "EFR32FG13B Flex", .series = 1 },
+		{ 51, "EFR32FG13V Flex", .series = 1 },
+		{ 52, "EFR32MG14P Mighty", .series = 1 },
+		{ 53, "EFR32MG14B Mighty", .series = 1 },
+		{ 54, "EFR32MG14V Mighty", .series = 1 },
+		{ 55, "EFR32BG14P Blue", .series = 1 },
+		{ 56, "EFR32BG14B Blue", .series = 1 },
+		{ 57, "EFR32BG14V Blue", .series = 1 },
+		{ 61, "EFR32FG14P Flex", .series = 1 },
+		{ 62, "EFR32FG14B Flex", .series = 1 },
+		{ 63, "EFR32FG14V Flex", .series = 1 },
+		{ 71, "EFM32G", .series = 0, .page_size = 512 },
+		{ 72, "EFM32GG Giant", .series = 0 },
+		{ 73, "EFM32TG Tiny", .series = 0, .page_size = 512 },
+		{ 74, "EFM32LG Leopard", .series = 0 },
+		{ 75, "EFM32WG Wonder", .series = 0 },
+		{ 76, "EFM32ZG Zero", .series = 0, .page_size = 1024 },
+		{ 77, "EFM32HG Happy", .series = 0, .page_size = 1024 },
+		{ 81, "EFM32PG1B Pearl", .series = 1 },
+		{ 83, "EFM32JG1B Jade", .series = 1 },
+		{ 85, "EFM32PG12B Pearl", .series = 1 },
+		{ 87, "EFM32JG12B Jade", .series = 1 },
+		{ 89, "EFM32PG13B Pearl", .series = 1 },
+		{ 91, "EFM32JG13B Jade", .series = 1 },
+		{ 100, "EFM32GG11B Giant", .series = 1, .msc_regbase = 0x40000000 },
+		{ 103, "EFM32TG11B Tiny", .series = 1 },
+		{ 120, "EZR32WG Wonder", .series = 0 },
+		{ 121, "EZR32LG Leopard", .series = 0 },
+		{ 122, "EZR32HG Happy", .series = 0, .page_size = 1024 },
+};
+
 
 static int efm32x_write(struct flash_bank *bank, const uint8_t *buffer,
 	uint32_t offset, uint32_t count);
@@ -131,11 +201,30 @@ static int efm32x_get_prod_rev(struct flash_bank *bank, uint8_t *prev)
 	return target_read_u8(bank->target, EFM32_MSC_DI_PROD_REV, prev);
 }
 
+static int efm32x_read_reg_u32(struct flash_bank *bank, target_addr_t offset,
+			       uint32_t *value)
+{
+	struct efm32x_flash_bank *efm32x_info = bank->driver_priv;
+	uint32_t base = efm32x_info->reg_base;
+
+	return target_read_u32(bank->target, base + offset, value);
+}
+
+static int efm32x_write_reg_u32(struct flash_bank *bank, target_addr_t offset,
+			       uint32_t value)
+{
+	struct efm32x_flash_bank *efm32x_info = bank->driver_priv;
+	uint32_t base = efm32x_info->reg_base;
+
+	return target_write_u32(bank->target, base + offset, value);
+}
+
 static int efm32x_read_info(struct flash_bank *bank,
 	struct efm32_info *efm32_info)
 {
 	int ret;
 	uint32_t cpuid = 0;
+	struct efm32x_flash_bank *efm32x_info = bank->driver_priv;
 
 	memset(efm32_info, 0, sizeof(struct efm32_info));
 
@@ -174,39 +263,33 @@ static int efm32x_read_info(struct flash_bank *bank,
 	if (ERROR_OK != ret)
 		return ret;
 
-	if (EFM_FAMILY_ID_GECKO == efm32_info->part_family ||
-			EFM_FAMILY_ID_TINY_GECKO == efm32_info->part_family)
-		efm32_info->page_size = 512;
-	else if (EFM_FAMILY_ID_ZERO_GECKO == efm32_info->part_family ||
-			EFM_FAMILY_ID_HAPPY_GECKO == efm32_info->part_family)
-		efm32_info->page_size = 1024;
-	else if (EFM_FAMILY_ID_GIANT_GECKO == efm32_info->part_family ||
-			EFM_FAMILY_ID_LEOPARD_GECKO == efm32_info->part_family) {
-		if (efm32_info->prod_rev >= 18) {
-			uint8_t pg_size = 0;
-			ret = target_read_u8(bank->target, EFM32_MSC_DI_PAGE_SIZE,
-				&pg_size);
-			if (ERROR_OK != ret)
-				return ret;
+	for (size_t i = 0; i < ARRAY_SIZE(efm32_families); i++) {
+		if (efm32_families[i].family_id == efm32_info->part_family)
+			efm32_info->family_data = &efm32_families[i];
+	}
 
-			efm32_info->page_size = (1 << ((pg_size+10) & 0xff));
-		} else {
-			/* EFM32 GG/LG errata: MEM_INFO_PAGE_SIZE is invalid
-			   for MCUs with PROD_REV < 18 */
-			if (efm32_info->flash_sz_kib < 512)
-				efm32_info->page_size = 2048;
-			else
-				efm32_info->page_size = 4096;
-		}
+	if (efm32_info->family_data == NULL) {
+		LOG_ERROR("Unknown MCU family %d", efm32_info->part_family);
+		return ERROR_FAIL;
+	}
 
-		if ((2048 != efm32_info->page_size) &&
-				(4096 != efm32_info->page_size)) {
-			LOG_ERROR("Invalid page size %u", efm32_info->page_size);
-			return ERROR_FAIL;
-		}
-	} else if (EFM_FAMILY_ID_WONDER_GECKO == efm32_info->part_family ||
-			EZR_FAMILY_ID_WONDER_GECKO == efm32_info->part_family ||
-			EZR_FAMILY_ID_LEOPARD_GECKO == efm32_info->part_family) {
+	switch (efm32_info->family_data->series) {
+		case 0:
+			efm32x_info->reg_base = EFM32_MSC_REGBASE;
+			efm32x_info->reg_lock = EFM32_MSC_REG_LOCK;
+			break;
+		case 1:
+			efm32x_info->reg_base = EFM32_MSC_REGBASE_SERIES1;
+			efm32x_info->reg_lock = EFM32_MSC_REG_LOCK_SERIES1;
+			break;
+	}
+
+	if (efm32_info->family_data->msc_regbase != 0)
+		efm32x_info->reg_base = efm32_info->family_data->msc_regbase;
+
+	if (efm32_info->family_data->page_size != 0) {
+		efm32_info->page_size = efm32_info->family_data->page_size;
+	} else {
 		uint8_t pg_size = 0;
 		ret = target_read_u8(bank->target, EFM32_MSC_DI_PAGE_SIZE,
 			&pg_size);
@@ -214,13 +297,25 @@ static int efm32x_read_info(struct flash_bank *bank,
 			return ret;
 
 		efm32_info->page_size = (1 << ((pg_size+10) & 0xff));
-		if (2048 != efm32_info->page_size) {
+
+		if (efm32_info->part_family == EFM_FAMILY_ID_GIANT_GECKO ||
+				efm32_info->part_family == EFM_FAMILY_ID_LEOPARD_GECKO) {
+			/* Giant or Leopard Gecko */
+			if (efm32_info->prod_rev < 18) {
+				/* EFM32 GG/LG errata: MEM_INFO_PAGE_SIZE is invalid
+				   for MCUs with PROD_REV < 18 */
+				if (efm32_info->flash_sz_kib < 512)
+					efm32_info->page_size = 2048;
+				else
+					efm32_info->page_size = 4096;
+			}
+		}
+
+		if ((efm32_info->page_size != 2048) &&
+				(efm32_info->page_size != 4096)) {
 			LOG_ERROR("Invalid page size %u", efm32_info->page_size);
 			return ERROR_FAIL;
 		}
-	} else {
-		LOG_ERROR("Unknown MCU family %d", efm32_info->part_family);
-		return ERROR_FAIL;
 	}
 
 	return ERROR_OK;
@@ -232,59 +327,10 @@ static int efm32x_read_info(struct flash_bank *bank,
 static int efm32x_decode_info(struct efm32_info *info, char *buf, int buf_size)
 {
 	int printed = 0;
+	printed = snprintf(buf, buf_size, "%s Gecko, rev %d",
+			info->family_data->name, info->prod_rev);
 
-	switch (info->part_family) {
-		case EZR_FAMILY_ID_WONDER_GECKO:
-		case EZR_FAMILY_ID_LEOPARD_GECKO:
-			printed = snprintf(buf, buf_size, "EZR32 ");
-			break;
-		default:
-			printed = snprintf(buf, buf_size, "EFM32 ");
-	}
-
-	buf += printed;
-	buf_size -= printed;
-
-	if (0 >= buf_size)
-		return ERROR_BUF_TOO_SMALL;
-
-	switch (info->part_family) {
-		case EFM_FAMILY_ID_GECKO:
-			printed = snprintf(buf, buf_size, "Gecko");
-			break;
-		case EFM_FAMILY_ID_GIANT_GECKO:
-			printed = snprintf(buf, buf_size, "Giant Gecko");
-			break;
-		case EFM_FAMILY_ID_TINY_GECKO:
-			printed = snprintf(buf, buf_size, "Tiny Gecko");
-			break;
-		case EFM_FAMILY_ID_LEOPARD_GECKO:
-		case EZR_FAMILY_ID_LEOPARD_GECKO:
-			printed = snprintf(buf, buf_size, "Leopard Gecko");
-			break;
-		case EFM_FAMILY_ID_WONDER_GECKO:
-		case EZR_FAMILY_ID_WONDER_GECKO:
-			printed = snprintf(buf, buf_size, "Wonder Gecko");
-			break;
-		case EFM_FAMILY_ID_ZERO_GECKO:
-			printed = snprintf(buf, buf_size, "Zero Gecko");
-			break;
-		case EFM_FAMILY_ID_HAPPY_GECKO:
-			printed = snprintf(buf, buf_size, "Happy Gecko");
-			break;
-	}
-
-	buf += printed;
-	buf_size -= printed;
-
-	if (0 >= buf_size)
-		return ERROR_BUF_TOO_SMALL;
-
-	printed = snprintf(buf, buf_size, " - Rev: %d", info->prod_rev);
-	buf += printed;
-	buf_size -= printed;
-
-	if (0 >= buf_size)
+	if (printed >= buf_size)
 		return ERROR_BUF_TOO_SMALL;
 
 	return ERROR_OK;
@@ -315,7 +361,7 @@ static int efm32x_set_reg_bits(struct flash_bank *bank, uint32_t reg,
 	int ret = 0;
 	uint32_t reg_val = 0;
 
-	ret = target_read_u32(bank->target, reg, &reg_val);
+	ret = efm32x_read_reg_u32(bank, reg, &reg_val);
 	if (ERROR_OK != ret)
 		return ret;
 
@@ -324,18 +370,19 @@ static int efm32x_set_reg_bits(struct flash_bank *bank, uint32_t reg,
 	else
 		reg_val &= ~bitmask;
 
-	return target_write_u32(bank->target, reg, reg_val);
+	return efm32x_write_reg_u32(bank, reg, reg_val);
 }
 
 static int efm32x_set_wren(struct flash_bank *bank, int write_enable)
 {
-	return efm32x_set_reg_bits(bank, EFM32_MSC_WRITECTRL,
+	return efm32x_set_reg_bits(bank, EFM32_MSC_REG_WRITECTRL,
 		EFM32_MSC_WRITECTRL_WREN_MASK, write_enable);
 }
 
 static int efm32x_msc_lock(struct flash_bank *bank, int lock)
 {
-	return target_write_u32(bank->target, EFM32_MSC_LOCK,
+	struct efm32x_flash_bank *efm32x_info = bank->driver_priv;
+	return efm32x_write_reg_u32(bank, efm32x_info->reg_lock,
 		(lock ? 0 : EFM32_MSC_LOCK_LOCKKEY));
 }
 
@@ -346,7 +393,7 @@ static int efm32x_wait_status(struct flash_bank *bank, int timeout,
 	uint32_t status = 0;
 
 	while (1) {
-		ret = target_read_u32(bank->target, EFM32_MSC_STATUS, &status);
+		ret = efm32x_read_reg_u32(bank, EFM32_MSC_REG_STATUS, &status);
 		if (ERROR_OK != ret)
 			break;
 
@@ -382,19 +429,19 @@ static int efm32x_erase_page(struct flash_bank *bank, uint32_t addr)
 	 */
 	int ret = 0;
 	uint32_t status = 0;
-
+	addr += bank->base;
 	LOG_DEBUG("erasing flash page at 0x%08" PRIx32, addr);
 
-	ret = target_write_u32(bank->target, EFM32_MSC_ADDRB, addr);
+	ret = efm32x_write_reg_u32(bank, EFM32_MSC_REG_ADDRB, addr);
 	if (ERROR_OK != ret)
 		return ret;
 
-	ret = efm32x_set_reg_bits(bank, EFM32_MSC_WRITECMD,
+	ret = efm32x_set_reg_bits(bank, EFM32_MSC_REG_WRITECMD,
 		EFM32_MSC_WRITECMD_LADDRIM_MASK, 1);
 	if (ERROR_OK != ret)
 		return ret;
 
-	ret = target_read_u32(bank->target, EFM32_MSC_STATUS, &status);
+	ret = efm32x_read_reg_u32(bank, EFM32_MSC_REG_STATUS, &status);
 	if (ERROR_OK != ret)
 		return ret;
 
@@ -408,7 +455,7 @@ static int efm32x_erase_page(struct flash_bank *bank, uint32_t addr)
 		return ERROR_FAIL;
 	}
 
-	ret = efm32x_set_reg_bits(bank, EFM32_MSC_WRITECMD,
+	ret = efm32x_set_reg_bits(bank, EFM32_MSC_REG_WRITECMD,
 		EFM32_MSC_WRITECMD_ERASEPAGE_MASK, 1);
 	if (ERROR_OK != ret)
 		return ret;
@@ -456,10 +503,10 @@ static int efm32x_read_lock_data(struct flash_bank *bank)
 	uint32_t *ptr = NULL;
 	int ret = 0;
 
-	assert(!(bank->num_sectors & 0x1f));
+	assert(bank->num_sectors > 0);
 
-	data_size = bank->num_sectors / 8; /* number of data bytes */
-	data_size /= 4; /* ...and data dwords */
+	/* calculate the number of 32-bit words to read (one lock bit per sector) */
+	data_size = (bank->num_sectors + 31) / 32;
 
 	ptr = efm32x_info->lb_page;
 
@@ -471,7 +518,7 @@ static int efm32x_read_lock_data(struct flash_bank *bank)
 		}
 	}
 
-	/* also, read ULW, DLW and MLW */
+	/* also, read ULW, DLW, MLW, ALW and CLW words */
 
 	/* ULW, word 126 */
 	ptr = efm32x_info->lb_page + 126;
@@ -489,11 +536,35 @@ static int efm32x_read_lock_data(struct flash_bank *bank)
 		return ret;
 	}
 
-	/* MLW, word 125, present in GG and LG */
+	/* MLW, word 125, present in GG, LG, PG, JG, EFR32 */
 	ptr = efm32x_info->lb_page + 125;
 	ret = target_read_u32(target, EFM32_MSC_LOCK_BITS+125*4, ptr);
 	if (ERROR_OK != ret) {
 		LOG_ERROR("Failed to read MLW");
+		return ret;
+	}
+
+	/* ALW, word 124, present in GG, LG, PG, JG, EFR32 */
+	ptr = efm32x_info->lb_page + 124;
+	ret = target_read_u32(target, EFM32_MSC_LOCK_BITS+124*4, ptr);
+	if (ERROR_OK != ret) {
+		LOG_ERROR("Failed to read ALW");
+		return ret;
+	}
+
+	/* CLW1, word 123, present in EFR32 */
+	ptr = efm32x_info->lb_page + 123;
+	ret = target_read_u32(target, EFM32_MSC_LOCK_BITS+123*4, ptr);
+	if (ERROR_OK != ret) {
+		LOG_ERROR("Failed to read CLW1");
+		return ret;
+	}
+
+	/* CLW0, word 122, present in GG, LG, PG, JG, EFR32 */
+	ptr = efm32x_info->lb_page + 122;
+	ret = target_read_u32(target, EFM32_MSC_LOCK_BITS+122*4, ptr);
+	if (ERROR_OK != ret) {
+		LOG_ERROR("Failed to read CLW0");
 		return ret;
 	}
 
@@ -585,6 +656,7 @@ static int efm32x_write_block(struct flash_bank *bank, const uint8_t *buf,
 	uint32_t address = bank->base + offset;
 	struct reg_param reg_params[5];
 	struct armv7m_algorithm armv7m_info;
+	struct efm32x_flash_bank *efm32x_info = bank->driver_priv;
 	int ret = ERROR_OK;
 
 	/* see contrib/loaders/flash/efm32.S for src */
@@ -594,10 +666,7 @@ static int efm32x_write_block(struct flash_bank *bank, const uint8_t *buf,
 		/* #define EFM32_MSC_ADDRB_OFFSET          0x010 */
 		/* #define EFM32_MSC_WDATA_OFFSET          0x018 */
 		/* #define EFM32_MSC_STATUS_OFFSET         0x01c */
-		/* #define EFM32_MSC_LOCK_OFFSET           0x03c */
 
-			0x15, 0x4e,    /* ldr     r6, =#0x1b71 */
-			0xc6, 0x63,    /* str     r6, [r0, #EFM32_MSC_LOCK_OFFSET] */
 			0x01, 0x26,    /* movs    r6, #1 */
 			0x86, 0x60,    /* str     r6, [r0, #EFM32_MSC_WRITECTRL_OFFSET] */
 
@@ -656,10 +725,8 @@ static int efm32x_write_block(struct flash_bank *bank, const uint8_t *buf,
 		/* exit: */
 			0x30, 0x46,    /* mov     r0, r6 */
 			0x00, 0xbe,    /* bkpt    #0 */
-
-		/* LOCKKEY */
-			0x71, 0x1b, 0x00, 0x00
 	};
+
 
 	/* flash write code */
 	if (target_alloc_working_area(target, sizeof(efm32x_flash_write_code),
@@ -693,7 +760,7 @@ static int efm32x_write_block(struct flash_bank *bank, const uint8_t *buf,
 	init_reg_param(&reg_params[3], "r3", 32, PARAM_OUT);	/* buffer end */
 	init_reg_param(&reg_params[4], "r4", 32, PARAM_IN_OUT);	/* target address */
 
-	buf_set_u32(reg_params[0].value, 0, 32, EFM32_MSC_REGBASE);
+	buf_set_u32(reg_params[0].value, 0, 32, efm32x_info->reg_base);
 	buf_set_u32(reg_params[1].value, 0, 32, count);
 	buf_set_u32(reg_params[2].value, 0, 32, source->address);
 	buf_set_u32(reg_params[3].value, 0, 32, source->address + source->size);
@@ -758,16 +825,16 @@ static int efm32x_write_word(struct flash_bank *bank, uint32_t addr,
 	/* if not called, GDB errors will be reported during large writes */
 	keep_alive();
 
-	ret = target_write_u32(bank->target, EFM32_MSC_ADDRB, addr);
+	ret = efm32x_write_reg_u32(bank, EFM32_MSC_REG_ADDRB, addr);
 	if (ERROR_OK != ret)
 		return ret;
 
-	ret = efm32x_set_reg_bits(bank, EFM32_MSC_WRITECMD,
+	ret = efm32x_set_reg_bits(bank, EFM32_MSC_REG_WRITECMD,
 		EFM32_MSC_WRITECMD_LADDRIM_MASK, 1);
 	if (ERROR_OK != ret)
 		return ret;
 
-	ret = target_read_u32(bank->target, EFM32_MSC_STATUS, &status);
+	ret = efm32x_read_reg_u32(bank, EFM32_MSC_REG_STATUS, &status);
 	if (ERROR_OK != ret)
 		return ret;
 
@@ -788,13 +855,13 @@ static int efm32x_write_word(struct flash_bank *bank, uint32_t addr,
 		return ret;
 	}
 
-	ret = target_write_u32(bank->target, EFM32_MSC_WDATA, val);
+	ret = efm32x_write_reg_u32(bank, EFM32_MSC_REG_WDATA, val);
 	if (ERROR_OK != ret) {
 		LOG_ERROR("WDATA write failed");
 		return ret;
 	}
 
-	ret = target_write_u32(bank->target, EFM32_MSC_WRITECMD,
+	ret = efm32x_write_reg_u32(bank, EFM32_MSC_REG_WRITECMD,
 		EFM32_MSC_WRITECMD_WRITEONCE_MASK);
 	if (ERROR_OK != ret) {
 		LOG_ERROR("WRITECMD write failed");
@@ -1066,4 +1133,5 @@ struct flash_driver efm32_flash = {
 	.erase_check = default_flash_blank_check,
 	.protect_check = efm32x_protect_check,
 	.info = get_efm32x_info,
+	.free_driver_priv = default_flash_free_driver_priv,
 };

@@ -1,6 +1,6 @@
 .PHONY: arm clean-arm
 
-all: arm
+all: arm stm8
 
 common_dirs = \
 	checksum \
@@ -12,7 +12,9 @@ ARM_CROSS_COMPILE ?= arm-none-eabi-
 arm_dirs = \
 	flash/fm4 \
 	flash/kinetis_ke \
-	flash/xmc1xxx
+	flash/max32xxx \
+	flash/xmc1xxx \
+	debug/xscale
 
 arm:
 	for d in $(common_dirs); do \
@@ -31,3 +33,6 @@ clean: clean-arm
 	for d in $(common_dirs); do \
 		$(MAKE) -C $$d clean; \
 	done
+
+stm8:
+	$(MAKE) -C erase_check stm8

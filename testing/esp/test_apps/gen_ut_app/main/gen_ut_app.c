@@ -7,6 +7,7 @@
    CONDITIONS OF ANY KIND, either express or implied.
 */
 #include <stdio.h>
+#include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
@@ -30,12 +31,17 @@ volatile static int s_count1 = 0;
 volatile static int s_count2 = 100;
 volatile static int s_count3 = 200;
 
-extern void gcov_task(void *pvParameter);
-extern void thread_check_task(void *pvParameter);
-extern void check_backtrace_task1(void *pvParameter);
-extern void check_backtrace_task2(void *pvParameter);
-extern void check_backtrace_task3(void *pvParameter);
+extern ut_result_t gcov_test_do(int test_num);
+extern ut_result_t thread_test_do(int test_num);
+extern ut_result_t tracing_test_do(int test_num);
+extern ut_result_t semihost_test_do(int test_num);
 
+static test_func_t s_test_funcs[] = {
+    gcov_test_do,
+    thread_test_do,
+    tracing_test_do,
+    semihost_test_do
+};
 
 struct blink_task_arg {
     int tim_grp;
@@ -43,7 +49,7 @@ struct blink_task_arg {
     uint32_t tim_period;
 };
 
-static void test_timer_init(int timer_group, int timer_idx, uint32_t period)
+void test_timer_init(int timer_group, int timer_idx, uint32_t period)
 {
     timer_config_t config;
     uint64_t alarm_val = (period * (TIMER_BASE_CLK / 1000000UL)) / 2;
@@ -66,6 +72,31 @@ static void test_timer_init(int timer_group, int timer_idx, uint32_t period)
     timer_enable_intr(timer_group, timer_idx);
 }
 
+void test_timer_rearm(int timer_group, int timer_idx)
+{
+    if (timer_group == 0) {
+        if (timer_idx == 0) {
+            TIMERG0.int_clr_timers.t0 = 1;
+            TIMERG0.hw_timer[0].update = 1;
+            TIMERG0.hw_timer[0].config.alarm_en = 1;
+        } else {
+            TIMERG0.int_clr_timers.t1 = 1;
+            TIMERG0.hw_timer[1].update = 1;
+            TIMERG0.hw_timer[1].config.alarm_en = 1;
+        }
+    } else if (timer_group == 1) {
+        if (timer_idx == 0) {
+            TIMERG1.int_clr_timers.t0 = 1;
+            TIMERG1.hw_timer[0].update = 1;
+            TIMERG1.hw_timer[0].config.alarm_en = 1;
+        } else {
+            TIMERG1.int_clr_timers.t1 = 1;
+            TIMERG1.hw_timer[1].update = 1;
+            TIMERG1.hw_timer[1].config.alarm_en = 1;
+        }
+    }
+}
+
 static void test_timer_isr_func(void)
 {
     s_tmp_ln++;
@@ -83,27 +114,7 @@ static void test_timer_isr(void *arg)
     test_timer_isr_func();
     test_timer_isr_ram_func();
 
-    if (tim_arg->tim_grp == 0) {
-        if (tim_arg->tim_id == 0) {
-            TIMERG0.int_clr_timers.t0 = 1;
-            TIMERG0.hw_timer[0].update = 1;
-            TIMERG0.hw_timer[0].config.alarm_en = 1;
-        } else {
-            TIMERG0.int_clr_timers.t1 = 1;
-            TIMERG0.hw_timer[1].update = 1;
-            TIMERG0.hw_timer[1].config.alarm_en = 1;
-        }
-    } else if (tim_arg->tim_grp == 1) {
-        if (tim_arg->tim_id == 0) {
-            TIMERG1.int_clr_timers.t0 = 1;
-            TIMERG1.hw_timer[0].update = 1;
-            TIMERG1.hw_timer[0].config.alarm_en = 1;
-        } else {
-            TIMERG1.int_clr_timers.t1 = 1;
-            TIMERG1.hw_timer[1].update = 1;
-            TIMERG1.hw_timer[1].config.alarm_en = 1;
-        }
-    }
+    test_timer_rearm(tim_arg->tim_grp, tim_arg->tim_id);
 }
 
 static void blink_task(void *pvParameter)
@@ -163,11 +174,42 @@ static void recursive(int levels)
     recursive(levels - 1);
 }
 
+
 void window_exception_test(void* arg)
 {
     recursive(20);
     printf("sum=%d\n",sum);
 }
+
+
+/* Three nested functions - from nested_top to nested_bottom
+ */
+static  __attribute__((noinline)) void nested_bottom()
+{
+    sum++;  // you have reached the bottom
+}
+
+static __attribute__((noinline)) void nested_middle()
+{
+    sum++;
+    nested_bottom();
+}
+
+static  __attribute__((noinline)) void nested_top()
+{
+    sum++;
+    nested_middle();
+}
+
+void step_out_of_function_test()
+{
+    while(1)
+    {
+        sum = 0;
+        nested_top();
+    }
+}
+
 
 static void scratch_reg_using_task(void *pvParameter)
 {
@@ -227,66 +269,76 @@ static void step_over_bp_task(void *pvParameter)
     }
 }
 
+static void fibonacci_calc(void)
+/* calculation of 3 fibonacci sequences: f0, f1 abd f2
+ * f(n) = f(n-1) + f(n-2) -> f(n) : 0, 1, 1, 2, 3, 5, 8, 13, 21, 34, ...*/
+{
+    volatile int f0_nm2, f1_nm2, f2_nm2; // n-2
+    volatile int f0_nm1, f1_nm1, f2_nm1; // n-1
+    volatile int f0_n, f1_n, f2_n; // n
+    // setting three starting state for each f sequence: n-2 points:
+    f0_nm2 = 0;
+    f1_nm2 = 1;
+    f2_nm2 = 3;
+    // setting three starting state for each f sequence: n-1 points:
+    f0_nm1 = 1;
+    f1_nm1 = 2;
+    f2_nm1 = 5;
+    while (1)
+    {
+        LABEL_SYMBOL("fib_while");
+        f0_n = f0_nm1 + f0_nm2; // calculating f0_n
+        f0_nm2 = f0_nm1; // n shift
+        f0_nm1 = f0_n;
+        f1_n = f1_nm1 + f1_nm2; // calculating f1_n
+        f1_nm2 = f1_nm1; // n shift
+        f1_nm1 = f1_n;
+        f2_n = f2_nm1 + f2_nm2;
+        f2_nm2 = f2_nm1; // n shift// calculating f2_n
+        f2_nm1 = f2_n;
 
-/* Add new  */
+
+    }
+}
 
 void app_main()
 {
-    static struct blink_task_arg task_arg = { .tim_grp = TIMER_GROUP_1, .tim_id = TIMER_0, .tim_period = 500000UL};
-
     ESP_LOGI(TAG, "Run test %d\n", s_run_test);
-    switch(s_run_test){
-        case 100:
-            xTaskCreate(&blink_task, "blink_task", 2048, &task_arg, 5, NULL);
-            break;
-        case 101:
-            xTaskCreatePinnedToCore(&blink_task, "blink_task0", 2048, NULL, 5, NULL, 0);
-            xTaskCreatePinnedToCore(&blink_task, "blink_task1", 2048, NULL, 5, NULL, 1);
-            break;
-        case 102:
+    if (s_run_test == 100){
+        static struct blink_task_arg task_arg = { .tim_grp = TIMER_GROUP_1, .tim_id = TIMER_0, .tim_period = 500000UL};
+        xTaskCreate(&blink_task, "blink_task", 2048, &task_arg, 5, NULL);
+    } else if (s_run_test == 101){
+        xTaskCreatePinnedToCore(&blink_task, "blink_task0", 2048, NULL, 5, NULL, 0);
+        xTaskCreatePinnedToCore(&blink_task, "blink_task1", 2048, NULL, 5, NULL, 1);
+    } else if (s_run_test == 102){
 #if CONFIG_FREERTOS_UNICORE
-            xTaskCreatePinnedToCore(&scratch_reg_using_task, "sreg_task", 2048, NULL, 5, NULL, 0);
+        xTaskCreatePinnedToCore(&scratch_reg_using_task, "sreg_task", 2048, NULL, 5, NULL, 0);
 #else
-            xTaskCreatePinnedToCore(&scratch_reg_using_task, "sreg_task", 2048, NULL, 5, NULL, 1);
+        xTaskCreatePinnedToCore(&scratch_reg_using_task, "sreg_task", 2048, NULL, 5, NULL, 1);
 #endif
-            break;
-        case 103:
-            xTaskCreate(&step_over_bp_task, "step_over_bp_task", 2048, NULL, 5, NULL);
-            break;
-        case 200:
-            xTaskCreate(&window_exception_test, "win_exc_task", 8192, NULL, 5, NULL);
-            break;
-#if CONFIG_ESP32_GCOV_ENABLE
-        case 300:
-            xTaskCreate(&gcov_task, "gcov_task", 2048, (void *)true, 5, NULL);
-            break;
-        case 301:
-            xTaskCreate(&gcov_task, "gcov_task", 2048, (void *)false, 5, NULL);
-            break;
-#endif
-        case 400:
-            xTaskCreatePinnedToCore(&check_backtrace_task1, "check_bt_task1", 2048, (void*)3, 5, NULL, 0);
-            xTaskCreatePinnedToCore(&check_backtrace_task2, "check_bt_task2", 2048, (void*)7, 5, NULL, 0);
-#if CONFIG_FREERTOS_UNICORE
-            xTaskCreatePinnedToCore(&check_backtrace_task3, "check_bt_task3", 2048, (void*)5, 5, NULL, 0);
-#else
-            xTaskCreatePinnedToCore(&check_backtrace_task3, "check_bt_task3", 2048, (void*)5, 5, NULL, 1);
-#endif
-            break;
-        case 401: // Thread check tasks
-            ESP_LOGE(TAG, "Start Thread tests!");
-            for (int i=0 ; i< 6 ; i++)
-            {
-                char task_name[64];
-                sprintf(task_name, "thread_task%i", i);
-                xTaskCreate(&thread_check_task, task_name, 2048, (void*)i, 5, NULL);
-                vTaskDelay(1);
+    } else if (s_run_test == 103){
+        xTaskCreate(&step_over_bp_task, "step_over_bp_task", 2048, NULL, 5, NULL);
+    } else if (s_run_test == 104){
+        xTaskCreate(&fibonacci_calc, "fibonacci_calc", 2048, NULL, 5, NULL);
+    } else if (s_run_test == 200){
+        xTaskCreate(&window_exception_test, "win_exc_task", 8192, NULL, 5, NULL);
+    } else if (s_run_test == 201){
+        xTaskCreate(&step_out_of_function_test, "step_out_func", 2048, NULL, 5, NULL);
+    } else {
+        ut_result_t res = UT_UNSUPPORTED;
+        for (int i = 0; i < sizeof(s_test_funcs)/sizeof(s_test_funcs[0]); i++) {
+            res = s_test_funcs[i](s_run_test);
+            if (res != UT_UNSUPPORTED) {
+                break;
             }
-            break;
-        default:
+        }
+        if (res == UT_UNSUPPORTED) {
             ESP_LOGE(TAG, "Invalid test id (%d)!", s_run_test);
-            while(1){
-              vTaskDelay(1);
-            }
+        } else if (res != UT_OK) {
+            ESP_LOGE(TAG, "Test %d failed (%d)!", s_run_test, res);
+        }
+        while(1) {
+            vTaskDelay(1);
+        }
     }
 }

@@ -40,7 +40,7 @@ class FlasherTestsImpl:
         fhnd,fname2 = tempfile.mkstemp()
         fbin = os.fdopen(fhnd, 'wb')
         fbin.close()
-        self.gdb.monitor_run('flash read_bank 0 %s 0x%x %d' % (fname2, ESP32_APP_FLASH_OFF + ESP32_APP_FLASH_SZ, size*1024), tmo=120)
+        self.gdb.monitor_run('flash read_bank 0 %s 0x%x %d' % (dbg.fixup_path(fname2), ESP32_APP_FLASH_OFF + ESP32_APP_FLASH_SZ, size*1024), tmo=120)
         self.assertTrue(filecmp.cmp(fname1, fname2))
 
 

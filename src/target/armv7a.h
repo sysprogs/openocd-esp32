@@ -48,7 +48,6 @@ struct armv7a_l2x_cache {
 };
 
 struct armv7a_cachesize {
-	uint32_t level_num;
 	/*  cache dimensionning */
 	uint32_t linelen;
 	uint32_t associativity;
@@ -88,10 +87,11 @@ struct armv7a_mmu_common {
 	/* following field mmu working way */
 	int32_t cached;     /* 0: not initialized, 1: initialized */
 	uint32_t ttbcr;     /* cache for ttbcr register */
+	uint32_t ttbr[2];
 	uint32_t ttbr_mask[2];
 	uint32_t ttbr_range[2];
 
-	int (*read_physical_memory)(struct target *target, uint32_t address, uint32_t size,
+	int (*read_physical_memory)(struct target *target, target_addr_t address, uint32_t size,
 			uint32_t count, uint8_t *buffer);
 	struct armv7a_cache_common armv7a_cache;
 	uint32_t mmu_enabled;
@@ -106,8 +106,6 @@ struct armv7a_common {
 	struct arm_dpm dpm;
 	uint32_t debug_base;
 	struct adiv5_ap *debug_ap;
-	struct adiv5_ap *memory_ap;
-	bool memory_ap_available;
 	/* mdir */
 	uint8_t multi_processor_system;
 	uint8_t cluster_id;
@@ -133,6 +131,12 @@ target_to_armv7a(struct target *target)
 {
 	return container_of(target->arch_info, struct armv7a_common, arm);
 }
+
+static inline bool is_armv7a(struct armv7a_common *armv7a)
+{
+	return armv7a->common_magic == ARMV7_COMMON_MAGIC;
+}
+
 
 /* register offsets from armv7a.debug_base */
 
@@ -172,15 +176,20 @@ target_to_armv7a(struct target *target)
 /* See ARMv7a arch spec section C10.8 */
 #define CPUDBG_AUTHSTATUS	0xFB8
 
+/* Masks for Vector Catch register */
+#define DBG_VCR_FIQ_MASK	((1 << 31) | (1 << 7))
+#define DBG_VCR_IRQ_MASK	((1 << 30) | (1 << 6))
+#define DBG_VCR_DATA_ABORT_MASK	((1 << 28) | (1 << 4))
+#define DBG_VCR_PREF_ABORT_MASK	((1 << 27) | (1 << 3))
+#define DBG_VCR_SVC_MASK	((1 << 26) | (1 << 2))
+
 int armv7a_arch_state(struct target *target);
 int armv7a_identify_cache(struct target *target);
 int armv7a_init_arch_info(struct target *target, struct armv7a_common *armv7a);
-int armv7a_mmu_translate_va_pa(struct target *target, uint32_t va,
-		uint32_t *val, int meminfo);
-int armv7a_mmu_translate_va(struct target *target,  uint32_t va, uint32_t *val);
 
 int armv7a_handle_cache_info_command(struct command_context *cmd_ctx,
 		struct armv7a_cache_common *armv7a_cache);
+int armv7a_read_ttbcr(struct target *target);
 
 extern const struct command_registration armv7a_command_handlers[];
 

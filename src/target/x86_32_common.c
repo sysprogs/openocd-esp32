@@ -48,8 +48,8 @@ static int read_mem(struct target *t, uint32_t size,
 			uint32_t addr, uint8_t *buf);
 static int write_mem(struct target *t, uint32_t size,
 			uint32_t addr, const uint8_t *buf);
-static int calcaddr_pyhsfromlin(struct target *t, uint32_t addr,
-			uint32_t *physaddr);
+static int calcaddr_physfromlin(struct target *t, target_addr_t addr,
+			target_addr_t *physaddr);
 static int read_phys_mem(struct target *t, uint32_t phys_address,
 			uint32_t size, uint32_t count, uint8_t *buffer);
 static int write_phys_mem(struct target *t, uint32_t phys_address,
@@ -113,7 +113,7 @@ int x86_32_common_mmu(struct target *t, int *enabled)
 	return ERROR_OK;
 }
 
-int x86_32_common_virt2phys(struct target *t, uint32_t address, uint32_t *physical)
+int x86_32_common_virt2phys(struct target *t, target_addr_t address, target_addr_t *physical)
 {
 	struct x86_32_common *x86_32 = target_to_x86_32(t);
 
@@ -134,8 +134,8 @@ int x86_32_common_virt2phys(struct target *t, uint32_t address, uint32_t *physic
 
 	} else {
 		/* target halted in protected mode */
-		if (calcaddr_pyhsfromlin(t, address, physical) != ERROR_OK) {
-			LOG_ERROR("%s failed to calculate physical address from 0x%08" PRIx32,
+		if (calcaddr_physfromlin(t, address, physical) != ERROR_OK) {
+			LOG_ERROR("%s failed to calculate physical address from " TARGET_ADDR_FMT,
 					__func__, address);
 			return ERROR_FAIL;
 		}
@@ -143,7 +143,7 @@ int x86_32_common_virt2phys(struct target *t, uint32_t address, uint32_t *physic
 	return ERROR_OK;
 }
 
-int x86_32_common_read_phys_mem(struct target *t, uint32_t phys_address,
+int x86_32_common_read_phys_mem(struct target *t, target_addr_t phys_address,
 			uint32_t size, uint32_t count, uint8_t *buffer)
 {
 	struct x86_32_common *x86_32 = target_to_x86_32(t);
@@ -209,15 +209,16 @@ static int read_phys_mem(struct target *t, uint32_t phys_address,
 			LOG_ERROR("%s invalid read size", __func__);
 			break;
 		}
+		if (retval != ERROR_OK)
+			break;
 	}
 	/* restore CR0.PG bit if needed (regardless of retval) */
 	if (pg_disabled) {
-		retval = x86_32->enable_paging(t);
-		if (retval != ERROR_OK) {
+		int retval2 = x86_32->enable_paging(t);
+		if (retval2 != ERROR_OK) {
 			LOG_ERROR("%s could not enable paging", __func__);
-			return retval;
+			return retval2;
 		}
-		pg_disabled = true;
 	}
 	/* TODO: After reading memory from target, we must replace
 	 * software breakpoints with the original instructions again.
@@ -226,7 +227,7 @@ static int read_phys_mem(struct target *t, uint32_t phys_address,
 	return retval;
 }
 
-int x86_32_common_write_phys_mem(struct target *t, uint32_t phys_address,
+int x86_32_common_write_phys_mem(struct target *t, target_addr_t phys_address,
 			uint32_t size, uint32_t count, const uint8_t *buffer)
 {
 	struct x86_32_common *x86_32 = target_to_x86_32(t);
@@ -235,7 +236,7 @@ int x86_32_common_write_phys_mem(struct target *t, uint32_t phys_address,
 
 	check_not_halted(t);
 	if (!count || !buffer || !phys_address) {
-		LOG_ERROR("%s invalid params count=0x%" PRIx32 ", buf=%p, addr=0x%08" PRIx32,
+		LOG_ERROR("%s invalid params count=0x%" PRIx32 ", buf=%p, addr=" TARGET_ADDR_FMT,
 				__func__, count, buffer, phys_address);
 		return ERROR_COMMAND_ARGUMENT_INVALID;
 	}
@@ -364,6 +365,9 @@ static int read_mem(struct target *t, uint32_t size,
 			break;
 	}
 
+	if (retval != ERROR_OK)
+		return retval;
+
 	/* read_hw_reg() will write to 4 bytes (uint32_t)
 	 * Watch out, the buffer passed into read_mem() might be 1 or 2 bytes.
 	 */
@@ -436,6 +440,10 @@ static int write_mem(struct target *t, uint32_t size,
 			LOG_ERROR("%s invalid write mem size", __func__);
 			return ERROR_FAIL;
 	}
+
+	if (retval != ERROR_OK)
+		return retval;
+
 	retval = x86_32->transaction_status(t);
 	if (retval != ERROR_OK) {
 		LOG_ERROR("%s error on mem write", __func__);
@@ -444,7 +452,7 @@ static int write_mem(struct target *t, uint32_t size,
 	return retval;
 }
 
-int calcaddr_pyhsfromlin(struct target *t, uint32_t addr, uint32_t *physaddr)
+int calcaddr_physfromlin(struct target *t, target_addr_t addr, target_addr_t *physaddr)
 {
 	uint8_t entry_buffer[8];
 
@@ -568,16 +576,16 @@ int calcaddr_pyhsfromlin(struct target *t, uint32_t addr, uint32_t *physaddr)
 	return ERROR_OK;
 }
 
-int x86_32_common_read_memory(struct target *t, uint32_t addr,
+int x86_32_common_read_memory(struct target *t, target_addr_t addr,
 			uint32_t size, uint32_t count, uint8_t *buf)
 {
 	int retval = ERROR_OK;
 	struct x86_32_common *x86_32 = target_to_x86_32(t);
-	LOG_DEBUG("addr=0x%08" PRIx32 ", size=%" PRIu32 ", count=0x%" PRIx32 ", buf=%p",
+	LOG_DEBUG("addr=" TARGET_ADDR_FMT ", size=%" PRIu32 ", count=0x%" PRIx32 ", buf=%p",
 			addr, size, count, buf);
 	check_not_halted(t);
 	if (!count || !buf || !addr) {
-		LOG_ERROR("%s invalid params count=0x%" PRIx32 ", buf=%p, addr=0x%08" PRIx32,
+		LOG_ERROR("%s invalid params count=0x%" PRIx32 ", buf=%p, addr=" TARGET_ADDR_FMT,
 				__func__, count, buf, addr);
 		return ERROR_COMMAND_ARGUMENT_INVALID;
 	}
@@ -591,9 +599,10 @@ int x86_32_common_read_memory(struct target *t, uint32_t addr,
 			LOG_ERROR("%s could not disable paging", __func__);
 			return retval;
 		}
-		uint32_t physaddr = 0;
-		if (calcaddr_pyhsfromlin(t, addr, &physaddr) != ERROR_OK) {
-			LOG_ERROR("%s failed to calculate physical address from 0x%08" PRIx32, __func__, addr);
+		target_addr_t physaddr = 0;
+		if (calcaddr_physfromlin(t, addr, &physaddr) != ERROR_OK) {
+			LOG_ERROR("%s failed to calculate physical address from " TARGET_ADDR_FMT,
+					  __func__, addr);
 			retval = ERROR_FAIL;
 		}
 		/* TODO: !!! Watch out for page boundaries
@@ -603,8 +612,8 @@ int x86_32_common_read_memory(struct target *t, uint32_t addr,
 
 		if (retval == ERROR_OK
 			&& x86_32_common_read_phys_mem(t, physaddr, size, count, buf) != ERROR_OK) {
-			LOG_ERROR("%s failed to read memory from physical address 0x%08" PRIx32, __func__, physaddr);
-			retval = ERROR_FAIL;
+			LOG_ERROR("%s failed to read memory from physical address " TARGET_ADDR_FMT,
+					  __func__, physaddr);
 		}
 		/* restore PG bit if it was cleared prior (regardless of retval) */
 		retval = x86_32->enable_paging(t);
@@ -615,7 +624,8 @@ int x86_32_common_read_memory(struct target *t, uint32_t addr,
 	} else {
 		/* paging is off - linear address is physical address */
 		if (x86_32_common_read_phys_mem(t, addr, size, count, buf) != ERROR_OK) {
-			LOG_ERROR("%s failed to read memory from address 0%08" PRIx32, __func__, addr);
+			LOG_ERROR("%s failed to read memory from address " TARGET_ADDR_FMT,
+					  __func__, addr);
 			retval = ERROR_FAIL;
 		}
 	}
@@ -623,16 +633,16 @@ int x86_32_common_read_memory(struct target *t, uint32_t addr,
 	return retval;
 }
 
-int x86_32_common_write_memory(struct target *t, uint32_t addr,
+int x86_32_common_write_memory(struct target *t, target_addr_t addr,
 			uint32_t size, uint32_t count, const uint8_t *buf)
 {
 	int retval = ERROR_OK;
 	struct x86_32_common *x86_32 = target_to_x86_32(t);
-	LOG_DEBUG("addr=0x%08" PRIx32 ", size=%" PRIu32 ", count=0x%" PRIx32 ", buf=%p",
+	LOG_DEBUG("addr=" TARGET_ADDR_FMT ", size=%" PRIu32 ", count=0x%" PRIx32 ", buf=%p",
 			addr, size, count, buf);
 	check_not_halted(t);
 	if (!count || !buf || !addr) {
-		LOG_ERROR("%s invalid params count=0x%" PRIx32 ", buf=%p, addr=0x%08" PRIx32,
+		LOG_ERROR("%s invalid params count=0x%" PRIx32 ", buf=%p, addr=" TARGET_ADDR_FMT,
 					__func__, count, buf, addr);
 		return ERROR_COMMAND_ARGUMENT_INVALID;
 	}
@@ -645,9 +655,9 @@ int x86_32_common_write_memory(struct target *t, uint32_t addr,
 			LOG_ERROR("%s could not disable paging", __func__);
 			return retval;
 		}
-		uint32_t physaddr = 0;
-		if (calcaddr_pyhsfromlin(t, addr, &physaddr) != ERROR_OK) {
-			LOG_ERROR("%s failed to calculate physical address from 0x%08" PRIx32,
+		target_addr_t physaddr = 0;
+		if (calcaddr_physfromlin(t, addr, &physaddr) != ERROR_OK) {
+			LOG_ERROR("%s failed to calculate physical address from " TARGET_ADDR_FMT,
 					__func__, addr);
 			retval = ERROR_FAIL;
 		}
@@ -657,9 +667,8 @@ int x86_32_common_write_memory(struct target *t, uint32_t addr,
 		 */
 		if (retval == ERROR_OK
 			&& x86_32_common_write_phys_mem(t, physaddr, size, count, buf) != ERROR_OK) {
-			LOG_ERROR("%s failed to write memory to physical address 0x%08" PRIx32,
+			LOG_ERROR("%s failed to write memory to physical address " TARGET_ADDR_FMT,
 					__func__, physaddr);
-			retval = ERROR_FAIL;
 		}
 		/* restore PG bit if it was cleared prior (regardless of retval) */
 		retval = x86_32->enable_paging(t);
@@ -671,7 +680,7 @@ int x86_32_common_write_memory(struct target *t, uint32_t addr,
 
 		/* paging is off - linear address is physical address */
 		if (x86_32_common_write_phys_mem(t, addr, size, count, buf) != ERROR_OK) {
-			LOG_ERROR("%s failed to write memory to address 0x%08" PRIx32,
+			LOG_ERROR("%s failed to write memory to address " TARGET_ADDR_FMT,
 					__func__, addr);
 			retval = ERROR_FAIL;
 		}
@@ -730,15 +739,19 @@ int x86_32_common_read_io(struct target *t, uint32_t addr,
 			LOG_ERROR("%s invalid read io size", __func__);
 			return ERROR_FAIL;
 	}
+
 	/* restore CR0.PG bit if needed */
 	if (pg_disabled) {
-		retval = x86_32->enable_paging(t);
-		if (retval != ERROR_OK) {
+		int retval2 = x86_32->enable_paging(t);
+		if (retval2 != ERROR_OK) {
 			LOG_ERROR("%s could not enable paging", __func__);
-			return retval;
+			return retval2;
 		}
-		pg_disabled = false;
 	}
+
+	if (retval != ERROR_OK)
+		return retval;
+
 	uint32_t regval = 0;
 	retval = x86_32->read_hw_reg(t, EAX, &regval, 0);
 	if (retval != ERROR_OK) {
@@ -815,15 +828,19 @@ int x86_32_common_write_io(struct target *t, uint32_t addr,
 			LOG_ERROR("%s invalid write io size", __func__);
 			return ERROR_FAIL;
 	}
+
 	/* restore CR0.PG bit if needed */
 	if (pg_disabled) {
-		retval = x86_32->enable_paging(t);
-		if (retval != ERROR_OK) {
+		int retval2 = x86_32->enable_paging(t);
+		if (retval2 != ERROR_OK) {
 			LOG_ERROR("%s could not enable paging", __func__);
-			return retval;
+			return retval2;
 		}
-		pg_disabled = false;
 	}
+
+	if (retval != ERROR_OK)
+		return retval;
+
 	retval = x86_32->transaction_status(t);
 	if (retval != ERROR_OK) {
 		LOG_ERROR("%s error on io write", __func__);
@@ -852,7 +869,7 @@ int x86_32_common_remove_watchpoint(struct target *t, struct watchpoint *wp)
 
 int x86_32_common_add_breakpoint(struct target *t, struct breakpoint *bp)
 {
-	LOG_DEBUG("type=%d, addr=0x%08" PRIx32, bp->type, bp->address);
+	LOG_DEBUG("type=%d, addr=" TARGET_ADDR_FMT, bp->type, bp->address);
 	if (check_not_halted(t))
 		return ERROR_TARGET_NOT_HALTED;
 	/* set_breakpoint() will return ERROR_TARGET_RESOURCE_NOT_AVAILABLE if all
@@ -863,7 +880,7 @@ int x86_32_common_add_breakpoint(struct target *t, struct breakpoint *bp)
 
 int x86_32_common_remove_breakpoint(struct target *t, struct breakpoint *bp)
 {
-	LOG_DEBUG("type=%d, addr=0x%08" PRIx32, bp->type, bp->address);
+	LOG_DEBUG("type=%d, addr=" TARGET_ADDR_FMT, bp->type, bp->address);
 	if (check_not_halted(t))
 		return ERROR_TARGET_NOT_HALTED;
 	if (bp->set)
@@ -1003,7 +1020,7 @@ static int unset_hwbp(struct target *t, struct breakpoint *bp)
 	debug_reg_list[hwbp_num].used = 0;
 	debug_reg_list[hwbp_num].bp_value = 0;
 
-	LOG_USER("%s hardware breakpoint %" PRIu32 " removed from 0x%08" PRIx32 " (hwreg=%d)",
+	LOG_USER("%s hardware breakpoint %" PRIu32 " removed from " TARGET_ADDR_FMT " (hwreg=%d)",
 			__func__, bp->unique_id, bp->address, hwbp_num);
 	return ERROR_OK;
 }
@@ -1012,11 +1029,11 @@ static int set_swbp(struct target *t, struct breakpoint *bp)
 {
 	struct x86_32_common *x86_32 = target_to_x86_32(t);
 	LOG_DEBUG("id %" PRIx32, bp->unique_id);
-	uint32_t physaddr;
+	target_addr_t physaddr;
 	uint8_t opcode = SW_BP_OPCODE;
 	uint8_t readback;
 
-	if (calcaddr_pyhsfromlin(t, bp->address, &physaddr) != ERROR_OK)
+	if (calcaddr_physfromlin(t, bp->address, &physaddr) != ERROR_OK)
 		return ERROR_FAIL;
 	if (read_phys_mem(t, physaddr, 1, 1, bp->orig_instr))
 		return ERROR_FAIL;
@@ -1032,7 +1049,7 @@ static int set_swbp(struct target *t, struct breakpoint *bp)
 		return ERROR_FAIL;
 
 	if (readback != SW_BP_OPCODE) {
-		LOG_ERROR("%s software breakpoint error at 0x%08" PRIx32 ", check memory",
+		LOG_ERROR("%s software breakpoint error at " TARGET_ADDR_FMT ", check memory",
 				__func__, bp->address);
 		LOG_ERROR("%s readback=0x%02" PRIx8 " orig=0x%02" PRIx8 "",
 				__func__, readback, *bp->orig_instr);
@@ -1059,7 +1076,7 @@ static int set_swbp(struct target *t, struct breakpoint *bp)
 			addto = addto->next;
 		addto->next = new_patch;
 	}
-	LOG_USER("%s software breakpoint %" PRIu32 " set at 0x%08" PRIx32,
+	LOG_USER("%s software breakpoint %" PRIu32 " set at " TARGET_ADDR_FMT,
 			__func__, bp->unique_id, bp->address);
 	return ERROR_OK;
 }
@@ -1068,11 +1085,11 @@ static int unset_swbp(struct target *t, struct breakpoint *bp)
 {
 	struct x86_32_common *x86_32 = target_to_x86_32(t);
 	LOG_DEBUG("id %" PRIx32, bp->unique_id);
-	uint32_t physaddr;
+	target_addr_t physaddr;
 	uint8_t current_instr;
 
 	/* check that user program has not modified breakpoint instruction */
-	if (calcaddr_pyhsfromlin(t, bp->address, &physaddr) != ERROR_OK)
+	if (calcaddr_physfromlin(t, bp->address, &physaddr) != ERROR_OK)
 		return ERROR_FAIL;
 	if (read_phys_mem(t, physaddr, 1, 1, &current_instr))
 		return ERROR_FAIL;
@@ -1081,7 +1098,7 @@ static int unset_swbp(struct target *t, struct breakpoint *bp)
 		if (write_phys_mem(t, physaddr, 1, 1, bp->orig_instr))
 			return ERROR_FAIL;
 	} else {
-		LOG_ERROR("%s software breakpoint remove error at 0x%08" PRIx32 ", check memory",
+		LOG_ERROR("%s software breakpoint remove error at " TARGET_ADDR_FMT ", check memory",
 				__func__, bp->address);
 		LOG_ERROR("%s current=0x%02" PRIx8 " orig=0x%02" PRIx8 "",
 				__func__, current_instr, *bp->orig_instr);
@@ -1107,7 +1124,7 @@ static int unset_swbp(struct target *t, struct breakpoint *bp)
 		}
 	}
 
-	LOG_USER("%s software breakpoint %" PRIu32 " removed from 0x%08" PRIx32,
+	LOG_USER("%s software breakpoint %" PRIu32 " removed from " TARGET_ADDR_FMT,
 			__func__, bp->unique_id, bp->address);
 	return ERROR_OK;
 }
@@ -1116,7 +1133,7 @@ static int set_breakpoint(struct target *t, struct breakpoint *bp)
 {
 	int error = ERROR_OK;
 	struct x86_32_common *x86_32 = target_to_x86_32(t);
-	LOG_DEBUG("type=%d, addr=0x%08" PRIx32, bp->type, bp->address);
+	LOG_DEBUG("type=%d, addr=" TARGET_ADDR_FMT, bp->type, bp->address);
 	if (bp->set) {
 		LOG_ERROR("breakpoint already set");
 		return error;
@@ -1124,7 +1141,7 @@ static int set_breakpoint(struct target *t, struct breakpoint *bp)
 	if (bp->type == BKPT_HARD) {
 		error = set_hwbp(t, bp);
 		if (error != ERROR_OK) {
-			LOG_ERROR("%s error setting hardware breakpoint at 0x%08" PRIx32,
+			LOG_ERROR("%s error setting hardware breakpoint at " TARGET_ADDR_FMT,
 					__func__, bp->address);
 			return error;
 		}
@@ -1132,13 +1149,12 @@ static int set_breakpoint(struct target *t, struct breakpoint *bp)
 		if (x86_32->sw_bpts_supported(t)) {
 			error = set_swbp(t, bp);
 			if (error != ERROR_OK) {
-				LOG_ERROR("%s error setting software breakpoint at 0x%08" PRIx32,
+				LOG_ERROR("%s error setting software breakpoint at " TARGET_ADDR_FMT,
 						__func__, bp->address);
 				return error;
 			}
 		} else {
 			LOG_ERROR("%s core doesn't support SW breakpoints", __func__);
-			error = ERROR_FAIL;
 			return ERROR_FAIL;
 		}
 	}
@@ -1147,7 +1163,7 @@ static int set_breakpoint(struct target *t, struct breakpoint *bp)
 
 static int unset_breakpoint(struct target *t, struct breakpoint *bp)
 {
-	LOG_DEBUG("type=%d, addr=0x%08" PRIx32, bp->type, bp->address);
+	LOG_DEBUG("type=%d, addr=" TARGET_ADDR_FMT, bp->type, bp->address);
 	if (!bp->set) {
 		LOG_WARNING("breakpoint not set");
 		return ERROR_OK;
@@ -1155,13 +1171,13 @@ static int unset_breakpoint(struct target *t, struct breakpoint *bp)
 
 	if (bp->type == BKPT_HARD) {
 		if (unset_hwbp(t, bp) != ERROR_OK) {
-			LOG_ERROR("%s error removing hardware breakpoint at 0x%08" PRIx32,
+			LOG_ERROR("%s error removing hardware breakpoint at " TARGET_ADDR_FMT,
 					__func__, bp->address);
 			return ERROR_FAIL;
 		}
 	} else {
 		if (unset_swbp(t, bp) != ERROR_OK) {
-			LOG_ERROR("%s error removing software breakpoint at 0x%08" PRIx32,
+			LOG_ERROR("%s error removing software breakpoint at " TARGET_ADDR_FMT,
 					__func__, bp->address);
 			return ERROR_FAIL;
 		}
@@ -1175,7 +1191,7 @@ static int set_watchpoint(struct target *t, struct watchpoint *wp)
 	struct x86_32_common *x86_32 = target_to_x86_32(t);
 	struct x86_32_dbg_reg *debug_reg_list = x86_32->hw_break_list;
 	int wp_num = 0;
-	LOG_DEBUG("type=%d, addr=0x%08" PRIx32, wp->rw, wp->address);
+	LOG_DEBUG("type=%d, addr=" TARGET_ADDR_FMT, wp->rw, wp->address);
 
 	if (wp->set) {
 		LOG_ERROR("%s watchpoint already set", __func__);
@@ -1220,7 +1236,7 @@ static int set_watchpoint(struct target *t, struct watchpoint *wp)
 	wp->set = wp_num + 1;
 	debug_reg_list[wp_num].used = 1;
 	debug_reg_list[wp_num].bp_value = wp->address;
-	LOG_USER("'%s' watchpoint %d set at 0x%08" PRIx32 " with length %" PRIu32 " (hwreg=%d)",
+	LOG_USER("'%s' watchpoint %d set at " TARGET_ADDR_FMT " with length %" PRIu32 " (hwreg=%d)",
 			wp->rw == WPT_READ ? "read" : wp->rw == WPT_WRITE ?
 			"write" : wp->rw == WPT_ACCESS ? "access" : "?",
 			wp->unique_id, wp->address, wp->length, wp_num);
@@ -1231,7 +1247,7 @@ static int unset_watchpoint(struct target *t, struct watchpoint *wp)
 {
 	struct x86_32_common *x86_32 = target_to_x86_32(t);
 	struct x86_32_dbg_reg *debug_reg_list = x86_32->hw_break_list;
-	LOG_DEBUG("type=%d, addr=0x%08" PRIx32, wp->rw, wp->address);
+	LOG_DEBUG("type=%d, addr=" TARGET_ADDR_FMT, wp->rw, wp->address);
 	if (!wp->set) {
 		LOG_WARNING("watchpoint not set");
 		return ERROR_OK;
@@ -1249,12 +1265,44 @@ static int unset_watchpoint(struct target *t, struct watchpoint *wp)
 	debug_reg_list[wp_num].bp_value = 0;
 	wp->set = 0;
 
-	LOG_USER("'%s' watchpoint %d removed from 0x%08" PRIx32 " with length %" PRIu32 " (hwreg=%d)",
+	LOG_USER("'%s' watchpoint %d removed from " TARGET_ADDR_FMT " with length %" PRIu32 " (hwreg=%d)",
 			wp->rw == WPT_READ ? "read" : wp->rw == WPT_WRITE ?
 			"write" : wp->rw == WPT_ACCESS ? "access" : "?",
 			wp->unique_id, wp->address, wp->length, wp_num);
 
 	return ERROR_OK;
+}
+
+/* after reset breakpoints and watchpoints in memory are not valid anymore and
+ * debug registers are cleared.
+ * we can't afford to remove sw breakpoints using the default methods as the
+ * memory doesn't have the same layout yet and an access might crash the target,
+ * so we just clear the openocd breakpoints structures.
+ */
+void x86_32_common_reset_breakpoints_watchpoints(struct target *t)
+{
+	struct x86_32_common *x86_32 = target_to_x86_32(t);
+	struct x86_32_dbg_reg *debug_reg_list = x86_32->hw_break_list;
+	struct breakpoint *next_b;
+	struct watchpoint *next_w;
+
+	while (t->breakpoints) {
+		next_b = t->breakpoints->next;
+		free(t->breakpoints->orig_instr);
+		free(t->breakpoints);
+		t->breakpoints = next_b;
+	}
+
+	while (t->watchpoints) {
+		next_w = t->watchpoints->next;
+		free(t->watchpoints);
+		t->watchpoints = next_w;
+	}
+
+	for (int i = 0; i < x86_32->num_hw_bpoints; i++) {
+		debug_reg_list[i].used = 0;
+		debug_reg_list[i].bp_value = 0;
+	}
 }
 
 static int read_hw_reg_to_cache(struct target *t, int num)

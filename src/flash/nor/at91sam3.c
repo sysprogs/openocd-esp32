@@ -2991,28 +2991,6 @@ static int sam3_GetInfo(struct sam3_chip *pChip)
 	return ERROR_OK;
 }
 
-static int sam3_erase_check(struct flash_bank *bank)
-{
-	int x;
-
-	LOG_DEBUG("Here");
-	if (bank->target->state != TARGET_HALTED) {
-		LOG_ERROR("Target not halted");
-		return ERROR_TARGET_NOT_HALTED;
-	}
-	if (0 == bank->num_sectors) {
-		LOG_ERROR("Target: not supported/not probed");
-		return ERROR_FAIL;
-	}
-
-	LOG_INFO("sam3 - supports auto-erase, erase_check ignored");
-	for (x = 0; x < bank->num_sectors; x++)
-		bank->sectors[x].is_erased = 1;
-
-	LOG_DEBUG("Done");
-	return ERROR_OK;
-}
-
 static int sam3_protect_check(struct flash_bank *bank)
 {
 	int r;
@@ -3115,6 +3093,22 @@ FLASH_BANK_COMMAND_HANDLER(sam3_flash_bank_command)
 
 	/* we initialize after probing. */
 	return ERROR_OK;
+}
+
+/**
+ * Remove all chips from the internal list without distingushing which one
+ * is owned by this bank. This simplification works only for one shot
+ * deallocation like current flash_free_all_banks()
+ */
+void sam3_free_driver_priv(struct flash_bank *bank)
+{
+	struct sam3_chip *chip = all_sam3_chips;
+	while (chip) {
+		struct sam3_chip *next = chip->next;
+		free(chip);
+		chip = next;
+	}
+	all_sam3_chips = NULL;
 }
 
 static int sam3_GetDetails(struct sam3_bank_private *pPrivate)
@@ -3769,6 +3763,7 @@ struct flash_driver at91sam3_flash = {
 	.read = default_flash_read,
 	.probe = sam3_probe,
 	.auto_probe = sam3_auto_probe,
-	.erase_check = sam3_erase_check,
+	.erase_check = default_flash_blank_check,
 	.protect_check = sam3_protect_check,
+	.free_driver_priv = sam3_free_driver_priv,
 };

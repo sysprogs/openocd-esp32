@@ -285,9 +285,9 @@ static int esp32_get_mappings(struct target *target, struct esp32_flash_mapping 
 	run.mem_args.count = 1;
 
 	ret = esp32_run_func_image(target, &run, &flasher_image, 3 /*args num*/,
-	                           ESP32_STUB_CMD_FLASH_MAP_GET/*cmd*/,
+							ESP32_STUB_CMD_FLASH_MAP_GET/*cmd*/,
 							esp32->appimage_flash_base,
-	                           0/*address to store mappings*/);
+							0/*address to store mappings*/);
 	image_close(&flasher_image.image);
 	if (ret != ERROR_OK) {
 		LOG_ERROR("Failed to run flasher stub (%d)!", ret);
@@ -642,30 +642,27 @@ static int esp32_probe(struct flash_bank *bank)
 	}
 
 	int ret = esp32_get_mappings(bank->target, &flash_map);
-	if (ret != ERROR_OK) {
+	if (ret != ERROR_OK || flash_map.maps_num == 0) {
 		LOG_WARNING("Failed to get flash mappings (%d)!", ret);
+		// if no DROM/IROM mappings so pretend they are at the end of the HW flash bank and have zero size to allow correct memory map with non zero RAM region
+		irom_base = drom_base = esp32_get_size(bank);
 	} else {
-		if (flash_map.maps_num == 0) {
-			// if no DROM/IROM mappuings so pretend they are at the end of the HW flash bank and have zero size to allow correct memory map with non zero RAM region
-			irom_base = drom_base = esp32_get_size(bank);
-		} else {
-	for (uint32_t i = 0; i < flash_map.maps_num; i++) {
-		if (flash_map.maps[i].load_addr >= ESP32_IROM_LOW && flash_map.maps[i].load_addr < ESP32_IROM_HIGH) {
-			irom_flash_base = flash_map.maps[i].phy_addr & ~(ESP32_FLASH_SECTOR_SIZE-1);
-			irom_base = flash_map.maps[i].load_addr & ~(ESP32_FLASH_SECTOR_SIZE-1);
-			irom_sz = flash_map.maps[i].size;
-			if (irom_sz & (ESP32_FLASH_SECTOR_SIZE-1)) {
-				irom_sz = (irom_sz & ~(ESP32_FLASH_SECTOR_SIZE-1)) + ESP32_FLASH_SECTOR_SIZE;
+		for (uint32_t i = 0; i < flash_map.maps_num; i++) {
+			if (flash_map.maps[i].load_addr >= ESP32_IROM_LOW && flash_map.maps[i].load_addr < ESP32_IROM_HIGH) {
+				irom_flash_base = flash_map.maps[i].phy_addr & ~(ESP32_FLASH_SECTOR_SIZE-1);
+				irom_base = flash_map.maps[i].load_addr & ~(ESP32_FLASH_SECTOR_SIZE-1);
+				irom_sz = flash_map.maps[i].size;
+				if (irom_sz & (ESP32_FLASH_SECTOR_SIZE-1)) {
+					irom_sz = (irom_sz & ~(ESP32_FLASH_SECTOR_SIZE-1)) + ESP32_FLASH_SECTOR_SIZE;
+				}
+			} else if (flash_map.maps[i].load_addr >= ESP32_DROM_LOW && flash_map.maps[i].load_addr < ESP32_DROM_HIGH) {
+				drom_flash_base = flash_map.maps[i].phy_addr & ~(ESP32_FLASH_SECTOR_SIZE-1);
+				drom_base = flash_map.maps[i].load_addr & ~(ESP32_FLASH_SECTOR_SIZE-1);
+				drom_sz = flash_map.maps[i].size;
+				if (drom_sz & (ESP32_FLASH_SECTOR_SIZE-1)) {
+					drom_sz = (drom_sz & ~(ESP32_FLASH_SECTOR_SIZE-1)) + ESP32_FLASH_SECTOR_SIZE;
+				}
 			}
-		} else if (flash_map.maps[i].load_addr >= ESP32_DROM_LOW && flash_map.maps[i].load_addr < ESP32_DROM_HIGH) {
-			drom_flash_base = flash_map.maps[i].phy_addr & ~(ESP32_FLASH_SECTOR_SIZE-1);
-			drom_base = flash_map.maps[i].load_addr & ~(ESP32_FLASH_SECTOR_SIZE-1);
-			drom_sz = flash_map.maps[i].size;
-			if (drom_sz & (ESP32_FLASH_SECTOR_SIZE-1)) {
-				drom_sz = (drom_sz & ~(ESP32_FLASH_SECTOR_SIZE-1)) + ESP32_FLASH_SECTOR_SIZE;
-			}
-		}
-	}
 		}
 	}
 
@@ -688,17 +685,20 @@ static int esp32_probe(struct flash_bank *bank)
 	}
 	LOG_INFO("Using flash size %d KB", bank->size/1024);
 
-	bank->num_sectors = bank->size / ESP32_FLASH_SECTOR_SIZE;
-	bank->sectors = malloc(sizeof(struct flash_sector) * bank->num_sectors);
-	if (bank->sectors == NULL) {
-		LOG_ERROR("Failed to alloc mem for sectors!");
-		return ERROR_FAIL;
-	}
-	for (int i = 0; i < bank->num_sectors; i++) {
-		bank->sectors[i].offset = i*ESP32_FLASH_SECTOR_SIZE;
-		bank->sectors[i].size = ESP32_FLASH_SECTOR_SIZE;
-		bank->sectors[i].is_erased = -1;
-		bank->sectors[i].is_protected = 0;
+	if (bank->size) {
+		// Bank size can be 0 for IRON/DROM emulated banks when there is no app in flash
+		bank->num_sectors = bank->size / ESP32_FLASH_SECTOR_SIZE;
+		bank->sectors = malloc(sizeof(struct flash_sector) * bank->num_sectors);
+		if (bank->sectors == NULL) {
+			LOG_ERROR("Failed to alloc mem for sectors!");
+			return ERROR_FAIL;
+		}
+		for (int i = 0; i < bank->num_sectors; i++) {
+			bank->sectors[i].offset = i*ESP32_FLASH_SECTOR_SIZE;
+			bank->sectors[i].size = ESP32_FLASH_SECTOR_SIZE;
+			bank->sectors[i].is_erased = -1;
+			bank->sectors[i].is_protected = 0;
+		}
 	}
 	LOG_DEBUG("allocated %d sectors", bank->num_sectors);
 	esp32_info->probed = 1;
@@ -758,7 +758,7 @@ struct esp32_flash_sw_breakpoint * esp32_add_flash_breakpoint(struct target *tar
 	esp32_info = bank->driver_priv;
 	// can set set breakpoints in mapped app regions only
 	if (strcmp(bank->name, "irom") != 0) {
-		LOG_ERROR("Can not set BP outside of IROM (BP addr 0x%x)!", breakpoint->address);
+		LOG_ERROR("Can not set BP outside of IROM (BP addr " TARGET_ADDR_FMT ")!", breakpoint->address);
 		return NULL;
 	}
 
@@ -806,7 +806,7 @@ struct esp32_flash_sw_breakpoint * esp32_add_flash_breakpoint(struct target *tar
 	sw_bp->data.insn_sz = run.ret_code;
 	memcpy(sw_bp->data.insn, mp.value, 3);
 	destroy_mem_param(&mp);
-	LOG_DEBUG("%s: Placed flash SW breakpoint at 0x%X, insn [%02x %02x %02x] %d bytes", target->cmd_name, breakpoint->address,
+	LOG_DEBUG("%s: Placed flash SW breakpoint at " TARGET_ADDR_FMT ", insn [%02x %02x %02x] %d bytes", target->cmd_name, breakpoint->address,
 	          sw_bp->data.insn[0], sw_bp->data.insn[1], sw_bp->data.insn[2], sw_bp->data.insn_sz);
 
 	return sw_bp;
@@ -837,7 +837,7 @@ int esp32_remove_flash_breakpoint(struct target *target, struct esp32_flash_sw_b
 	run.mem_args.count = 1;
 
 	uint32_t bp_flash_addr = esp32_info->hw_flash_base + (breakpoint->data.oocd_bp->address - breakpoint->bank->base);
-	LOG_DEBUG("%s: Remove flash SW breakpoint at 0x%X, insn [%02x %02x %02x] %d bytes", target->cmd_name, breakpoint->data.oocd_bp->address,
+	LOG_DEBUG("%s: Remove flash SW breakpoint at " TARGET_ADDR_FMT ", insn [%02x %02x %02x] %d bytes", target->cmd_name, breakpoint->data.oocd_bp->address,
 	          breakpoint->data.insn[0], breakpoint->data.insn[1], breakpoint->data.insn[2], breakpoint->data.insn_sz);
 	ret = esp32_run_func_image(target, &run, &flasher_image, 4 /*args num*/,
 	                           ESP32_STUB_CMD_FLASH_BP_CLEAR/*cmd*/,

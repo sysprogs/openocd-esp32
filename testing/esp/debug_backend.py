@@ -5,24 +5,34 @@ import threading
 import time
 import telnetlib
 import re
+import os
 from pygdbmi.gdbcontroller import GdbController
 from pygdbmi.gdbcontroller import GdbTimeoutError
 from pprint import pformat
+
 
 OOCD_PORT = 3333
 toolchain = 'none'
 _oocd_inst   = None
 _gdb_inst    = None
 
-def start(toolch, oocd_path, oocd_tcl_dir, oocd_cfg_files):
+if os.name == 'nt':
+    OS_INT_SIG = signal.CTRL_C_EVENT
+else:
+    OS_INT_SIG = signal.SIGINT
+
+def start(toolch, oocd_path, oocd_tcl_dir, oocd_cfg_files, oocd_cfg_cmds=[], oocd_dbg_level=2):
     global _oocd_inst
     global _gdb_inst
     global toolchain
     toolchain = toolch
-    oocd_args = ['-s', oocd_tcl_dir]
+    oocd_args = []
+    for c in oocd_cfg_cmds:
+        oocd_args += ['-c', '%s' % c]
+    oocd_args += ['-s', oocd_tcl_dir]
     for f in oocd_cfg_files:
         oocd_args += ['-f', f]
-    # oocd_args += ['-d', '3']
+    oocd_args += ['-d%d' % oocd_dbg_level]
     _oocd_inst = Oocd(oocd_path, oocd_args)
     _oocd_inst.start()
     try:
@@ -35,13 +45,14 @@ def start(toolch, oocd_path, oocd_tcl_dir, oocd_cfg_files):
 
 def stop():
     _oocd_inst.stop()
-    _oocd_inst.join()
+    Oocd.get_logger().debug('Debug backend finished')
 
 def get_gdb():
     return _gdb_inst
 
 def get_oocd():
     return _oocd_inst
+
 
 class DebuggerError(RuntimeError):
     pass
@@ -50,10 +61,28 @@ class DebuggerError(RuntimeError):
 class DebuggerTargetStateTimeoutError(DebuggerError):
     pass
 
+# This function needs to be called for paths passed to OOCD or GDB commands.
+# API handles this automatically but ut should be used when if user composes commands himself, e.g. for Gdb.monitor_run().
+# It makes paths portable across Windows and Linux versions of the tools.
+def fixup_path(path):
+    file_path = path
+    if os.name == 'nt':
+        # Convert filepath from Windows format if needed
+        file_path = file_path.replace("\\","/");
+    return file_path
+
 
 class Oocd(threading.Thread):
     _oocd_proc = None
     _logger = None
+    if os.name == 'nt':
+        CREATION_FLAGS = subprocess.CREATE_NEW_PROCESS_GROUP
+        # under Msys Python OOCD hangs during startup when trying to output to stdout,
+        # so work around this temporarily be disabling stdout redirection (OOCD will print everything to console)
+        STDOUT_DEST = None
+    else:
+        CREATION_FLAGS = 0
+        STDOUT_DEST = subprocess.PIPE
 
     @staticmethod
     def get_logger():
@@ -61,11 +90,13 @@ class Oocd(threading.Thread):
 
     def __init__(self, oocd_path = 'openocd', oocd_args=[]):
         super(Oocd, self).__init__()
+        self.do_work = True
         self._logger = self.get_logger()
-        self._logger.debug('Start OpenOCD')
+        self._logger.debug('Start OpenOCD: {%s}', oocd_args)
         self._oocd_proc = subprocess.Popen(
-                bufsize = 0, args = [oocd_path] + oocd_args,
-                stdin = None, stdout = subprocess.PIPE, stderr = subprocess.STDOUT
+                bufsize=0, args=[oocd_path]+oocd_args,
+                stdin=None, stdout=self.STDOUT_DEST, stderr=subprocess.STDOUT,
+                creationflags=self.CREATION_FLAGS
                 )
         time.sleep(1)
         self._logger.debug('Open telnet conn...')
@@ -74,25 +105,31 @@ class Oocd(threading.Thread):
             self._tn.read_until('>', 5)
         except Exception as e:
             self._logger.error('Failed to open telnet connection!')
-            self._oocd_proc.send_signal(signal.SIGINT)
+            if self._oocd_proc.stdout:
+                out = self._oocd_proc.stdout.read()
+                self._logger.debug('================== OOCD OUTPUT START =================\n%s================== OOCD OUTPUT END =================\n', out)
+            self._oocd_proc.terminate()
             raise e
 
     def run(self):
-        while True:
+        while self._oocd_proc.stdout and self.do_work:
             ln = self._oocd_proc.stdout.readline()
             if len(ln) == 0:
-                break            
+                break
             self._logger.debug(ln.rstrip(' \r\n'))
 
     def stop(self):
         self._logger.debug('Close telnet conn')
         self._tn.close()
         self._logger.debug('Stop OpenOCD')
-        self._oocd_proc.send_signal(signal.SIGINT)
-
-    def join(self):
-        super(Oocd, self).join()
-        self._oocd_proc.stdout.close()
+        self.do_work = False
+        self._oocd_proc.terminate()
+        self._logger.debug('Join thread')
+        self.join()
+        self._logger.debug('Close stdout')
+        if self._oocd_proc.stdout:
+            self._oocd_proc.stdout.close()
+        self._logger.debug('OOCD thread stopped')
 
     def cmd_exec(self, cmd):
         # read all output already sent
@@ -191,7 +228,7 @@ class Gdb:
     def _on_notify(self, rec):
         if rec['message'] == 'stopped':
             self._target_state = self.TARGET_STATE_STOPPED
-            self._curr_frame = rec['payload']['frame'] 
+            self._curr_frame = rec['payload']['frame']
             if 'reason' in rec['payload']:
                 if rec['payload']['reason'] == 'breakpoint-hit':
                     self._target_stop_reason = self.TARGET_STOP_REASON_BP
@@ -301,22 +338,20 @@ class Gdb:
 
     def target_program(self, file_name, off, actions='verify', tmo=30):
         # actions can be any or both of 'verify reset'
-        self.monitor_run('program_esp32 %s %s 0x%x' % (file_name, actions, off), tmo)
+        self.monitor_run('program_esp32 %s %s 0x%x' % (fixup_path(file_name), actions, off), tmo)
 
     def exec_file_set(self, file_path):
         # -file-exec-and-symbols file
-        # Convert filepath from Windows format if needed
-        local_file_path = file_path;
-        local_file_path = local_file_path.replace("\\","/");
-        res,_ = self._mi_cmd_run('-file-exec-and-symbols %s' % local_file_path)
+        res,_ = self._mi_cmd_run('-file-exec-and-symbols %s' % fixup_path(file_path))
         if res != 'done':
             raise DebuggerError('Failed to set program file!')
 
     def exec_interrupt(self):
+        global OS_INT_SIG
         # Hack, unfortunately GDB does not react on -exec-interrupt,
         # so send CTRL+C to it
         self._logger.debug('MI->: send SIGINT')
-        self._gdbmi.gdb_process.send_signal(signal.SIGINT)
+        self._gdbmi.gdb_process.send_signal(OS_INT_SIG)
         # # -exec-interrupt [--all|--thread-group N]
         # res,_ = self._mi_cmd_run('-exec-interrupt --all')
         # if res != 'done':
@@ -357,17 +392,6 @@ class Gdb:
         res,_ = self._mi_cmd_run('-exec-next-instruction')
         if res != 'running':
             raise DebuggerError('Failed to step insn!')
-
-    def get_thread_info(self, thread_id=None):
-        # -thread-info [ thread-id ]
-        if thread_id:
-            cmd = '-thread-info %d' % thread_id
-        else:
-            cmd = '-thread-info'    
-        res,res_body = self._mi_cmd_run(cmd)
-        if res != 'done' or not res_body or 'threads' not in res_body or 'current-thread-id' not in res_body:
-            raise DebuggerError('Failed to get thread info!')
-        return (res_body['current-thread-id'], res_body['threads'])
 
     def data_eval_expr(self, expr):
         # -data-evaluate-expression expr
@@ -486,11 +510,16 @@ class Gdb:
     def disconnect(self):
         self.target_disconnect()
 
-    def get_thread_info(self):
-        res,res_body = self._mi_cmd_run('-thread-info')
-        if res != 'done' or not res_body or 'threads' not in res_body:
-            raise DebuggerError('Failed to get backtrace!')
-        return res_body['threads']
+    def get_thread_info(self, thread_id=None):
+        # -thread-info [ thread-id ]
+        if thread_id:
+            cmd = '-thread-info %d' % thread_id
+        else:
+            cmd = '-thread-info'
+        res,res_body = self._mi_cmd_run(cmd)
+        if res != 'done' or not res_body or 'threads' not in res_body or 'current-thread-id' not in res_body:
+            raise DebuggerError('Failed to get thread info!')
+        return (res_body['current-thread-id'], res_body['threads'])
 
     def set_thread(self, num):
         res,_ = self._mi_cmd_run('-thread-select %d' % num)
@@ -500,7 +529,13 @@ class Gdb:
 
     def get_thread_ids(self):
         # -thread-list-ids expr
-        res, thread_ids = self._mi_cmd_run('-thread-list-ids')         
+        res, thread_ids = self._mi_cmd_run('-thread-list-ids')
         if res != 'done':
             raise DebuggerError('Failed to eval expression!')
         return thread_ids
+
+
+def read_idf_ver():
+    # TODO: read IDF ver from target
+    import debug_backend_tests
+    return debug_backend_tests.IdfVersion()

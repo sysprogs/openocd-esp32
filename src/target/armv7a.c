@@ -24,6 +24,7 @@
 #include <helper/replacements.h>
 
 #include "armv7a.h"
+#include "armv7a_mmu.h"
 #include "arm_disassembler.h"
 
 #include "register.h"
@@ -124,14 +125,18 @@ done:
 	return retval;
 }
 
-static int armv7a_read_ttbcr(struct target *target)
+int armv7a_read_ttbcr(struct target *target)
 {
 	struct armv7a_common *armv7a = target_to_armv7a(target);
 	struct arm_dpm *dpm = armv7a->arm.dpm;
 	uint32_t ttbcr, ttbcr_n;
-	int retval = dpm->prepare(dpm);
+	int ttbidx;
+	int retval;
+
+	retval = dpm->prepare(dpm);
 	if (retval != ERROR_OK)
 		goto done;
+
 	/*  MRC p15,0,<Rt>,c2,c0,2 ; Read CP15 Translation Table Base Control Register*/
 	retval = dpm->instr_read_data_r0(dpm,
 			ARMV4_5_MRC(15, 0, 0, 2, 0, 2),
@@ -144,6 +149,15 @@ static int armv7a_read_ttbcr(struct target *target)
 	ttbcr_n = ttbcr & 0x7;
 	armv7a->armv7a_mmu.ttbcr = ttbcr;
 	armv7a->armv7a_mmu.cached = 1;
+
+	for (ttbidx = 0; ttbidx < 2; ttbidx++) {
+		/*  MRC p15,0,<Rt>,c2,c0,ttbidx */
+		retval = dpm->instr_read_data_r0(dpm,
+				ARMV4_5_MRC(15, 0, 0, 2, 0, ttbidx),
+				&armv7a->armv7a_mmu.ttbr[ttbidx]);
+		if (retval != ERROR_OK)
+			goto done;
+	}
 
 	/*
 	 * ARM Architecture Reference Manual (ARMv7-A and ARMv7-Redition),
@@ -172,198 +186,6 @@ static int armv7a_read_ttbcr(struct target *target)
 
 done:
 	dpm->finish(dpm);
-	return retval;
-}
-
-/*  method adapted to Cortex-A : reused ARM v4 v5 method */
-int armv7a_mmu_translate_va(struct target *target,  uint32_t va, uint32_t *val)
-{
-	uint32_t first_lvl_descriptor = 0x0;
-	uint32_t second_lvl_descriptor = 0x0;
-	int retval;
-	struct armv7a_common *armv7a = target_to_armv7a(target);
-	struct arm_dpm *dpm = armv7a->arm.dpm;
-	uint32_t ttbidx = 0;	/*  default to ttbr0 */
-	uint32_t ttb_mask;
-	uint32_t va_mask;
-	uint32_t ttbcr;
-	uint32_t ttb;
-
-	retval = dpm->prepare(dpm);
-	if (retval != ERROR_OK)
-		goto done;
-
-	/*  MRC p15,0,<Rt>,c2,c0,2 ; Read CP15 Translation Table Base Control Register*/
-	retval = dpm->instr_read_data_r0(dpm,
-			ARMV4_5_MRC(15, 0, 0, 2, 0, 2),
-			&ttbcr);
-	if (retval != ERROR_OK)
-		goto done;
-
-	/* if ttbcr has changed or was not read before, re-read the information */
-	if ((armv7a->armv7a_mmu.cached == 0) ||
-		(armv7a->armv7a_mmu.ttbcr != ttbcr)) {
-		armv7a_read_ttbcr(target);
-	}
-
-	/* if va is above the range handled by ttbr0, select ttbr1 */
-	if (va > armv7a->armv7a_mmu.ttbr_range[0]) {
-		/*  select ttb 1 */
-		ttbidx = 1;
-	}
-	/*  MRC p15,0,<Rt>,c2,c0,ttbidx */
-	retval = dpm->instr_read_data_r0(dpm,
-			ARMV4_5_MRC(15, 0, 0, 2, 0, ttbidx),
-			&ttb);
-	if (retval != ERROR_OK)
-		return retval;
-
-	ttb_mask = armv7a->armv7a_mmu.ttbr_mask[ttbidx];
-	va_mask = 0xfff00000 & armv7a->armv7a_mmu.ttbr_range[ttbidx];
-
-	LOG_DEBUG("ttb_mask %" PRIx32 " va_mask %" PRIx32 " ttbidx %i",
-		  ttb_mask, va_mask, ttbidx);
-	retval = armv7a->armv7a_mmu.read_physical_memory(target,
-			(ttb & ttb_mask) | ((va & va_mask) >> 18),
-			4, 1, (uint8_t *)&first_lvl_descriptor);
-	if (retval != ERROR_OK)
-		return retval;
-	first_lvl_descriptor = target_buffer_get_u32(target, (uint8_t *)
-			&first_lvl_descriptor);
-	/*  reuse armv4_5 piece of code, specific armv7a changes may come later */
-	LOG_DEBUG("1st lvl desc: %8.8" PRIx32 "", first_lvl_descriptor);
-
-	if ((first_lvl_descriptor & 0x3) == 0) {
-		LOG_ERROR("Address translation failure");
-		return ERROR_TARGET_TRANSLATION_FAULT;
-	}
-
-
-	if ((first_lvl_descriptor & 0x40002) == 2) {
-		/* section descriptor */
-		*val = (first_lvl_descriptor & 0xfff00000) | (va & 0x000fffff);
-		return ERROR_OK;
-	} else if ((first_lvl_descriptor & 0x40002) == 0x40002) {
-		/* supersection descriptor */
-		if (first_lvl_descriptor & 0x00f001e0) {
-			LOG_ERROR("Physical address does not fit into 32 bits");
-			return ERROR_TARGET_TRANSLATION_FAULT;
-		}
-		*val = (first_lvl_descriptor & 0xff000000) | (va & 0x00ffffff);
-		return ERROR_OK;
-	}
-
-	/* page table */
-	retval = armv7a->armv7a_mmu.read_physical_memory(target,
-			(first_lvl_descriptor & 0xfffffc00) | ((va & 0x000ff000) >> 10),
-			4, 1, (uint8_t *)&second_lvl_descriptor);
-	if (retval != ERROR_OK)
-		return retval;
-
-	second_lvl_descriptor = target_buffer_get_u32(target, (uint8_t *)
-			&second_lvl_descriptor);
-
-	LOG_DEBUG("2nd lvl desc: %8.8" PRIx32 "", second_lvl_descriptor);
-
-	if ((second_lvl_descriptor & 0x3) == 0) {
-		LOG_ERROR("Address translation failure");
-		return ERROR_TARGET_TRANSLATION_FAULT;
-	}
-
-	if ((second_lvl_descriptor & 0x3) == 1) {
-		/* large page descriptor */
-		*val = (second_lvl_descriptor & 0xffff0000) | (va & 0x0000ffff);
-	} else {
-		/* small page descriptor */
-		*val = (second_lvl_descriptor & 0xfffff000) | (va & 0x00000fff);
-	}
-
-	return ERROR_OK;
-
-done:
-	return retval;
-}
-
-/*  V7 method VA TO PA  */
-int armv7a_mmu_translate_va_pa(struct target *target, uint32_t va,
-	uint32_t *val, int meminfo)
-{
-	int retval = ERROR_FAIL;
-	struct armv7a_common *armv7a = target_to_armv7a(target);
-	struct arm_dpm *dpm = armv7a->arm.dpm;
-	uint32_t virt = va & ~0xfff;
-	uint32_t NOS, NS, INNER, OUTER;
-	*val = 0xdeadbeef;
-	retval = dpm->prepare(dpm);
-	if (retval != ERROR_OK)
-		goto done;
-	/*  mmu must be enable in order to get a correct translation
-	 *  use VA to PA CP15 register for conversion */
-	retval = dpm->instr_write_data_r0(dpm,
-			ARMV4_5_MCR(15, 0, 0, 7, 8, 0),
-			virt);
-	if (retval != ERROR_OK)
-		goto done;
-	retval = dpm->instr_read_data_r0(dpm,
-			ARMV4_5_MRC(15, 0, 0, 7, 4, 0),
-			val);
-	/* decode memory attribute */
-	NOS = (*val >> 10) & 1;	/*  Not Outer shareable */
-	NS = (*val >> 9) & 1;	/* Non secure */
-	INNER = (*val >> 4) &  0x7;
-	OUTER = (*val >> 2) & 0x3;
-
-	if (retval != ERROR_OK)
-		goto done;
-	*val = (*val & ~0xfff)  +  (va & 0xfff);
-	if (*val == va)
-		LOG_WARNING("virt = phys  : MMU disable !!");
-	if (meminfo) {
-		LOG_INFO("%" PRIx32 " : %" PRIx32 " %s outer shareable %s secured",
-			va, *val,
-			NOS == 1 ? "not" : " ",
-			NS == 1 ? "not" : "");
-		switch (OUTER) {
-			case 0:
-				LOG_INFO("outer: Non-Cacheable");
-				break;
-			case 1:
-				LOG_INFO("outer: Write-Back, Write-Allocate");
-				break;
-			case 2:
-				LOG_INFO("outer: Write-Through, No Write-Allocate");
-				break;
-			case 3:
-				LOG_INFO("outer: Write-Back, no Write-Allocate");
-				break;
-		}
-		switch (INNER) {
-			case 0:
-				LOG_INFO("inner: Non-Cacheable");
-				break;
-			case 1:
-				LOG_INFO("inner: Strongly-ordered");
-				break;
-			case 3:
-				LOG_INFO("inner: Device");
-				break;
-			case 5:
-				LOG_INFO("inner: Write-Back, Write-Allocate");
-				break;
-			case 6:
-				LOG_INFO("inner:  Write-Through");
-				break;
-			case 7:
-				LOG_INFO("inner: Write-Back, no Write-Allocate");
-				break;
-			default:
-				LOG_INFO("inner: %" PRIx32 " ???", INNER);
-		}
-	}
-
-done:
-	dpm->finish(dpm);
-
 	return retval;
 }
 
@@ -565,9 +387,6 @@ int armv7a_identify_cache(struct target *target)
 	struct armv7a_cache_common *cache =
 		&(armv7a->armv7a_mmu.armv7a_cache);
 
-	if (!armv7a->is_armv7r)
-		armv7a_read_ttbcr(target);
-
 	retval = dpm->prepare(dpm);
 	if (retval != ERROR_OK)
 		goto done;
@@ -679,11 +498,40 @@ done:
 
 }
 
+static int armv7a_setup_semihosting(struct target *target, int enable)
+{
+	struct armv7a_common *armv7a = target_to_armv7a(target);
+	uint32_t vcr;
+	int ret;
+
+	ret = mem_ap_read_atomic_u32(armv7a->debug_ap,
+					 armv7a->debug_base + CPUDBG_VCR,
+					 &vcr);
+	if (ret < 0) {
+		LOG_ERROR("Failed to read VCR register\n");
+		return ret;
+	}
+
+	if (enable)
+		vcr |= DBG_VCR_SVC_MASK;
+	else
+		vcr &= ~DBG_VCR_SVC_MASK;
+
+	ret = mem_ap_write_atomic_u32(armv7a->debug_ap,
+					  armv7a->debug_base + CPUDBG_VCR,
+					  vcr);
+	if (ret < 0)
+		LOG_ERROR("Failed to write VCR register\n");
+
+	return ret;
+}
+
 int armv7a_init_arch_info(struct target *target, struct armv7a_common *armv7a)
 {
 	struct arm *arm = &armv7a->arm;
 	arm->arch_info = armv7a;
 	target->arch_info = &armv7a->arm;
+	arm->setup_semihosting = armv7a_setup_semihosting;
 	/*  target is useful in all function arm v4 5 compatible */
 	armv7a->arm.target = target;
 	armv7a->arm.common_magic = ARM_COMMON_MAGIC;
@@ -756,9 +604,6 @@ const struct command_registration l2x_cache_command_handlers[] = {
 };
 
 const struct command_registration armv7a_command_handlers[] = {
-	{
-		.chain = dap_command_handlers,
-	},
 	{
 		.chain = l2x_cache_command_handlers,
 	},

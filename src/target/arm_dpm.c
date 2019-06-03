@@ -21,6 +21,7 @@
 
 #include "arm.h"
 #include "arm_dpm.h"
+#include "armv8_dpm.h"
 #include <jtag/jtag.h>
 #include "register.h"
 #include "breakpoints.h"
@@ -107,7 +108,7 @@ static int dpm_mcr(struct target *target, int cpnum,
 /* Toggles between recorded core mode (USR, SVC, etc) and a temporary one.
  * Routines *must* restore the original mode before returning!!
  */
-int dpm_modeswitch(struct arm_dpm *dpm, enum arm_mode mode)
+int arm_dpm_modeswitch(struct arm_dpm *dpm, enum arm_mode mode)
 {
 	int retval;
 	uint32_t cpsr;
@@ -130,8 +131,44 @@ int dpm_modeswitch(struct arm_dpm *dpm, enum arm_mode mode)
 	return retval;
 }
 
+/* Read 64bit VFP registers */
+static int dpm_read_reg_u64(struct arm_dpm *dpm, struct reg *r, unsigned regnum)
+{
+	int retval = ERROR_FAIL;
+	uint32_t value_r0, value_r1;
+
+	switch (regnum) {
+		case ARM_VFP_V3_D0 ... ARM_VFP_V3_D31:
+			/* move from double word register to r0:r1: "vmov r0, r1, vm"
+			 * then read r0 via dcc
+			 */
+			retval = dpm->instr_read_data_r0(dpm,
+				ARMV4_5_VMOV(1, 1, 0, ((regnum - ARM_VFP_V3_D0) >> 4),
+				((regnum - ARM_VFP_V3_D0) & 0xf)), &value_r0);
+			/* read r1 via dcc */
+			retval = dpm->instr_read_data_dcc(dpm,
+				ARMV4_5_MCR(14, 0, 1, 0, 5, 0),
+				&value_r1);
+			break;
+		default:
+
+			break;
+	}
+
+	if (retval == ERROR_OK) {
+		buf_set_u32(r->value, 0, 32, value_r0);
+		buf_set_u32(r->value + 4, 0, 32, value_r1);
+		r->valid = true;
+		r->dirty = false;
+		LOG_DEBUG("READ: %s, %8.8x, %8.8x", r->name,
+				(unsigned) value_r0, (unsigned) value_r1);
+	}
+
+	return retval;
+}
+
 /* just read the register -- rely on the core mode being right */
-static int dpm_read_reg(struct arm_dpm *dpm, struct reg *r, unsigned regnum)
+int arm_dpm_read_reg(struct arm_dpm *dpm, struct reg *r, unsigned regnum)
 {
 	uint32_t value;
 	int retval;
@@ -165,7 +202,18 @@ static int dpm_read_reg(struct arm_dpm *dpm, struct reg *r, unsigned regnum)
 					/* core-specific ... ? */
 					LOG_WARNING("Jazelle PC adjustment unknown");
 					break;
+				default:
+					LOG_WARNING("unknow core state");
+					break;
 			}
+			break;
+		case ARM_VFP_V3_D0 ... ARM_VFP_V3_D31:
+			return dpm_read_reg_u64(dpm, r, regnum);
+			break;
+		case ARM_VFP_V3_FPSCR:
+			/* "VMRS r0, FPSCR"; then return via DCC */
+			retval = dpm->instr_read_data_r0(dpm,
+				ARMV4_5_VMRS(0), &value);
 			break;
 		default:
 			/* 16: "MRS r0, CPSR"; then return via DCC
@@ -187,6 +235,40 @@ static int dpm_read_reg(struct arm_dpm *dpm, struct reg *r, unsigned regnum)
 	return retval;
 }
 
+/* Write 64bit VFP registers */
+static int dpm_write_reg_u64(struct arm_dpm *dpm, struct reg *r, unsigned regnum)
+{
+	int retval = ERROR_FAIL;
+	uint32_t value_r0 = buf_get_u32(r->value, 0, 32);
+	uint32_t value_r1 = buf_get_u32(r->value + 4, 0, 32);
+
+	switch (regnum) {
+		case ARM_VFP_V3_D0 ... ARM_VFP_V3_D31:
+			/* write value_r1 to r1 via dcc */
+			retval = dpm->instr_write_data_dcc(dpm,
+				ARMV4_5_MRC(14, 0, 1, 0, 5, 0),
+				value_r1);
+			/* write value_r0 to r0 via dcc then,
+			 * move to double word register from r0:r1: "vmov vm, r0, r1"
+			 */
+			retval = dpm->instr_write_data_r0(dpm,
+				ARMV4_5_VMOV(0, 1, 0, ((regnum - ARM_VFP_V3_D0) >> 4),
+				((regnum - ARM_VFP_V3_D0) & 0xf)), value_r0);
+			break;
+		default:
+
+			break;
+	}
+
+	if (retval == ERROR_OK) {
+		r->dirty = false;
+		LOG_DEBUG("WRITE: %s, %8.8x, %8.8x", r->name,
+				(unsigned) value_r0, (unsigned) value_r1);
+	}
+
+	return retval;
+}
+
 /* just write the register -- rely on the core mode being right */
 static int dpm_write_reg(struct arm_dpm *dpm, struct reg *r, unsigned regnum)
 {
@@ -203,6 +285,14 @@ static int dpm_write_reg(struct arm_dpm *dpm, struct reg *r, unsigned regnum)
 		case 15:/* PC
 			 * read r0 from DCC; then "MOV pc, r0" */
 			retval = dpm->instr_write_data_r0(dpm, 0xe1a0f000, value);
+			break;
+		case ARM_VFP_V3_D0 ... ARM_VFP_V3_D31:
+			return dpm_write_reg_u64(dpm, r, regnum);
+			break;
+		case ARM_VFP_V3_FPSCR:
+			/* move to r0 from DCC, then "VMSR FPSCR, r0" */
+			retval = dpm->instr_write_data_r0(dpm,
+				ARMV4_5_VMSR(0), value);
 			break;
 		default:
 			/* 16: read r0 from DCC, then "MSR r0, CPSR_cxsf"
@@ -258,14 +348,16 @@ int arm_dpm_read_current_registers(struct arm_dpm *dpm)
 	if (retval != ERROR_OK)
 		return retval;
 
-	/* read R0 first (it's used for scratch), then CPSR */
-	r = arm->core_cache->reg_list + 0;
-	if (!r->valid) {
-		retval = dpm_read_reg(dpm, r, 0);
-		if (retval != ERROR_OK)
-			goto fail;
+	/* read R0 and R1 first (it's used for scratch), then CPSR */
+	for (unsigned i = 0; i < 2; i++) {
+		r = arm->core_cache->reg_list + i;
+		if (!r->valid) {
+			retval = arm_dpm_read_reg(dpm, r, i);
+			if (retval != ERROR_OK)
+				goto fail;
+		}
+		r->dirty = true;
 	}
-	r->dirty = true;
 
 	retval = dpm->instr_read_data_r0(dpm, ARMV4_5_MRS(0, 0), &cpsr);
 	if (retval != ERROR_OK)
@@ -275,12 +367,12 @@ int arm_dpm_read_current_registers(struct arm_dpm *dpm)
 	arm_set_cpsr(arm, cpsr);
 
 	/* REVISIT we can probably avoid reading R1..R14, saving time... */
-	for (unsigned i = 1; i < 16; i++) {
+	for (unsigned i = 2; i < 16; i++) {
 		r = arm_reg_current(arm, i);
 		if (r->valid)
 			continue;
 
-		retval = dpm_read_reg(dpm, r, i);
+		retval = arm_dpm_read_reg(dpm, r, i);
 		if (retval != ERROR_OK)
 			goto fail;
 	}
@@ -408,8 +500,8 @@ int arm_dpm_write_dirty_registers(struct arm_dpm *dpm, bool bpwp)
 
 		did_write = false;
 
-		/* check everything except our scratch register R0 */
-		for (unsigned i = 1; i < cache->num_regs; i++) {
+		/* check everything except our scratch registers R0 and R1 */
+		for (unsigned i = 2; i < cache->num_regs; i++) {
 			struct arm_reg *r;
 			unsigned regnum;
 
@@ -433,25 +525,25 @@ int arm_dpm_write_dirty_registers(struct arm_dpm *dpm, bool bpwp)
 
 				/* cope with special cases */
 				switch (regnum) {
-					case 8 ... 12:
-						/* r8..r12 "anything but FIQ" case;
-						 * we "know" core mode is accurate
-						 * since we haven't changed it yet
-						 */
-						if (arm->core_mode == ARM_MODE_FIQ
-							&& ARM_MODE_ANY
-							!= mode)
-							tmode = ARM_MODE_USR;
-						break;
-					case 16:
-						/* SPSR */
-						regnum++;
-						break;
+				case 8 ... 12:
+					/* r8..r12 "anything but FIQ" case;
+					 * we "know" core mode is accurate
+					 * since we haven't changed it yet
+					 */
+					if (arm->core_mode == ARM_MODE_FIQ
+					    && ARM_MODE_ANY
+					    != mode)
+						tmode = ARM_MODE_USR;
+					break;
+				case 16:
+					/* SPSR */
+					regnum++;
+					break;
 				}
 
 				/* REVISIT error checks */
 				if (tmode != ARM_MODE_ANY) {
-					retval = dpm_modeswitch(dpm, tmode);
+					retval = arm_dpm_modeswitch(dpm, tmode);
 					if (retval != ERROR_OK)
 						goto done;
 				}
@@ -460,8 +552,8 @@ int arm_dpm_write_dirty_registers(struct arm_dpm *dpm, bool bpwp)
 				continue;
 
 			retval = dpm_write_reg(dpm,
-					&cache->reg_list[i],
-					regnum);
+					       &cache->reg_list[i],
+					       regnum);
 			if (retval != ERROR_OK)
 				goto done;
 		}
@@ -472,7 +564,7 @@ int arm_dpm_write_dirty_registers(struct arm_dpm *dpm, bool bpwp)
 	 * or it's dirty.  Must write PC to ensure the return address is
 	 * defined, and must not write it before CPSR.
 	 */
-	retval = dpm_modeswitch(dpm, ARM_MODE_ANY);
+	retval = arm_dpm_modeswitch(dpm, ARM_MODE_ANY);
 	if (retval != ERROR_OK)
 		goto done;
 	arm->cpsr->dirty = false;
@@ -495,11 +587,13 @@ int arm_dpm_write_dirty_registers(struct arm_dpm *dpm, bool bpwp)
 		goto done;
 	arm->pc->dirty = false;
 
-	/* flush R0 -- it's *very* dirty by now */
-	retval = dpm_write_reg(dpm, &cache->reg_list[0], 0);
-	if (retval != ERROR_OK)
-		goto done;
-	cache->reg_list[0].dirty = false;
+	/* flush R0 and R1 (our scratch registers) */
+	for (unsigned i = 0; i < 2; i++) {
+		retval = dpm_write_reg(dpm, &cache->reg_list[i], i);
+		if (retval != ERROR_OK)
+			goto done;
+		cache->reg_list[i].dirty = false;
+	}
 
 	/* (void) */ dpm->finish(dpm);
 done:
@@ -536,6 +630,7 @@ static enum arm_mode dpm_mapmode(struct arm *arm,
 		/* r13/sp, and r14/lr are always shadowed */
 		case 13:
 		case 14:
+		case ARM_VFP_V3_D0 ... ARM_VFP_V3_FPSCR:
 			return mode;
 		default:
 			LOG_WARNING("invalid register #%u", num);
@@ -557,7 +652,8 @@ static int arm_dpm_read_core_reg(struct target *target, struct reg *r,
 	struct arm_dpm *dpm = target_to_arm(target)->dpm;
 	int retval;
 
-	if (regnum < 0 || regnum > 16)
+	if (regnum < 0 || (regnum > 16 && regnum < ARM_VFP_V3_D0) ||
+		(regnum > ARM_VFP_V3_FPSCR))
 		return ERROR_COMMAND_SYNTAX_ERROR;
 
 	if (regnum == 16) {
@@ -575,18 +671,18 @@ static int arm_dpm_read_core_reg(struct target *target, struct reg *r,
 		return retval;
 
 	if (mode != ARM_MODE_ANY) {
-		retval = dpm_modeswitch(dpm, mode);
+		retval = arm_dpm_modeswitch(dpm, mode);
 		if (retval != ERROR_OK)
 			goto fail;
 	}
 
-	retval = dpm_read_reg(dpm, r, regnum);
+	retval = arm_dpm_read_reg(dpm, r, regnum);
 	if (retval != ERROR_OK)
 		goto fail;
 	/* always clean up, regardless of error */
 
 	if (mode != ARM_MODE_ANY)
-		/* (void) */ dpm_modeswitch(dpm, ARM_MODE_ANY);
+		/* (void) */ arm_dpm_modeswitch(dpm, ARM_MODE_ANY);
 
 fail:
 	/* (void) */ dpm->finish(dpm);
@@ -600,7 +696,8 @@ static int arm_dpm_write_core_reg(struct target *target, struct reg *r,
 	int retval;
 
 
-	if (regnum < 0 || regnum > 16)
+	if (regnum < 0 || (regnum > 16 && regnum < ARM_VFP_V3_D0) ||
+			(regnum > ARM_VFP_V3_FPSCR))
 		return ERROR_COMMAND_SYNTAX_ERROR;
 
 	if (regnum == 16) {
@@ -618,7 +715,7 @@ static int arm_dpm_write_core_reg(struct target *target, struct reg *r,
 		return retval;
 
 	if (mode != ARM_MODE_ANY) {
-		retval = dpm_modeswitch(dpm, mode);
+		retval = arm_dpm_modeswitch(dpm, mode);
 		if (retval != ERROR_OK)
 			goto fail;
 	}
@@ -627,7 +724,7 @@ static int arm_dpm_write_core_reg(struct target *target, struct reg *r,
 	/* always clean up, regardless of error */
 
 	if (mode != ARM_MODE_ANY)
-		/* (void) */ dpm_modeswitch(dpm, ARM_MODE_ANY);
+		/* (void) */ arm_dpm_modeswitch(dpm, ARM_MODE_ANY);
 
 fail:
 	/* (void) */ dpm->finish(dpm);
@@ -676,9 +773,9 @@ static int arm_dpm_full_context(struct target *target)
 				 * in FIQ mode we need to patch mode.
 				 */
 				if (mode != ARM_MODE_ANY)
-					retval = dpm_modeswitch(dpm, mode);
+					retval = arm_dpm_modeswitch(dpm, mode);
 				else
-					retval = dpm_modeswitch(dpm, ARM_MODE_USR);
+					retval = arm_dpm_modeswitch(dpm, ARM_MODE_USR);
 
 				if (retval != ERROR_OK)
 					goto done;
@@ -687,7 +784,7 @@ static int arm_dpm_full_context(struct target *target)
 				continue;
 
 			/* CPSR was read, so "R16" must mean SPSR */
-			retval = dpm_read_reg(dpm,
+			retval = arm_dpm_read_reg(dpm,
 					&cache->reg_list[i],
 					(r->num == 16) ? 17 : r->num);
 			if (retval != ERROR_OK)
@@ -696,7 +793,7 @@ static int arm_dpm_full_context(struct target *target)
 
 	} while (did_read);
 
-	retval = dpm_modeswitch(dpm, ARM_MODE_ANY);
+	retval = arm_dpm_modeswitch(dpm, ARM_MODE_ANY);
 	/* (void) */ dpm->finish(dpm);
 done:
 	return retval;
@@ -905,6 +1002,7 @@ void arm_dpm_report_wfar(struct arm_dpm *dpm, uint32_t addr)
 			addr -= 4;
 			break;
 		case ARM_STATE_JAZELLE:
+		case ARM_STATE_AARCH64:
 			/* ?? */
 			break;
 	}
@@ -925,20 +1023,16 @@ void arm_dpm_report_dscr(struct arm_dpm *dpm, uint32_t dscr)
 
 	/* Examine debug reason */
 	switch (DSCR_ENTRY(dscr)) {
-		case 6:	/* Data abort (v6 only) */
-		case 7:	/* Prefetch abort (v6 only) */
-		/* FALL THROUGH -- assume a v6 core in abort mode */
-		case 0:	/* HALT request from debugger */
-		case 4:	/* EDBGRQ */
+		case DSCR_ENTRY_HALT_REQ:	/* HALT request from debugger */
+		case DSCR_ENTRY_EXT_DBG_REQ:	/* EDBGRQ */
 			target->debug_reason = DBG_REASON_DBGRQ;
 			break;
-		case 1:	/* HW breakpoint */
-		case 3:	/* SW BKPT */
-		case 5:	/* vector catch */
+		case DSCR_ENTRY_BREAKPOINT:	/* HW breakpoint */
+		case DSCR_ENTRY_BKPT_INSTR:	/* vector catch */
 			target->debug_reason = DBG_REASON_BREAKPOINT;
 			break;
-		case 2:	/* asynch watchpoint */
-		case 10:/* precise watchpoint */
+		case DSCR_ENTRY_IMPRECISE_WATCHPT:	/* asynch watchpoint */
+		case DSCR_ENTRY_PRECISE_WATCHPT:/* precise watchpoint */
 			target->debug_reason = DBG_REASON_WATCHPOINT;
 			break;
 		default:
@@ -963,7 +1057,7 @@ int arm_dpm_setup(struct arm_dpm *dpm)
 {
 	struct arm *arm = dpm->arm;
 	struct target *target = arm->target;
-	struct reg_cache *cache;
+	struct reg_cache *cache = 0;
 
 	arm->dpm = dpm;
 
@@ -972,11 +1066,13 @@ int arm_dpm_setup(struct arm_dpm *dpm)
 	arm->read_core_reg = arm_dpm_read_core_reg;
 	arm->write_core_reg = arm_dpm_write_core_reg;
 
-	cache = arm_build_reg_cache(target, arm);
-	if (!cache)
-		return ERROR_FAIL;
+	if (arm->core_cache == NULL) {
+		cache = arm_build_reg_cache(target, arm);
+		if (!cache)
+			return ERROR_FAIL;
 
-	*register_get_last_cache_p(&target->reg_cache) = cache;
+		*register_get_last_cache_p(&target->reg_cache) = cache;
+	}
 
 	/* coprocessor access setup */
 	arm->mrc = dpm_mrc;
@@ -995,9 +1091,8 @@ int arm_dpm_setup(struct arm_dpm *dpm)
 	/* FIXME add vector catch support */
 
 	dpm->nbp = 1 + ((dpm->didr >> 24) & 0xf);
-	dpm->dbp = calloc(dpm->nbp, sizeof *dpm->dbp);
-
 	dpm->nwp = 1 + ((dpm->didr >> 28) & 0xf);
+	dpm->dbp = calloc(dpm->nbp, sizeof *dpm->dbp);
 	dpm->dwp = calloc(dpm->nwp, sizeof *dpm->dwp);
 
 	if (!dpm->dbp || !dpm->dwp) {

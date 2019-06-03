@@ -31,10 +31,11 @@
 
 #define EMBKERNEL_MAX_THREAD_NAME_STR_SIZE (64)
 
-static int embKernel_detect_rtos(struct target *target);
+static bool embKernel_detect_rtos(struct target *target);
 static int embKernel_create(struct target *target);
 static int embKernel_update_threads(struct rtos *rtos);
-static int embKernel_get_thread_reg_list(struct rtos *rtos, int64_t thread_id, char **hex_reg_list);
+static int embKernel_get_thread_reg_list(struct rtos *rtos, int64_t thread_id,
+		struct rtos_reg **reg_list, int *num_regs);
 static int embKernel_get_symbol_list_to_lookup(symbol_table_elem_t *symbol_list[]);
 
 struct rtos_type embKernel_rtos = {
@@ -107,13 +108,13 @@ static const struct embKernel_params embKernel_params_list[] = {
 		}
 };
 
-static int embKernel_detect_rtos(struct target *target)
+static bool embKernel_detect_rtos(struct target *target)
 {
 	if (target->rtos->symbols != NULL) {
 		if (target->rtos->symbols[SYMBOL_ID_sCurrentTask].address != 0)
-			return 1;
+			return true;
 	}
-	return 0;
+	return false;
 }
 
 static int embKernel_create(struct target *target)
@@ -168,11 +169,11 @@ static int embKernel_get_tasks_details(struct rtos *rtos, int64_t iterable, cons
 		return retval;
 	details->extra_info_str = malloc(EMBKERNEL_MAX_THREAD_NAME_STR_SIZE);
 	if (task == rtos->current_thread) {
-		snprintf(details->extra_info_str, EMBKERNEL_MAX_THREAD_NAME_STR_SIZE, "Pri=%u, Running",
+		snprintf(details->extra_info_str, EMBKERNEL_MAX_THREAD_NAME_STR_SIZE, "State: Running, Priority: %u",
 				(unsigned int) priority);
 	} else {
-		snprintf(details->extra_info_str, EMBKERNEL_MAX_THREAD_NAME_STR_SIZE, "Pri=%u, %s", (unsigned int) priority,
-				state_str);
+		snprintf(details->extra_info_str, EMBKERNEL_MAX_THREAD_NAME_STR_SIZE, "State: %s, Priority: %u",
+				state_str, (unsigned int) priority);
 	}
 
 	LOG_OUTPUT("Getting task details: iterable=0x%08X, task=0x%08X, name=%s\n", (unsigned int)iterable,
@@ -300,13 +301,13 @@ static int embKernel_update_threads(struct rtos *rtos)
 	return 0;
 }
 
-static int embKernel_get_thread_reg_list(struct rtos *rtos, int64_t thread_id, char **hex_reg_list)
+static int embKernel_get_thread_reg_list(struct rtos *rtos, int64_t thread_id,
+		struct rtos_reg **reg_list, int *num_regs)
 {
 	int retval;
 	const struct embKernel_params *param;
 	int64_t stack_ptr = 0;
 
-	*hex_reg_list = NULL;
 	if (rtos == NULL)
 		return -1;
 
@@ -326,7 +327,7 @@ static int embKernel_get_thread_reg_list(struct rtos *rtos, int64_t thread_id, c
 		return retval;
 	}
 
-	return rtos_generic_stack_read(rtos->target, param->stacking_info, stack_ptr, hex_reg_list);
+	return rtos_generic_stack_read(rtos->target, param->stacking_info, stack_ptr, reg_list, num_regs);
 }
 
 static int embKernel_get_symbol_list_to_lookup(symbol_table_elem_t *symbol_list[])

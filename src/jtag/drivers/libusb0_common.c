@@ -67,7 +67,8 @@ int jtag_libusb_open(const uint16_t vids[], const uint16_t pids[],
 		const char *serial,
 		struct jtag_libusb_device_handle **out)
 {
-	int retval = -ENODEV;
+	int retval = ERROR_FAIL;
+	bool serial_mismatch = false;
 	struct jtag_libusb_device_handle *libusb_handle;
 	usb_init();
 
@@ -83,21 +84,27 @@ int jtag_libusb_open(const uint16_t vids[], const uint16_t pids[],
 
 			libusb_handle = usb_open(dev);
 			if (NULL == libusb_handle) {
-				retval = -errno;
+				LOG_ERROR("usb_open() failed with %s", usb_strerror());
 				continue;
 			}
 
 			/* Device must be open to use libusb_get_string_descriptor_ascii. */
 			if (serial != NULL &&
 					!string_descriptor_equal(libusb_handle, dev->descriptor.iSerialNumber, serial)) {
+				serial_mismatch = true;
 				usb_close(libusb_handle);
 				continue;
 			}
 			*out = libusb_handle;
-			retval = 0;
+			retval = ERROR_OK;
+			serial_mismatch = false;
 			break;
 		}
 	}
+
+	if (serial_mismatch)
+		LOG_INFO("No device matches the serial string");
+
 	return retval;
 }
 
@@ -146,7 +153,7 @@ int jtag_libusb_set_configuration(jtag_libusb_device_handle *devh,
 int jtag_libusb_choose_interface(struct jtag_libusb_device_handle *devh,
 		unsigned int *usb_read_ep,
 		unsigned int *usb_write_ep,
-		int bclass, int subclass, int protocol)
+		int bclass, int subclass, int protocol, int trans_type)
 {
 	struct jtag_libusb_device *udev = jtag_libusb_get_device(devh);
 	struct usb_interface *iface = udev->config->interface;
@@ -157,7 +164,8 @@ int jtag_libusb_choose_interface(struct jtag_libusb_device_handle *devh,
 	for (int i = 0; i < desc->bNumEndpoints; i++) {
 		if ((bclass > 0 && desc->bInterfaceClass != bclass) ||
 		    (subclass > 0 && desc->bInterfaceSubClass != subclass) ||
-		    (protocol > 0 && desc->bInterfaceProtocol != protocol))
+		    (protocol > 0 && desc->bInterfaceProtocol != protocol) ||
+		    (trans_type > 0 && (desc->endpoint[i].bmAttributes & 0x3) != trans_type))
 			continue;
 
 		uint8_t epnum = desc->endpoint[i].bEndpointAddress;

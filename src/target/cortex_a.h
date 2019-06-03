@@ -93,12 +93,7 @@ struct cortex_a_common {
 	int brp_num_available;
 	struct cortex_a_brp *brp_list;
 
-	/* Use cortex_a_read_regs_through_mem for fast register reads */
-	int fast_reg_read;
-
 	uint32_t cpuid;
-	uint32_t ctypr;
-	uint32_t ttypr;
 	uint32_t didr;
 
 	enum cortex_a_isrmasking_mode isrmasking_mode;

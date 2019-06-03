@@ -250,6 +250,7 @@ static int pthread_create(HANDLE *pThread,
 #define ESP_APPTRACE_BLOCK_ID_MSK		   0x7FUL
 #define ESP_APPTRACE_BLOCK_ID(_id_)		   (((_id_) & ESP_APPTRACE_BLOCK_ID_MSK) << 15)
 #define ESP_APPTRACE_BLOCK_ID_GET(_v_)	   (((_v_) >> 15) & ESP_APPTRACE_BLOCK_ID_MSK)
+#define ESP_APPTRACE_BLOCK_ID_MAX		   ESP_APPTRACE_BLOCK_ID_MSK
 #define ESP_APPTRACE_HOST_DATA			   (1 << 22)
 #define ESP_APPTRACE_HOST_CONNECT		   (1 << 23)
 
@@ -414,6 +415,7 @@ struct esp_apptrace_cmd_ctx {
 	struct target *					esp32_target;
 	struct target *					cpus[ESP_APPTRACE_TARGETS_NUM_MAX];
 	int								cores_num;
+	uint32_t						last_blk_id;
 	pthread_mutex_t					trax_blocks_mux;
 	struct hlist_head				free_trax_blocks;
 	struct hlist_head				ready_trax_blocks;
@@ -435,6 +437,7 @@ struct esp_apptrace_cmd_data {
 	uint32_t						poll_period;
 	uint32_t						sv_acc_time_delta;
 	int								sv_last_core_id;
+	int								sv_trace_running;
 	uint32_t						max_len;
 	uint32_t						skip_len;
 	bool							wait4halt;
@@ -446,7 +449,10 @@ struct esp_gcov_cmd_data {
 	bool		wait4halt;
 };
 
-// need to check it when poll period is less then 1 ms in order to react on CTRL+C etc
+// need to check `shutdown_openocd` when poll period is less then 1 ms in order to react on CTRL+C etc.
+// Actually `shutdown_openocd` is an enum type var. Non-zero value tells that shutdown is requested, for now this hasck works.
+// TODO: Currently for periods less then 1ms we loop in command handler until CTRL+C is pressed.
+//       Another trace data polling mechanism is necessary for small periods.
 extern int shutdown_openocd;
 
 static int esp_sysview_process_data(struct esp_apptrace_cmd_ctx *ctx, int core_id, uint8_t *data, uint32_t data_len);
@@ -1081,6 +1087,7 @@ static int esp_apptrace_cmd_cleanup(struct esp_apptrace_cmd_ctx *cmd_ctx)
 	esp_apptrace_dest_cleanup(cmd_data->data_dests, cmd_ctx->cores_num);
 	free(cmd_data);
 	esp_apptrace_cmd_ctx_cleanup(cmd_ctx);
+	memset(cmd_ctx, 0, sizeof(*cmd_ctx));
 	return ERROR_OK;
 }
 
@@ -1339,6 +1346,7 @@ static int esp_sysview_start(struct esp_apptrace_cmd_ctx *ctx)
 	uint8_t cmds[] = {SEGGER_SYSVIEW_COMMAND_ID_START};
 	uint32_t fired_target_num = 0;
 	struct esp108_apptrace_target_state target_state[ESP_APPTRACE_TARGETS_NUM_MAX];
+	struct esp_apptrace_cmd_data *cmd_data =(struct esp_apptrace_cmd_data *)ctx->cmd_priv;
 
 	// get current block id
 	int res = esp_apptrace_get_data_info(ctx, target_state, &fired_target_num);
@@ -1358,6 +1366,7 @@ static int esp_sysview_start(struct esp_apptrace_cmd_ctx *ctx)
 		LOG_ERROR("SEGGER: Failed to start tracing!");
 		return res;
 	}
+	cmd_data->sv_trace_running = 1;
 	return res;
 }
 
@@ -1365,9 +1374,9 @@ static int esp_sysview_stop(struct esp_apptrace_cmd_ctx *ctx)
 {
 	uint32_t old_block_id, fired_target_num = 0, empty_target_num = 0;
 	struct esp108_apptrace_target_state target_state[ESP_APPTRACE_TARGETS_NUM_MAX];
+	struct esp_apptrace_cmd_data *cmd_data =(struct esp_apptrace_cmd_data *)ctx->cmd_priv;
 	uint8_t cmds[] = {SEGGER_SYSVIEW_COMMAND_ID_STOP};
 	struct duration wait_time;
-	int last_blocks_num = 0;
 
 	struct esp_apptrace_block *block = esp_apptrace_free_block_get(ctx);
 	if (!block) {
@@ -1386,8 +1395,6 @@ static int esp_sysview_stop(struct esp_apptrace_cmd_ctx *ctx)
 	// in this case block_ids on both CPUs are equal, so the first one will be selected
 	for (int k = 0; k < ctx->cores_num; k++) {
 		if (target_state[k].data_len) {
-			// data_len = target_state[k].data_len;
-			// block_id = target_state[k].block_id;
 			fired_target_num = k;
 			break;
 		}
@@ -1428,20 +1435,19 @@ static int esp_sysview_stop(struct esp_apptrace_cmd_ctx *ctx)
 	}
 	// resume targets to allow command processing
 	LOG_INFO("Resume targets");
-	for (int k = 0; k < ctx->cores_num; k++) {
-		if (!ctx->esp32_target) {
-			res = target_resume(ctx->cpus[k], 1, 0, 1, 0);
-			if (res != ERROR_OK) {
-				LOG_ERROR("SEGGER: Failed to resume target '%s' (%d)!", target_name(ctx->cpus[k]), res);
-				return res;
-			}
-		}
-	}
 	if (ctx->esp32_target) {
 		res = target_resume(ctx->esp32_target, 1, 0, 1, 0);
 		if (res != ERROR_OK) {
 			LOG_ERROR("SEGGER: Failed to resume target '%s' (%d)!", target_name(ctx->esp32_target), res);
 			return res;
+		}
+	} else {
+		for (int k = 0; k < ctx->cores_num; k++) {
+			res = target_resume(ctx->cpus[k], 1, 0, 1, 0);
+			if (res != ERROR_OK) {
+				LOG_ERROR("SEGGER: Failed to resume target '%s' (%d)!", target_name(ctx->cpus[k]), res);
+				return res;
+			}
 		}
 	}
 	// wait for block switch (command sent), so we can disconnect from targets
@@ -1451,8 +1457,8 @@ static int esp_sysview_stop(struct esp_apptrace_cmd_ctx *ctx)
 		return ERROR_FAIL;
 	}
 	// we are waiting for the last data from TRAX block and also there can be data in the pended data buffer
-	// so we are expectign two TRX block switches at most or stopping due to timeout
-	while (last_blocks_num < 2) {
+	// so we are expecting two TRX block switches at most or stopping due to timeout
+	while (cmd_data->sv_trace_running) {
 		res = esp_apptrace_get_data_info(ctx, target_state, &fired_target_num);
 		if (res != ERROR_OK) {
 			LOG_ERROR("SEGGER: Failed to read targets data info!");
@@ -1491,14 +1497,13 @@ static int esp_sysview_stop(struct esp_apptrace_cmd_ctx *ctx)
 					}
 				}
 				old_block_id = target_state[fired_target_num].block_id;
-				last_blocks_num++;
 			}
 		}
 		if (duration_measure(&wait_time) != 0) {
 			LOG_ERROR("Failed to start trace stop timeout measurement!");
 			return ERROR_FAIL;
 		}
-		if (duration_elapsed(&wait_time) >= 0.1) {
+		if (duration_elapsed(&wait_time) >= 0.5) {
 			LOG_INFO("Stop waiting for the last data due to timeout.");
 			break;
 		}
@@ -1529,7 +1534,7 @@ static int esp_apptrace_get_data_info(struct esp_apptrace_cmd_ctx *ctx, struct e
     if (fired_target_num) {
         *fired_target_num = (uint32_t)-1;
     }
-
+    memset(target_state, 0, ctx->cores_num*sizeof(*target_state));
     for (int i = 0; i < ctx->cores_num; i++) {
         int res = esp108_apptrace_read_data_len(ctx->cpus[i], &target_state[i].block_id, &target_state[i].data_len);
         if (res != ERROR_OK) {
@@ -1873,6 +1878,9 @@ static int esp_sysview_process_data(struct esp_apptrace_cmd_ctx *ctx, int core_i
 					break;
 			}
 		}
+		if (event_id == SYSVIEW_EVTID_TRACE_STOP) {
+			cmd_data->sv_trace_running = 0;
+		}
 		ctx->tot_len += pkt_len;
 		processed += pkt_len;
 	}
@@ -1970,6 +1978,36 @@ static int esp_apptrace_poll(void *priv)
 		return res;
 	}
 	if (fired_target_num == (uint32_t)-1) {
+		// no data has been received, but block could be switched due to the data transfered from host to target
+		if (ctx->cores_num > 1) {
+			uint32_t max_block_id = 0, min_block_id = ESP_APPTRACE_BLOCK_ID_MAX;
+			// find maximum block ID and set the same ID in control reg for both blocks;
+			for (int i = 0; i < ctx->cores_num; i++) {
+				if (max_block_id < target_state[i].block_id) {
+					max_block_id = target_state[i].block_id;
+				}
+				if (min_block_id > target_state[i].block_id) {
+					min_block_id = target_state[i].block_id;
+				}
+			}
+			// handle block ID overflow
+			if (max_block_id == ESP_APPTRACE_BLOCK_ID_MAX && min_block_id == 0) {
+				max_block_id = 0;
+			}
+			for (int i = 0; i < ctx->cores_num; i++) {
+				if (max_block_id != target_state[i].block_id) {
+					LOG_DEBUG("Ack empty block %d on target (%s)!", max_block_id, target_name(ctx->cpus[i]));
+					res = esp108_apptrace_write_ctrl_reg(ctx->cpus[i], max_block_id,
+														 0/*all read*/, 1/*host connected*/, 0/*no host data*/);
+					if (res != ERROR_OK) {
+						ctx->running = 0;
+						LOG_ERROR("Failed to ack empty data block on (%s)!", target_name(ctx->cpus[i]));
+						return res;
+					}
+				}
+			}
+			ctx->last_blk_id = max_block_id;
+		}
 		if (ctx->stop_tmo != -1.0) {
 			if (duration_measure(&ctx->idle_time) != 0) {
 				ctx->running = 0;
@@ -2019,6 +2057,7 @@ static int esp_apptrace_poll(void *priv)
 		LOG_ERROR("Failed to read data on (%s)!", target_name(ctx->cpus[fired_target_num]));
 		return res;
 	}
+	ctx->last_blk_id = target_state[fired_target_num].block_id;
 #if ESP_APPTRACE_TIME_STATS_ENABLE
 	if (duration_measure(&blk_proc_time) != 0) {
 		ctx->running = 0;
@@ -2039,14 +2078,14 @@ static int esp_apptrace_poll(void *priv)
 	}
 #endif
 	if (ctx->cores_num > 1) {
-		res = esp108_apptrace_write_ctrl_reg(ctx->cpus[fired_target_num ? 0 : 1], target_state[fired_target_num].block_id,
+		res = esp108_apptrace_write_ctrl_reg(ctx->cpus[fired_target_num ? 0 : 1], ctx->last_blk_id,
 											 0/*all read*/, 1/*host connected*/, 0/*no host data*/);
 		if (res != ERROR_OK) {
 			ctx->running = 0;
 			LOG_ERROR("Failed to ack data on (%s)!", target_name(ctx->cpus[fired_target_num ? 0 : 1]));
 			return res;
 		}
-		LOG_DEBUG("Ack block %d target (%s)!", target_state[fired_target_num].block_id, target_name(ctx->cpus[fired_target_num ? 0 : 1]));
+		LOG_DEBUG("Ack block %d target (%s)!", ctx->last_blk_id, target_name(ctx->cpus[fired_target_num ? 0 : 1]));
 	}
 	ctx->raw_tot_len += target_state[fired_target_num].data_len;
 
@@ -2215,18 +2254,20 @@ int esp_cmd_apptrace_generic(struct target *target, int mode, const char **argv,
 		}
 	}
 	else if (strcmp(argv[0], "stop") == 0) {
-		if (s_at_cmd_ctx.running) {
-			if (duration_measure(&s_at_cmd_ctx.read_time) != 0) {
-				LOG_ERROR("Failed to stop trace read time measurement!");
-			}
-			// data processor is alive, so wait for all received blocks to be processed
-			res = esp_apptrace_wait_pended_blocks(&s_at_cmd_ctx);
-			if (res != ERROR_OK) {
-				LOG_ERROR("Failed to wait for pended blocks (%d)!", res);
-			}
-			// signal thread to stop
-			s_at_cmd_ctx.running = 0;
+		if (!s_at_cmd_ctx.running) {
+			LOG_WARNING("Tracing is not running!");
+			return ERROR_FAIL;
 		}
+		if (duration_measure(&s_at_cmd_ctx.read_time) != 0) {
+			LOG_ERROR("Failed to stop trace read time measurement!");
+		}
+		// data processor is alive, so wait for all received blocks to be processed
+		res = esp_apptrace_wait_pended_blocks(&s_at_cmd_ctx);
+		if (res != ERROR_OK) {
+			LOG_ERROR("Failed to wait for pended blocks (%d)!", res);
+		}
+		// signal thread to stop
+		s_at_cmd_ctx.running = 0;
 		res = target_unregister_timer_callback(esp_apptrace_poll, &s_at_cmd_ctx);
 		if (res != ERROR_OK) {
 			LOG_ERROR("Failed to unregister target timer handler (%d)!", res);
@@ -2238,7 +2279,7 @@ int esp_cmd_apptrace_generic(struct target *target, int mode, const char **argv,
 				LOG_ERROR("SEGGER: Failed to stop tracing!");
 			}
 		}
-		res = esp_apptrace_connect_targets(&s_at_cmd_ctx, false, true);
+		res = esp_apptrace_connect_targets(&s_at_cmd_ctx, false, old_state == TARGET_RUNNING);
 		if (res != ERROR_OK) {
 			LOG_ERROR("Failed to disconnect targets (%d)!", res);
 		}
@@ -2277,15 +2318,15 @@ int esp_cmd_apptrace_generic(struct target *target, int mode, const char **argv,
 			/* let registered timer callbacks to run */
 			target_call_timer_callbacks();
 		}
-	if (s_at_cmd_ctx.running) {
-	  // data processor is alive, so wait for all received blocks to be processed
-	  res = esp_apptrace_wait_pended_blocks(&s_at_cmd_ctx);
-	  if (res != ERROR_OK) {
-		LOG_ERROR("Failed to wait for pended blocks (%d)!", res);
-	  }
-	  // signal thread to stop
-	  s_at_cmd_ctx.running = 0;
-	}
+		if (s_at_cmd_ctx.running) {
+			// data processor is alive, so wait for all received blocks to be processed
+			res = esp_apptrace_wait_pended_blocks(&s_at_cmd_ctx);
+			if (res != ERROR_OK) {
+				LOG_ERROR("Failed to wait for pended blocks (%d)!", res);
+			}
+			// signal thread to stop
+			s_at_cmd_ctx.running = 0;
+		}
 		esp_apptrace_print_stats(&s_at_cmd_ctx);
 		res = esp_apptrace_cmd_cleanup(&s_at_cmd_ctx);
 		if (res != ERROR_OK) {
@@ -2425,6 +2466,7 @@ static int esp_gcov_fclose(struct esp_gcov_cmd_data *cmd_data, uint8_t *data, ui
 		return ERROR_FAIL;
 	}
 
+	LOG_DEBUG("Close file 0x%x", fd+1);
 	int32_t fret = fclose(cmd_data->files[fd]);
 	if (fret) {
 		LOG_ERROR("Failed to close file %d (%d)!", fd, errno);
@@ -2462,6 +2504,7 @@ static int esp_gcov_fwrite(struct esp_gcov_cmd_data *cmd_data, uint8_t *data, ui
 		return ERROR_FAIL;
 	}
 
+	LOG_DEBUG("Write file 0x%x %d bytes", fd+1, (int)(data_len - sizeof(fd)));
 	uint32_t fret = fwrite(data + sizeof(fd), data_len - sizeof(fd), 1, cmd_data->files[fd]);
 	if (fret != 1) {
 		LOG_ERROR("Failed to write %ld byte (%d)!", (long)(data_len - sizeof(fd)), errno);
@@ -2507,6 +2550,7 @@ static int esp_gcov_fread(struct esp_gcov_cmd_data *cmd_data, uint8_t *data, uin
 		LOG_ERROR("Failed to alloc mem for resp!");
 		return ERROR_FAIL;
 	}
+	LOG_DEBUG("Read file 0x%x %d bytes", fd+1, (int)len);
 	fret = fread(*resp + sizeof(fret), 1, len, cmd_data->files[fd]);
 	if (fret == 0) {
 		LOG_ERROR("Failed to read %d byte (%d)!", len, errno);

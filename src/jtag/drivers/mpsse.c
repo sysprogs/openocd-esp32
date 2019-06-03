@@ -120,7 +120,7 @@ static bool device_location_equal(libusb_device *device, const char *location)
 
 	LOG_DEBUG("device path has %i steps", path_len);
 
-	ptr = strtok(loc, ":");
+	ptr = strtok(loc, "-:");
 	if (ptr == NULL) {
 		LOG_DEBUG("no ':' in path");
 		goto done;
@@ -132,7 +132,7 @@ static bool device_location_equal(libusb_device *device, const char *location)
 
 	path_step = 0;
 	while (path_step < 7) {
-		ptr = strtok(NULL, ",");
+		ptr = strtok(NULL, ".,");
 		if (ptr == NULL) {
 			LOG_DEBUG("no more tokens in path at step %i", path_step);
 			break;
@@ -247,8 +247,8 @@ static bool open_matching_device(struct mpsse_ctx *ctx, const uint16_t *vid, con
 	err = libusb_detach_kernel_driver(ctx->usb_dev, ctx->interface);
 	if (err != LIBUSB_SUCCESS && err != LIBUSB_ERROR_NOT_FOUND
 			&& err != LIBUSB_ERROR_NOT_SUPPORTED) {
-		LOG_ERROR("libusb_detach_kernel_driver() failed with %s", libusb_error_name(err));
-		goto error;
+		LOG_WARNING("libusb_detach_kernel_driver() failed with %s, trying to continue anyway",
+			libusb_error_name(err));
 	}
 
 	err = libusb_claim_interface(ctx->usb_dev, ctx->interface);
@@ -335,7 +335,13 @@ struct mpsse_ctx *mpsse_open(const uint16_t *vid, const uint16_t *pid, const cha
 	ctx->write_size = 16384;
 	ctx->read_chunk = malloc(ctx->read_chunk_size);
 	ctx->read_buffer = malloc(ctx->read_size);
-	ctx->write_buffer = malloc(ctx->write_size);
+
+	/* Use calloc to make valgrind happy: buffer_write() sets payload
+	 * on bit basis, so some bits can be left uninitialized in write_buffer.
+	 * Although this is perfectly ok with MPSSE, valgrind reports
+	 * Syscall param ioctl(USBDEVFS_SUBMITURB).buffer points to uninitialised byte(s) */
+	ctx->write_buffer = calloc(1, ctx->write_size);
+
 	if (!ctx->read_chunk || !ctx->read_buffer || !ctx->write_buffer)
 		goto error;
 
@@ -872,6 +878,8 @@ int mpsse_flush(struct mpsse_ctx *ctx)
 	libusb_fill_bulk_transfer(write_transfer, ctx->usb_dev, ctx->out_ep, ctx->write_buffer,
 		ctx->write_count, write_cb, &write_result, ctx->usb_write_timeout);
 	retval = libusb_submit_transfer(write_transfer);
+	if (retval != LIBUSB_SUCCESS)
+		goto error_check;
 
 	if (ctx->read_count) {
 		read_transfer = libusb_alloc_transfer(0);
@@ -879,22 +887,36 @@ int mpsse_flush(struct mpsse_ctx *ctx)
 			ctx->read_chunk_size, read_cb, &read_result,
 			ctx->usb_read_timeout);
 		retval = libusb_submit_transfer(read_transfer);
+		if (retval != LIBUSB_SUCCESS)
+			goto error_check;
 	}
 
 	/* Polling loop, more or less taken from libftdi */
 	while (!write_result.done || !read_result.done) {
-		retval = libusb_handle_events(ctx->usb_ctx);
+		struct timeval timeout_usb;
+
+		timeout_usb.tv_sec = 1;
+		timeout_usb.tv_usec = 0;
+
+		retval = libusb_handle_events_timeout_completed(ctx->usb_ctx, &timeout_usb, NULL);
 		keep_alive();
-		if (retval != LIBUSB_SUCCESS && retval != LIBUSB_ERROR_INTERRUPTED) {
+		if (retval == LIBUSB_ERROR_NO_DEVICE || retval == LIBUSB_ERROR_INTERRUPTED)
+			break;
+
+		if (retval != LIBUSB_SUCCESS) {
 			libusb_cancel_transfer(write_transfer);
 			if (read_transfer)
 				libusb_cancel_transfer(read_transfer);
-			while (!write_result.done || !read_result.done)
-				if (libusb_handle_events(ctx->usb_ctx) != LIBUSB_SUCCESS)
+			while (!write_result.done || !read_result.done) {
+				retval = libusb_handle_events_timeout_completed(ctx->usb_ctx,
+								&timeout_usb, NULL);
+				if (retval != LIBUSB_SUCCESS)
 					break;
+			}
 		}
 	}
 
+error_check:
 	if (retval != LIBUSB_SUCCESS) {
 		LOG_ERROR("libusb_handle_events() failed with %s", libusb_error_name(retval));
 		retval = ERROR_FAIL;

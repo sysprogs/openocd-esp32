@@ -661,13 +661,13 @@ static int svf_read_command_from_file(FILE *fd)
 				if (svf_getline(&svf_read_line, &svf_read_line_size, svf_fd) <= 0)
 					return ERROR_FAIL;
 				i = -1;
-			/* Falls through */
+				/* fallthrough */
 			case '\r':
 				slash = 0;
 				/* Don't save '\r' and '\n' if no data is parsed */
 				if (!cmd_pos)
 					break;
-			/* Falls through */
+				/* fallthrough */
 			default:
 				/* The parsing code currently expects a space
 				 * before parentheses -- "TDI (123)".  Also a
@@ -740,6 +740,9 @@ parse_char:
 		}
 		pos++;
 	}
+
+	if (num == 0)
+		return ERROR_FAIL;
 
 	*num_of_argu = num;
 
@@ -1313,7 +1316,7 @@ XXR_common:
 			 * SEC]] [ENDSTATE end_state] */
 			/* RUNTEST [run_state] min_time SEC [MAXIMUM max_time SEC] [ENDSTATE
 			 * end_state] */
-			if ((num_of_argu < 3) && (num_of_argu > 11)) {
+			if ((num_of_argu < 3) || (num_of_argu > 11)) {
 				LOG_ERROR("invalid parameter of %s", argus[0]);
 				return ERROR_FAIL;
 			}

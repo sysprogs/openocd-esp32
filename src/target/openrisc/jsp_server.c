@@ -88,7 +88,6 @@ static int jsp_new_connection(struct connection *connection)
 	telnet_connection->closed = 0;
 	telnet_connection->line_size = 0;
 	telnet_connection->line_cursor = 0;
-	telnet_connection->option_size = 0;
 	telnet_connection->state = TELNET_STATE_DATA;
 
 	/* negotiate telnet options */
@@ -243,3 +242,7 @@ int jsp_register_commands(struct command_context *cmd_ctx)
 	return register_commands(cmd_ctx, NULL, jsp_command_handlers);
 }
 
+void jsp_service_free(void)
+{
+	free(jsp_port);
+}

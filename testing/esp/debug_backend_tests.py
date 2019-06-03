@@ -5,6 +5,7 @@ import os.path
 import logging
 import unittest
 import importlib
+import sys
 import debug_backend as dbg
 
 # TODO: fixed???
@@ -23,6 +24,60 @@ def get_logger():
     """ Returns logger for this module
     """
     return logging.getLogger(__name__)
+
+
+class IdfVersion:
+    """ Wrapper class for IDF version
+        Keeps IDF ver as 4 bytes int. Format is: x.3.0.2, the most significant byte is not used.
+    """
+    IDF_VER_LATEST = 0xFFFFFFFF
+    _target_idf_ver = None
+
+    def __init__(self, idf_ver=IDF_VER_LATEST):
+        self._idf_ver = idf_ver
+
+    @classmethod
+    def get_current(cls):
+        if not cls._target_idf_ver:
+            cls._target_idf_ver =  dbg.read_idf_ver()
+        return cls._target_idf_ver
+
+    @classmethod
+    def set_current(cls, idf_ver):
+        get_logger().info('Set current IDF ver %s', idf_ver)
+        cls._target_idf_ver = idf_ver
+
+    @classmethod
+    def fromstr(cls, ver_str):
+        if ver_str == 'latest':
+            return IdfVersion()
+        vers = ver_str.split('.')
+        # 3 -> 3.0.0
+        # 3.1 -> 3.1.0
+        while len(vers) < 3:
+            vers.append('0')
+        idf_ver = 0
+        for i in range((len(vers)-1), -1, -1):
+            idf_ver |= int(vers[len(vers)-i-1], 0) << i*8
+        return IdfVersion(idf_ver)
+
+    def __repr__(self):
+        if self._idf_ver == self.IDF_VER_LATEST:
+            return 'latest'
+        return "%d.%d.%d" % ((self._idf_ver >> 16) & 0xFF, (self._idf_ver >> 8) & 0xFF, self._idf_ver & 0xFF)
+
+    def __cmp__(self, other):
+        res = 0
+        if self._idf_ver < other._idf_ver:
+            res = -1
+        elif self._idf_ver > other._idf_ver:
+            res = 1
+        return res
+
+
+
+def idf_ver_min(ver_str):
+    return unittest.skipIf(IdfVersion.get_current() < IdfVersion.fromstr(ver_str), "requires min IDF_VER='%s', current IDF_VER='%s'" % (ver_str, IdfVersion.get_current()))
 
 
 class DebuggerTestError(RuntimeError):
@@ -55,7 +110,7 @@ class DebuggerTestAppConfig:
         self.pt_off = ESP32_PT_FLASH_OFF
         # name of test app variable which selects sub-test to run
         self.test_select_var = None
-    
+
     def __repr__(self):
         return '%s/%x-%s/%x-%s/%x-%s' % (self.bin_dir, self.app_off, self.app_name, self.bld_off, self.bld_path, self.pt_off, self.pt_path)
 
@@ -111,7 +166,7 @@ class DebuggerTestsBunch(unittest.BaseTestSuite):
         """
         self._group_tests(self)
         for app_cfg_id in self._groupped_suites:
-            # check if suite have at least one test to run 
+            # check if suite have at least one test to run
             skip_count = 0
             for test in self._groupped_suites[app_cfg_id][1]:
                 if getattr(type(test), '__unittest_skip__', False):
@@ -127,7 +182,7 @@ class DebuggerTestsBunch(unittest.BaseTestSuite):
                     except:
                         get_logger().critical('Failed to load %s!', app_cfg_id)
                         for test in self._groupped_suites[app_cfg_id][1]:
-                            result.addSkip(test, 'test app load failure')
+                            result.addError(test, sys.exc_info())
                         continue
                 dbg.get_gdb().exec_file_set(self._groupped_suites[app_cfg_id][0].build_app_elf_path())
             self._groupped_suites[app_cfg_id][1]._run_tests(result, debug)
@@ -157,12 +212,9 @@ class DebuggerTestsBunch(unittest.BaseTestSuite):
                 else:
                     app_cfg_id = '' # test does not use app
                 if app_cfg_id not in self._groupped_suites:
-                    # print 'Add new suite for (%s)' % (app_name)
                     self._groupped_suites[app_cfg_id] = [app_cfg, DebuggerTestsBunch()]
-                # print 'Add test %s to (%s)' % (test, app_name)
                 self._groupped_suites[app_cfg_id][1].addTest(test)
             else:
-                # print 'Group suite %s' % (test)
                 self._group_tests(test)
 
     def _load_app(self, app_cfg):
@@ -170,7 +222,6 @@ class DebuggerTestsBunch(unittest.BaseTestSuite):
         """
         gdb = dbg.get_gdb()
         state,rsn = gdb.get_target_state()
-        # print 'DebuggerTestAppTests.LOAD_APP %s / %s' % (cls, app_bins)
         if state != dbg.Gdb.TARGET_STATE_STOPPED:
             gdb.exec_interrupt()
             gdb.wait_target_state(dbg.Gdb.TARGET_STATE_STOPPED, 5)
@@ -214,14 +265,23 @@ class DebuggerTestsBase(unittest.TestCase):
                 self.gdb.exec_continue()
             self.gdb.wait_target_state(dbg.Gdb.TARGET_STATE_RUNNING, 5)
 
-    # TODO: add step_insn method
-    def step(self):
-        """ Performs program step (step over, "next" command in GDB)
+    def interrupt(self):
+        """ Perform CTRL+C
         """
-        self.gdb.exec_next()
+        self.gdb.exec_interrupt()
+        rsn = self.gdb.wait_target_state(dbg.Gdb.TARGET_STATE_STOPPED, 20)
+        self.assertEqual(rsn, dbg.Gdb.TARGET_STOP_REASON_SIGINT)
+
+    def step(self, insn=False, stop_rsn=dbg.Gdb.TARGET_STOP_REASON_STEPPED):
+        """ Performs program step ( "next", "nexti" command in GDB)
+        """
+        if insn:
+            self.gdb.exec_next_insn()
+        else:
+            self.gdb.exec_next()
         self.gdb.wait_target_state(dbg.Gdb.TARGET_STATE_RUNNING, 5)
         rsn = self.gdb.wait_target_state(dbg.Gdb.TARGET_STATE_STOPPED, 5)
-        self.assertEqual(rsn, dbg.Gdb.TARGET_STOP_REASON_STEPPED)
+        self.assertEqual(rsn, stop_rsn)
 
     def step_in(self):
         """ Performs program step (step in, "step" command in GDB)
@@ -272,7 +332,7 @@ class DebuggerTestAppTests(DebuggerTestsBase):
         self.resume_exec()
         rsn = self.gdb.wait_target_state(dbg.Gdb.TARGET_STATE_STOPPED, 10)
         # workarounds for strange debugger's behaviour
-        if rsn == dbg.Gdb.TARGET_STOP_REASON_SIGINT:            
+        if rsn == dbg.Gdb.TARGET_STOP_REASON_SIGINT:
             get_logger().warning('Unexpected SIGINT during setup! Apply workaround...')
             cur_frame = self.gdb.get_current_frame()
             self.resume_exec()
@@ -305,6 +365,14 @@ class DebuggerTestAppTests(DebuggerTestsBase):
         self.gdb.data_eval_expr('%s=%d' % (self.test_app_cfg.test_select_var, sub_test_num))
 
 
+    def run_to_bp(self, exp_rsn, func_name):
+        self.resume_exec()
+        rsn = self.gdb.wait_target_state(dbg.Gdb.TARGET_STATE_STOPPED, 5)
+        self.assertEqual(rsn, exp_rsn)
+        cur_frame = self.gdb.get_current_frame()
+        self.assertEqual(cur_frame['func'], func_name)
+        return cur_frame
+
 class DebuggerGenericTestAppTests(DebuggerTestAppTests):
     """ Base class to run tests which use generic test app
     """
@@ -320,7 +388,7 @@ class DebuggerGenericTestAppTests(DebuggerTestAppTests):
 class DebuggerGenericTestAppTestsDual(DebuggerGenericTestAppTests):
     """ Base class to run tests which use generic test app in dual core mode
     """
-
+    CORES_NUM = 2
     def __init__(self, methodName='runTest'):
         super(DebuggerGenericTestAppTestsDual, self).__init__(methodName)
         # use default config with modified path to binaries
@@ -331,7 +399,7 @@ class DebuggerGenericTestAppTestsDual(DebuggerGenericTestAppTests):
 class DebuggerGenericTestAppTestsSingle(DebuggerGenericTestAppTests):
     """ Base class to run tests which use generic test app in single core mode
     """
-
+    CORES_NUM = 1
     def __init__(self, methodName='runTest'):
         super(DebuggerGenericTestAppTestsSingle, self).__init__(methodName)
         # use default config with modified path to binaries

@@ -109,6 +109,8 @@ struct flash_driver {
 	/**
 	 * Bank/sector protection routine (target-specific).
 	 *
+	 * If protection is not implemented, set method to NULL
+	 *
 	 * When called, the driver should enable/disable protection
 	 * for MINIMUM the range covered by first..last sectors
 	 * inclusive. Some chips have alignment requirements will
@@ -178,6 +180,8 @@ struct flash_driver {
 	 * flash_sector_s::is_protected field for each of the flash
 	 * bank's sectors.
 	 *
+	 * If protection is not implemented, set method to NULL
+	 *
 	 * @param bank - the bank to check
 	 * @returns ERROR_OK if successful; otherwise, an error code.
 	 */
@@ -209,6 +213,14 @@ struct flash_driver {
 	 * @returns ERROR_OK if successful; otherwise, an error code.
 	 */
 	int (*auto_probe)(struct flash_bank *bank);
+
+	/**
+	 * Deallocates private driver structures.
+	 * Use default_flash_free_driver_priv() to simply free(bank->driver_priv)
+	 *
+	 * @param bank - the bank being destroyed
+	 */
+	void (*free_driver_priv)(struct flash_bank *bank);
 };
 
 #define FLASH_BANK_COMMAND_HANDLER(name) \

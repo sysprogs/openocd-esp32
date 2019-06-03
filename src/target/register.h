@@ -25,12 +25,14 @@
 struct target;
 
 enum reg_type {
+	REG_TYPE_BOOL,
 	REG_TYPE_INT,
 	REG_TYPE_INT8,
 	REG_TYPE_INT16,
 	REG_TYPE_INT32,
 	REG_TYPE_INT64,
 	REG_TYPE_INT128,
+	REG_TYPE_UINT,
 	REG_TYPE_UINT8,
 	REG_TYPE_UINT16,
 	REG_TYPE_UINT32,
@@ -66,6 +68,7 @@ struct reg_data_type_union {
 struct reg_data_type_bitfield {
 	uint32_t start;
 	uint32_t end;
+	enum reg_type type;
 };
 
 struct reg_data_type_struct_field {
@@ -114,17 +117,32 @@ struct reg_data_type {
 };
 
 struct reg {
+	/* Canonical name of the register. */
 	const char *name;
+	/* Number that gdb uses to access this register. */
 	uint32_t number;
+	/* TODO. This should probably be const. */
 	struct reg_feature *feature;
+	/* TODO: When true, the caller will save this register before running any algorithm. */
 	bool caller_save;
+	/* Pointer to place where the value is stored, in the format understood by
+	 * the binarybuffer.h functions. */
 	void *value;
+	/* The stored value needs to be written to the target. */
 	bool dirty;
+	/* When true, value is valid. */
 	bool valid;
+	/* When false, the register doesn't actually exist in the target. */
 	bool exist;
+	/* Size of the register in bits. */
 	uint32_t size;
+	/* Used for generating XML description of registers. Can be set to NULL for
+	 * targets that don't use that. */
 	struct reg_data_type *reg_data_type;
+	/* Used for generating XML description of registers. Can be set to NULL for
+	 * targets that don't use that. */
 	const char *group;
+	/* Pointer to architecture-specific info for this register. */
 	void *arch_info;
 	const struct reg_arch_type *type;
 };

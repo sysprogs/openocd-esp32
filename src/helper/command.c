@@ -557,6 +557,10 @@ static char *__command_name(struct command *c, char delim, unsigned extra)
 	if (NULL == c->parent) {
 		/* allocate enough for the name, child names, and '\0' */
 		name = malloc(len + extra + 1);
+		if (!name) {
+			LOG_ERROR("Out of memory");
+			return NULL;
+		}
 		strcpy(name, c->name);
 	} else {
 		/* parent's extra must include both the space and name */
@@ -608,22 +612,37 @@ static int run_command(struct command_context *context,
 		.argc = num_words - 1,
 		.argv = words + 1,
 	};
+	/* Black magic of overridden current target:
+	 * If the command we are going to handle has a target prefix,
+	 * override the current target temporarily for the time
+	 * of processing the command.
+	 * current_target_override is used also for event handlers
+	 * therefore we prevent touching it if command has no prefix.
+	 * Previous override is saved and restored back to ensure
+	 * correct work when run_command() is re-entered. */
+	struct target *saved_target_override = context->current_target_override;
+	if (c->jim_handler_data)
+		context->current_target_override = c->jim_handler_data;
+
 	int retval = c->handler(&cmd);
+
+	if (c->jim_handler_data)
+		context->current_target_override = saved_target_override;
+
 	if (retval == ERROR_COMMAND_SYNTAX_ERROR) {
 		/* Print help for command */
 		char *full_name = command_name(c, ' ');
 		if (NULL != full_name) {
 			command_run_linef(context, "usage %s", full_name);
 			free(full_name);
-		} else
-			retval = -ENOMEM;
+		}
 	} else if (retval == ERROR_COMMAND_CLOSE_CONNECTION) {
 		/* just fall through for a shutdown request */
 	} else if (retval != ERROR_OK) {
 		/* we do not print out an error message because the command *should*
 		 * have printed out an error
 		 */
-		LOG_DEBUG("Command failed with error code %d", retval);
+		LOG_DEBUG("Command '%s' failed with error code %d", c->name, retval);
 	}
 
 	return retval;
@@ -643,6 +662,8 @@ int command_run_line(struct command_context *context, char *line)
 	 * happen when the Jim Tcl interpreter is provided by eCos for
 	 * instance.
 	 */
+	context->current_target_override = NULL;
+
 	Jim_Interp *interp = context->interp;
 	Jim_DeleteAssocData(interp, "context");
 	retcode = Jim_SetAssocData(interp, "context", NULL, context);
@@ -852,7 +873,7 @@ static COMMAND_HELPER(command_help_show, struct command *c, unsigned n,
 {
 	char *cmd_name = command_name(c, ' ');
 	if (NULL == cmd_name)
-		return -ENOMEM;
+		return ERROR_FAIL;
 
 	/* If the match string occurs anywhere, we print out
 	 * stuff for this command. */
@@ -1269,14 +1290,10 @@ static const struct command_registration command_builtin_handlers[] = {
 
 struct command_context *command_init(const char *startup_tcl, Jim_Interp *interp)
 {
-	struct command_context *context = malloc(sizeof(struct command_context));
+	struct command_context *context = calloc(1, sizeof(struct command_context));
 	const char *HostOs;
 
 	context->mode = COMMAND_EXEC;
-	context->commands = NULL;
-	context->current_target = 0;
-	context->output_handler = NULL;
-	context->output_handler_priv = NULL;
 
 	/* Create a jim interpreter if we were not handed one */
 	if (interp == NULL) {
@@ -1337,6 +1354,15 @@ struct command_context *command_init(const char *startup_tcl, Jim_Interp *interp
 	Jim_DeleteAssocData(interp, "context");
 
 	return context;
+}
+
+void command_exit(struct command_context *context)
+{
+	if (!context)
+		return;
+
+	Jim_FreeInterp(context->interp);
+	command_done(context);
 }
 
 int command_context_mode(struct command_context *cmd_ctx, enum command_mode mode)
@@ -1410,6 +1436,8 @@ DEFINE_PARSE_ULONGLONG(_u32,  uint32_t, 0, UINT32_MAX)
 DEFINE_PARSE_ULONGLONG(_u16,  uint16_t, 0, UINT16_MAX)
 DEFINE_PARSE_ULONGLONG(_u8,   uint8_t,  0, UINT8_MAX)
 
+DEFINE_PARSE_ULONGLONG(_target_addr, target_addr_t, 0, TARGET_ADDR_MAX)
+
 #define DEFINE_PARSE_LONGLONG(name, type, min, max) \
 	DEFINE_PARSE_WRAPPER(name, type, min, max, long long, _llong)
 DEFINE_PARSE_LONGLONG(_int, int,     n < INT_MIN,   INT_MAX)
@@ -1454,9 +1482,8 @@ COMMAND_HELPER(handle_command_parse_bool, bool *out, const char *label)
 				LOG_ERROR("%s: argument '%s' is not valid", CMD_NAME, in);
 				return ERROR_COMMAND_SYNTAX_ERROR;
 			}
-			/* fall through */
 		}
-		/* Falls through */
+			/* fallthrough */
 		case 0:
 			LOG_INFO("%s is %s", label, *out ? "enabled" : "disabled");
 			break;

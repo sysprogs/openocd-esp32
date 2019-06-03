@@ -86,11 +86,6 @@ FLASH_BANK_COMMAND_HANDLER(mdr_flash_bank_command)
 	return ERROR_OK;
 }
 
-static int mdr_protect_check(struct flash_bank *bank)
-{
-	return ERROR_OK;
-}
-
 static int mdr_mass_erase(struct flash_bank *bank)
 {
 	struct target *target = bank->target;
@@ -171,7 +166,8 @@ static int mdr_erase(struct flash_bank *bank, int first, int last)
 	if (retval != ERROR_OK)
 		goto reset_pg_and_lock;
 
-	if ((first == 0) && (last == (bank->num_sectors - 1))) {
+	if ((first == 0) && (last == (bank->num_sectors - 1)) &&
+		!mdr_info->mem_type) {
 		retval = mdr_mass_erase(bank);
 		goto reset_pg_and_lock;
 	}
@@ -214,11 +210,6 @@ reset_pg_and_lock:
 		retval = retval2;
 
 	return retval;
-}
-
-static int mdr_protect(struct flash_bank *bank, int set, int first, int last)
-{
-	return ERROR_OK;
 }
 
 static int mdr_write_block(struct flash_bank *bank, const uint8_t *buffer,
@@ -624,12 +615,11 @@ struct flash_driver mdr_flash = {
 	"<type>: 0 for main memory, 1 for info memory",
 	.flash_bank_command = mdr_flash_bank_command,
 	.erase = mdr_erase,
-	.protect = mdr_protect,
 	.write = mdr_write,
 	.read = mdr_read,
 	.probe = mdr_probe,
 	.auto_probe = mdr_auto_probe,
 	.erase_check = default_flash_blank_check,
-	.protect_check = mdr_protect_check,
 	.info = get_mdr_info,
+	.free_driver_priv = default_flash_free_driver_priv,
 };

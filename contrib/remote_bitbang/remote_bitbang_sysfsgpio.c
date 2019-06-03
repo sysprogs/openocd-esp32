@@ -13,9 +13,7 @@
  *   GNU General Public License for more details.                          *
  *                                                                         *
  *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.           *
+ *   along with this program.  If not, see <http://www.gnu.org/licenses/>. *
  ***************************************************************************/
 
 /*
@@ -302,7 +300,7 @@ static void process_remote_protocol(void)
 			break;
 		else if (c == 'b' || c == 'B') /* Blink */
 			continue;
-		else if (c >= 'r' && c <= 'r' + 2) { /* Reset */
+		else if (c >= 'r' && c <= 'r' + 3) { /* Reset */
 			char d = c - 'r';
 			sysfsgpio_reset(!!(d & 2),
 					(d & 1));

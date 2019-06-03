@@ -2135,10 +2135,13 @@ static int aice_usb_open(struct aice_port_param_s *param)
 
 	/* usb_set_configuration required under win32 */
 	jtag_libusb_set_configuration(devh, 0);
+	jtag_libusb_claim_interface(devh, 0);
 
 	unsigned int aice_read_ep;
 	unsigned int aice_write_ep;
-	jtag_libusb_choose_interface(devh, &aice_read_ep, &aice_write_ep, -1, -1, -1);
+
+	jtag_libusb_choose_interface(devh, &aice_read_ep, &aice_write_ep, -1, -1, -1, LIBUSB_TRANSFER_TYPE_BULK);
+	LOG_DEBUG("aice_read_ep=0x%x, aice_write_ep=0x%x", aice_read_ep, aice_write_ep);
 
 	aice_handler.usb_read_ep = aice_read_ep;
 	aice_handler.usb_write_ep = aice_write_ep;
@@ -2283,37 +2286,39 @@ get_delay:
 
 static int aice_usb_set_clock(int set_clock)
 {
-	if (aice_write_ctrl(AICE_WRITE_CTRL_TCK_CONTROL,
-				AICE_TCK_CONTROL_TCK_SCAN) != ERROR_OK)
-		return ERROR_FAIL;
+	if (set_clock & AICE_TCK_CONTROL_TCK_SCAN) {
+		if (aice_write_ctrl(AICE_WRITE_CTRL_TCK_CONTROL,
+					AICE_TCK_CONTROL_TCK_SCAN) != ERROR_OK)
+			return ERROR_FAIL;
 
-	/* Read out TCK_SCAN clock value */
-	uint32_t scan_clock;
-	if (aice_read_ctrl(AICE_READ_CTRL_GET_ICE_STATE, &scan_clock) != ERROR_OK)
-		return ERROR_FAIL;
+		/* Read out TCK_SCAN clock value */
+		uint32_t scan_clock;
+		if (aice_read_ctrl(AICE_READ_CTRL_GET_ICE_STATE, &scan_clock) != ERROR_OK)
+			return ERROR_FAIL;
 
-	scan_clock &= 0x0F;
+		scan_clock &= 0x0F;
 
-	uint32_t scan_base_freq;
-	if (scan_clock & 0x8)
-		scan_base_freq = 48000; /* 48 MHz */
-	else
-		scan_base_freq = 30000; /* 30 MHz */
+		uint32_t scan_base_freq;
+		if (scan_clock & 0x8)
+			scan_base_freq = 48000; /* 48 MHz */
+		else
+			scan_base_freq = 30000; /* 30 MHz */
 
-	uint32_t set_base_freq;
-	if (set_clock & 0x8)
-		set_base_freq = 48000;
-	else
-		set_base_freq = 30000;
+		uint32_t set_base_freq;
+		if (set_clock & 0x8)
+			set_base_freq = 48000;
+		else
+			set_base_freq = 30000;
 
-	uint32_t set_freq;
-	uint32_t scan_freq;
-	set_freq = set_base_freq >> (set_clock & 0x7);
-	scan_freq = scan_base_freq >> (scan_clock & 0x7);
+		uint32_t set_freq;
+		uint32_t scan_freq;
+		set_freq = set_base_freq >> (set_clock & 0x7);
+		scan_freq = scan_base_freq >> (scan_clock & 0x7);
 
-	if (scan_freq < set_freq) {
-		LOG_ERROR("User specifies higher jtag clock than TCK_SCAN clock");
-		return ERROR_FAIL;
+		if (scan_freq < set_freq) {
+			LOG_ERROR("User specifies higher jtag clock than TCK_SCAN clock");
+			return ERROR_FAIL;
+		}
 	}
 
 	if (aice_write_ctrl(AICE_WRITE_CTRL_TCK_CONTROL, set_clock) != ERROR_OK)
@@ -3424,10 +3429,10 @@ static int aice_usb_memory_mode(uint32_t coreid, enum nds_memory_select mem_sele
 	return ERROR_OK;
 }
 
-static int aice_usb_read_tlb(uint32_t coreid, uint32_t virtual_address,
-		uint32_t *physical_address)
+static int aice_usb_read_tlb(uint32_t coreid, target_addr_t virtual_address,
+		target_addr_t *physical_address)
 {
-	LOG_DEBUG("aice_usb_read_tlb, virtual address: 0x%08" PRIx32, virtual_address);
+	LOG_DEBUG("aice_usb_read_tlb, virtual address: 0x%08" TARGET_PRIxADDR, virtual_address);
 
 	uint32_t instructions[4];
 	uint32_t probe_result;

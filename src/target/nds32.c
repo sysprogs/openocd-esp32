@@ -823,7 +823,7 @@ int nds32_read_memory(struct target *target, uint32_t address,
 	return aice_read_mem_unit(aice, address, size, count, buffer);
 }
 
-int nds32_read_phys_memory(struct target *target, uint32_t address,
+int nds32_read_phys_memory(struct target *target, target_addr_t address,
 		uint32_t size, uint32_t count, uint8_t *buffer)
 {
 	struct aice_port_s *aice = target_to_aice(target);
@@ -932,7 +932,7 @@ int nds32_write_memory(struct target *target, uint32_t address,
 	return aice_write_mem_unit(aice, address, size, count, buffer);
 }
 
-int nds32_write_phys_memory(struct target *target, uint32_t address,
+int nds32_write_phys_memory(struct target *target, target_addr_t address,
 		uint32_t size, uint32_t count, const uint8_t *buffer)
 {
 	struct aice_port_s *aice = target_to_aice(target);
@@ -1674,7 +1674,7 @@ int nds32_init_arch_info(struct target *target, struct nds32 *nds32)
 	return ERROR_OK;
 }
 
-int nds32_virtual_to_physical(struct target *target, uint32_t address, uint32_t *physical)
+int nds32_virtual_to_physical(struct target *target, target_addr_t address, target_addr_t *physical)
 {
 	struct nds32 *nds32 = target_to_nds32(target);
 
@@ -1692,7 +1692,7 @@ int nds32_virtual_to_physical(struct target *target, uint32_t address, uint32_t 
 	return ERROR_FAIL;
 }
 
-int nds32_cache_sync(struct target *target, uint32_t address, uint32_t length)
+int nds32_cache_sync(struct target *target, target_addr_t address, uint32_t length)
 {
 	struct aice_port_s *aice = target_to_aice(target);
 	struct nds32 *nds32 = target_to_nds32(target);
@@ -1738,7 +1738,7 @@ int nds32_cache_sync(struct target *target, uint32_t address, uint32_t length)
 			/* Because PSW.IT is turned off under debug exception, address MUST
 			 * be physical address.  L1I_VA_INVALIDATE uses PSW.IT to decide
 			 * address translation or not. */
-			uint32_t physical_addr;
+			target_addr_t physical_addr;
 			if (ERROR_FAIL == target->type->virt2phys(target, cur_address,
 						&physical_addr))
 				return ERROR_FAIL;
@@ -1764,7 +1764,7 @@ uint32_t nds32_nextpc(struct nds32 *nds32, int current, uint32_t address)
 }
 
 int nds32_step(struct target *target, int current,
-		uint32_t address, int handle_breakpoints)
+		target_addr_t address, int handle_breakpoints)
 {
 	LOG_DEBUG("target->state: %s",
 			target_state_name(target));
@@ -1778,7 +1778,7 @@ int nds32_step(struct target *target, int current,
 
 	address = nds32_nextpc(nds32, current, address);
 
-	LOG_DEBUG("STEP PC %08" PRIx32 "%s", address, !current ? "!" : "");
+	LOG_DEBUG("STEP PC %08" TARGET_PRIxADDR "%s", address, !current ? "!" : "");
 
 	/** set DSSIM */
 	uint32_t ir14_value;
@@ -2120,9 +2120,9 @@ int nds32_poll(struct target *target)
 }
 
 int nds32_resume(struct target *target, int current,
-		uint32_t address, int handle_breakpoints, int debug_execution)
+		target_addr_t address, int handle_breakpoints, int debug_execution)
 {
-	LOG_DEBUG("current %d address %08" PRIx32
+	LOG_DEBUG("current %d address %08" TARGET_PRIxADDR
 			" handle_breakpoints %d"
 			" debug_execution %d",
 			current, address, handle_breakpoints, debug_execution);
@@ -2136,7 +2136,7 @@ int nds32_resume(struct target *target, int current,
 
 	address = nds32_nextpc(nds32, current, address);
 
-	LOG_DEBUG("RESUME PC %08" PRIx32 "%s", address, !current ? "!" : "");
+	LOG_DEBUG("RESUME PC %08" TARGET_PRIxADDR "%s", address, !current ? "!" : "");
 
 	if (!debug_execution)
 		target_free_all_working_areas(target);
@@ -2339,63 +2339,66 @@ int nds32_get_gdb_fileio_info(struct target *target, struct gdb_fileio_info *fil
 		fileio_info->identifier = NULL;
 	}
 
+	uint32_t reg_r0, reg_r1, reg_r2;
+	nds32_get_mapped_reg(nds32, R0, &reg_r0);
+	nds32_get_mapped_reg(nds32, R1, &reg_r1);
+	nds32_get_mapped_reg(nds32, R2, &reg_r2);
+
 	switch (syscall_id) {
 		case NDS32_SYSCALL_EXIT:
 			fileio_info->identifier = malloc(5);
 			sprintf(fileio_info->identifier, "exit");
-			nds32_get_mapped_reg(nds32, R0, &(fileio_info->param_1));
+			fileio_info->param_1 = reg_r0;
 			break;
 		case NDS32_SYSCALL_OPEN:
 			{
 				uint8_t filename[256];
 				fileio_info->identifier = malloc(5);
 				sprintf(fileio_info->identifier, "open");
-				nds32_get_mapped_reg(nds32, R0, &(fileio_info->param_1));
+				fileio_info->param_1 = reg_r0;
 				/* reserve fileio_info->param_2 for length of path */
-				nds32_get_mapped_reg(nds32, R1, &(fileio_info->param_3));
-				nds32_get_mapped_reg(nds32, R2, &(fileio_info->param_4));
+				fileio_info->param_3 = reg_r1;
+				fileio_info->param_4 = reg_r2;
 
-				target->type->read_buffer(target, fileio_info->param_1,
-						256, filename);
+				target->type->read_buffer(target, reg_r0, 256, filename);
 				fileio_info->param_2 = strlen((char *)filename) + 1;
 			}
 			break;
 		case NDS32_SYSCALL_CLOSE:
 			fileio_info->identifier = malloc(6);
 			sprintf(fileio_info->identifier, "close");
-			nds32_get_mapped_reg(nds32, R0, &(fileio_info->param_1));
+			fileio_info->param_1 = reg_r0;
 			break;
 		case NDS32_SYSCALL_READ:
 			fileio_info->identifier = malloc(5);
 			sprintf(fileio_info->identifier, "read");
-			nds32_get_mapped_reg(nds32, R0, &(fileio_info->param_1));
-			nds32_get_mapped_reg(nds32, R1, &(fileio_info->param_2));
-			nds32_get_mapped_reg(nds32, R2, &(fileio_info->param_3));
+			fileio_info->param_1 = reg_r0;
+			fileio_info->param_2 = reg_r1;
+			fileio_info->param_3 = reg_r2;
 			break;
 		case NDS32_SYSCALL_WRITE:
 			fileio_info->identifier = malloc(6);
 			sprintf(fileio_info->identifier, "write");
-			nds32_get_mapped_reg(nds32, R0, &(fileio_info->param_1));
-			nds32_get_mapped_reg(nds32, R1, &(fileio_info->param_2));
-			nds32_get_mapped_reg(nds32, R2, &(fileio_info->param_3));
+			fileio_info->param_1 = reg_r0;
+			fileio_info->param_2 = reg_r1;
+			fileio_info->param_3 = reg_r2;
 			break;
 		case NDS32_SYSCALL_LSEEK:
 			fileio_info->identifier = malloc(6);
 			sprintf(fileio_info->identifier, "lseek");
-			nds32_get_mapped_reg(nds32, R0, &(fileio_info->param_1));
-			nds32_get_mapped_reg(nds32, R1, &(fileio_info->param_2));
-			nds32_get_mapped_reg(nds32, R2, &(fileio_info->param_3));
+			fileio_info->param_1 = reg_r0;
+			fileio_info->param_2 = reg_r1;
+			fileio_info->param_3 = reg_r2;
 			break;
 		case NDS32_SYSCALL_UNLINK:
 			{
 				uint8_t filename[256];
 				fileio_info->identifier = malloc(7);
 				sprintf(fileio_info->identifier, "unlink");
-				nds32_get_mapped_reg(nds32, R0, &(fileio_info->param_1));
+				fileio_info->param_1 = reg_r0;
 				/* reserve fileio_info->param_2 for length of path */
 
-				target->type->read_buffer(target, fileio_info->param_1,
-						256, filename);
+				target->type->read_buffer(target, reg_r0, 256, filename);
 				fileio_info->param_2 = strlen((char *)filename) + 1;
 			}
 			break;
@@ -2404,61 +2407,57 @@ int nds32_get_gdb_fileio_info(struct target *target, struct gdb_fileio_info *fil
 				uint8_t filename[256];
 				fileio_info->identifier = malloc(7);
 				sprintf(fileio_info->identifier, "rename");
-				nds32_get_mapped_reg(nds32, R0, &(fileio_info->param_1));
+				fileio_info->param_1 = reg_r0;
 				/* reserve fileio_info->param_2 for length of old path */
-				nds32_get_mapped_reg(nds32, R1, &(fileio_info->param_3));
+				fileio_info->param_3 = reg_r1;
 				/* reserve fileio_info->param_4 for length of new path */
 
-				target->type->read_buffer(target, fileio_info->param_1,
-						256, filename);
+				target->type->read_buffer(target, reg_r0, 256, filename);
 				fileio_info->param_2 = strlen((char *)filename) + 1;
 
-				target->type->read_buffer(target, fileio_info->param_3,
-						256, filename);
+				target->type->read_buffer(target, reg_r1, 256, filename);
 				fileio_info->param_4 = strlen((char *)filename) + 1;
 			}
 			break;
 		case NDS32_SYSCALL_FSTAT:
 			fileio_info->identifier = malloc(6);
 			sprintf(fileio_info->identifier, "fstat");
-			nds32_get_mapped_reg(nds32, R0, &(fileio_info->param_1));
-			nds32_get_mapped_reg(nds32, R1, &(fileio_info->param_2));
+			fileio_info->param_1 = reg_r0;
+			fileio_info->param_2 = reg_r1;
 			break;
 		case NDS32_SYSCALL_STAT:
 			{
 				uint8_t filename[256];
 				fileio_info->identifier = malloc(5);
 				sprintf(fileio_info->identifier, "stat");
-				nds32_get_mapped_reg(nds32, R0, &(fileio_info->param_1));
+				fileio_info->param_1 = reg_r0;
 				/* reserve fileio_info->param_2 for length of old path */
-				nds32_get_mapped_reg(nds32, R1, &(fileio_info->param_3));
+				fileio_info->param_3 = reg_r1;
 
-				target->type->read_buffer(target, fileio_info->param_1,
-						256, filename);
+				target->type->read_buffer(target, reg_r0, 256, filename);
 				fileio_info->param_2 = strlen((char *)filename) + 1;
 			}
 			break;
 		case NDS32_SYSCALL_GETTIMEOFDAY:
 			fileio_info->identifier = malloc(13);
 			sprintf(fileio_info->identifier, "gettimeofday");
-			nds32_get_mapped_reg(nds32, R0, &(fileio_info->param_1));
-			nds32_get_mapped_reg(nds32, R1, &(fileio_info->param_2));
+			fileio_info->param_1 = reg_r0;
+			fileio_info->param_2 = reg_r1;
 			break;
 		case NDS32_SYSCALL_ISATTY:
 			fileio_info->identifier = malloc(7);
 			sprintf(fileio_info->identifier, "isatty");
-			nds32_get_mapped_reg(nds32, R0, &(fileio_info->param_1));
+			fileio_info->param_1 = reg_r0;
 			break;
 		case NDS32_SYSCALL_SYSTEM:
 			{
 				uint8_t command[256];
 				fileio_info->identifier = malloc(7);
 				sprintf(fileio_info->identifier, "system");
-				nds32_get_mapped_reg(nds32, R0, &(fileio_info->param_1));
+				fileio_info->param_1 = reg_r0;
 				/* reserve fileio_info->param_2 for length of old path */
 
-				target->type->read_buffer(target, fileio_info->param_1,
-						256, command);
+				target->type->read_buffer(target, reg_r0, 256, command);
 				fileio_info->param_2 = strlen((char *)command) + 1;
 			}
 			break;

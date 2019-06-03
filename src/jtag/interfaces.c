@@ -51,20 +51,17 @@ extern struct jtag_interface parport_interface;
 #if BUILD_DUMMY == 1
 extern struct jtag_interface dummy_interface;
 #endif
-#if BUILD_FT2232_FTD2XX == 1
-extern struct jtag_interface ft2232_interface;
-#endif
-#if BUILD_FT2232_LIBFTDI == 1
-extern struct jtag_interface ft2232_interface;
-#endif
 #if BUILD_FTDI == 1
 extern struct jtag_interface ftdi_interface;
 #endif
-#if BUILD_USB_BLASTER_LIBFTDI == 1 || BUILD_USB_BLASTER_FTD2XX == 1 || BUILD_USB_BLASTER_2 == 1
+#if BUILD_USB_BLASTER == 1 || BUILD_USB_BLASTER_2 == 1
 extern struct jtag_interface usb_blaster_interface;
 #endif
 #if BUILD_JTAG_VPI == 1
 extern struct jtag_interface jtag_vpi_interface;
+#endif
+#if BUILD_FT232R == 1
+extern struct jtag_interface ft232r_interface;
 #endif
 #if BUILD_AMTJTAGACCEL == 1
 extern struct jtag_interface amt_jtagaccel_interface;
@@ -78,7 +75,7 @@ extern struct jtag_interface at91rm9200_interface;
 #if BUILD_GW16012 == 1
 extern struct jtag_interface gw16012_interface;
 #endif
-#if BUILD_PRESTO_LIBFTDI == 1 || BUILD_PRESTO_FTD2XX == 1
+#if BUILD_PRESTO
 extern struct jtag_interface presto_interface;
 #endif
 #if BUILD_USBPROG == 1
@@ -129,6 +126,15 @@ extern struct jtag_interface bcm2835gpio_interface;
 #if BUILD_CMSIS_DAP == 1
 extern struct jtag_interface cmsis_dap_interface;
 #endif
+#if BUILD_KITPROG == 1
+extern struct jtag_interface kitprog_interface;
+#endif
+#if BUILD_IMX_GPIO == 1
+extern struct jtag_interface imx_gpio_interface;
+#endif
+#if BUILD_XDS110 == 1
+extern struct jtag_interface xds110_interface;
+#endif
 #endif /* standard drivers */
 
 /**
@@ -150,20 +156,17 @@ struct jtag_interface *jtag_interfaces[] = {
 #if BUILD_DUMMY == 1
 		&dummy_interface,
 #endif
-#if BUILD_FT2232_FTD2XX == 1
-		&ft2232_interface,
-#endif
-#if BUILD_FT2232_LIBFTDI == 1
-		&ft2232_interface,
-#endif
 #if BUILD_FTDI == 1
 		&ftdi_interface,
 #endif
-#if BUILD_USB_BLASTER_LIBFTDI == 1 || BUILD_USB_BLASTER_FTD2XX == 1 || BUILD_USB_BLASTER_2 == 1
+#if BUILD_USB_BLASTER || BUILD_USB_BLASTER_2 == 1
 		&usb_blaster_interface,
 #endif
 #if BUILD_JTAG_VPI == 1
 		&jtag_vpi_interface,
+#endif
+#if BUILD_FT232R == 1
+		&ft232r_interface,
 #endif
 #if BUILD_AMTJTAGACCEL == 1
 		&amt_jtagaccel_interface,
@@ -177,7 +180,7 @@ struct jtag_interface *jtag_interfaces[] = {
 #if BUILD_GW16012 == 1
 		&gw16012_interface,
 #endif
-#if BUILD_PRESTO_LIBFTDI == 1 || BUILD_PRESTO_FTD2XX == 1
+#if BUILD_PRESTO
 		&presto_interface,
 #endif
 #if BUILD_USBPROG == 1
@@ -227,6 +230,15 @@ struct jtag_interface *jtag_interfaces[] = {
 #endif
 #if BUILD_CMSIS_DAP == 1
 		&cmsis_dap_interface,
+#endif
+#if BUILD_KITPROG == 1
+		&kitprog_interface,
+#endif
+#if BUILD_IMX_GPIO == 1
+		&imx_gpio_interface,
+#endif
+#if BUILD_XDS110 == 1
+		&xds110_interface,
 #endif
 #endif /* standard drivers */
 		NULL,

@@ -1308,6 +1308,14 @@ void jtag_tap_free(struct jtag_tap *tap)
 {
 	jtag_unregister_event_callback(&jtag_reset_callback, tap);
 
+	struct jtag_tap_event_action *jteap = tap->event_action;
+	while (jteap) {
+		struct jtag_tap_event_action *next = jteap->next;
+		Jim_DecrRefCount(jteap->interp, jteap->body);
+		free(jteap);
+		jteap = next;
+	}
+
 	free(tap->expected);
 	free(tap->expected_mask);
 	free(tap->expected_ids);
@@ -1472,13 +1480,19 @@ int jtag_init_inner(struct command_context *cmd_ctx)
 
 int adapter_quit(void)
 {
-	if (!jtag || !jtag->quit)
-		return ERROR_OK;
+	if (jtag && jtag->quit) {
+		/* close the JTAG interface */
+		int result = jtag->quit();
+		if (ERROR_OK != result)
+			LOG_ERROR("failed: %d", result);
+	}
 
-	/* close the JTAG interface */
-	int result = jtag->quit();
-	if (ERROR_OK != result)
-		LOG_ERROR("failed: %d", result);
+	struct jtag_tap *t = jtag_all_taps();
+	while (t) {
+		struct jtag_tap *n = t->next_tap;
+		jtag_tap_free(t);
+		t = n;
+	}
 
 	return ERROR_OK;
 }
@@ -1717,11 +1731,11 @@ void jtag_set_reset_config(enum reset_types type)
 
 int jtag_get_trst(void)
 {
-	return jtag_trst;
+	return jtag_trst == 1;
 }
 int jtag_get_srst(void)
 {
-	return jtag_srst;
+	return jtag_srst == 1;
 }
 
 void jtag_set_nsrst_delay(unsigned delay)
@@ -1829,7 +1843,7 @@ void adapter_deassert_reset(void)
 		LOG_ERROR("transport is not selected");
 }
 
-int adapter_config_trace(bool enabled, enum tpio_pin_protocol pin_protocol,
+int adapter_config_trace(bool enabled, enum tpiu_pin_protocol pin_protocol,
 			 uint32_t port_size, unsigned int *trace_freq)
 {
 	if (jtag->config_trace)

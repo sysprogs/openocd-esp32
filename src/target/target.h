@@ -93,7 +93,7 @@ enum target_endianness {
 };
 
 struct working_area {
-	uint32_t address;
+	target_addr_t address;
 	uint32_t size;
 	bool free;
 	uint8_t *backup;
@@ -123,12 +123,12 @@ enum target_register_class {
 };
 
 struct working_area_config {
-	uint32_t area;				/* working area (initialised RAM). Evaluated
+	target_addr_t area;				/* working area (initialised RAM). Evaluated
 										 * upon first allocation from virtual/physical address. */
 	bool virt_spec;		/* virtual address specified? */
-	uint32_t virt;			/* virtual address */
-	bool phys_spec;		/* virtual address specified? */
-	uint32_t phys;			/* physical address */
+	target_addr_t virt;			/* virtual address */
+	bool phys_spec;		/* physical address specified? */
+	target_addr_t phys;			/* physical address */
 	uint32_t size;			/* size in bytes */
 	uint32_t backup;		/* whether the content of the working area has to be preserved */
 	struct working_area *areas;/* list of allocated working areas */
@@ -137,10 +137,13 @@ struct working_area_config {
 /* target_type.h contains the full definition of struct target_type */
 struct target {
 	struct target_type *type;			/* target type definition (name, access functions) */
-	const char *cmd_name;				/* tcl Name of target */
+	char *cmd_name;				/* tcl Name of target */
 	int target_number;					/* DO NOT USE!  field to be removed in 2010 */
 	struct jtag_tap *tap;				/* where on the jtag chain is this */
 	int32_t coreid;						/* which device on the TAP? */
+
+	/** Should we defer examine to later */
+	bool defer_examine;
 
 	/**
 	 * Indicates whether this target has been examined.
@@ -175,17 +178,24 @@ struct target {
 	struct debug_msg_receiver *dbgmsg;	/* list of debug message receivers */
 	uint32_t dbg_msg_enabled;			/* debug message status */
 	void *arch_info;					/* architecture specific information */
+	void *private_config;				/* pointer to target specific config data (for jim_configure hook) */
 	struct target *next;				/* next target in list */
 
-	int display;						/* display async info in telnet session. Do not display
+	bool verbose_halt_msg;				/* display async info in telnet session. Do not display
 										 * lots of halted/resumed info when stepping in debugger. */
 	bool halt_issued;					/* did we transition to halted state? */
 	int64_t halt_issued_time;			/* Note time when halt was issued */
 
+										/* ARM v7/v8 targets with ADIv5 interface */
 	bool dbgbase_set;					/* By default the debug base is not set */
 	uint32_t dbgbase;					/* Really a Cortex-A specific option, but there is no
 										 * system in place to support target specific options
 										 * currently. */
+	bool has_dap;						/* set to true if target has ADIv5 support */
+	bool dap_configured;				/* set to true if ADIv5 DAP is configured */
+	bool tap_configured;				/* set to true if JTAG tap has been configured
+										 * through -chain-position */
+
 	struct rtos *rtos;					/* Instance of Real Time Operating System support */
 	bool rtos_auto_detect;				/* A flag that indicates that the RTOS has been specified as "auto"
 										 * and must be detected when symbols are offered */
@@ -200,6 +210,11 @@ struct target {
 
 	/* file-I/O information for host to do syscall */
 	struct gdb_fileio_info *fileio_info;
+
+	char *gdb_port_override;			/* target-specific override for gdb_port */
+
+	/* The semihosting information, extracted from the target. */
+	struct semihosting *semihosting;
 };
 
 struct target_list {
@@ -209,11 +224,18 @@ struct target_list {
 
 struct gdb_fileio_info {
 	char *identifier;
-	uint32_t param_1;
-	uint32_t param_2;
-	uint32_t param_3;
-	uint32_t param_4;
+	uint64_t param_1;
+	uint64_t param_2;
+	uint64_t param_3;
+	uint64_t param_4;
 };
+
+/** Returns a description of the endianness for the specified target. */
+static inline const char *target_endianness(struct target *target)
+{
+	return (target->endianness == TARGET_ENDIAN_UNKNOWN) ? "unknown" :
+			(target->endianness == TARGET_BIG_ENDIAN) ? "big endian" : "little endian";
+}
 
 /** Returns the instance-specific name of the specified target. */
 static inline const char *target_name(struct target *target)
@@ -249,10 +271,6 @@ enum target_event {
 	TARGET_EVENT_RESET_ASSERT_POST,
 	TARGET_EVENT_RESET_DEASSERT_PRE,
 	TARGET_EVENT_RESET_DEASSERT_POST,
-	TARGET_EVENT_RESET_HALT_PRE,
-	TARGET_EVENT_RESET_HALT_POST,
-	TARGET_EVENT_RESET_WAIT_PRE,
-	TARGET_EVENT_RESET_WAIT_POST,
 	TARGET_EVENT_RESET_INIT,
 	TARGET_EVENT_RESET_END,
 
@@ -317,6 +335,12 @@ struct target_exit_callback {
 	int (*callback)(struct target *target, void *priv);
 };
 
+struct target_memory_check_block {
+	target_addr_t address;
+	uint32_t size;
+	uint32_t result;
+};
+
 int target_register_commands(struct command_context *cmd_ctx);
 int target_examine(void);
 
@@ -364,7 +388,7 @@ int target_register_exit_callback(
  * yet it is possible to detect error conditions.
  */
 int target_poll(struct target *target);
-int target_resume(struct target *target, int current, uint32_t address,
+int target_resume(struct target *target, int current, target_addr_t address,
 		int handle_breakpoints, int debug_execution);
 int target_halt(struct target *target);
 int target_call_event_callbacks(struct target *target, enum target_event event);
@@ -388,6 +412,7 @@ int target_call_timer_callbacks_now(void);
 
 struct target *get_target_by_num(int num);
 struct target *get_current_target(struct command_context *cmd_ctx);
+struct target *get_current_target_or_null(struct command_context *cmd_ctx);
 struct target *get_target(const char *id);
 int get_targets_count(void);
 
@@ -473,6 +498,13 @@ int target_hit_watchpoint(struct target *target,
 		struct watchpoint **watchpoint);
 
 /**
+ * Obtain the architecture for GDB.
+ *
+ * This routine is a wrapper for target->type->get_gdb_arch.
+ */
+const char *target_get_gdb_arch(struct target *target);
+
+/**
  * Obtain the registers for GDB.
  *
  * This routine is a wrapper for target->type->get_gdb_reg_list.
@@ -482,12 +514,19 @@ int target_get_gdb_reg_list(struct target *target,
 		enum target_register_class reg_class);
 
 /**
+ * Check if @a target allows GDB connections.
+ *
+ * Some target do not implement the necessary code required by GDB.
+ */
+bool target_supports_gdb_connection(struct target *target);
+
+/**
  * Step the target.
  *
  * This routine is a wrapper for target->type->step.
  */
 int target_step(struct target *target,
-		int current, uint32_t address, int handle_breakpoints);
+		int current, target_addr_t address, int handle_breakpoints);
 /**
  * Run an algorithm on the @a target given.
  *
@@ -540,9 +579,9 @@ int target_run_flash_async_algorithm(struct target *target,
  * This routine is a wrapper for target->type->read_memory.
  */
 int target_read_memory(struct target *target,
-		uint32_t address, uint32_t size, uint32_t count, uint8_t *buffer);
+		target_addr_t address, uint32_t size, uint32_t count, uint8_t *buffer);
 int target_read_phys_memory(struct target *target,
-		uint32_t address, uint32_t size, uint32_t count, uint8_t *buffer);
+		target_addr_t address, uint32_t size, uint32_t count, uint8_t *buffer);
 /**
  * Write @a count items of @a size bytes to the memory of @a target at
  * the @a address given. @a address must be aligned to @a size
@@ -561,9 +600,9 @@ int target_read_phys_memory(struct target *target,
  * This routine is wrapper for target->type->write_memory.
  */
 int target_write_memory(struct target *target,
-		uint32_t address, uint32_t size, uint32_t count, const uint8_t *buffer);
+		target_addr_t address, uint32_t size, uint32_t count, const uint8_t *buffer);
 int target_write_phys_memory(struct target *target,
-		uint32_t address, uint32_t size, uint32_t count, const uint8_t *buffer);
+		target_addr_t address, uint32_t size, uint32_t count, const uint8_t *buffer);
 
 /*
  * Write to target memory using the virtual address.
@@ -590,13 +629,14 @@ int target_write_phys_memory(struct target *target,
  * peripheral registers which do not support byte operations.
  */
 int target_write_buffer(struct target *target,
-		uint32_t address, uint32_t size, const uint8_t *buffer);
+		target_addr_t address, uint32_t size, const uint8_t *buffer);
 int target_read_buffer(struct target *target,
-		uint32_t address, uint32_t size, uint8_t *buffer);
+		target_addr_t address, uint32_t size, uint8_t *buffer);
 int target_checksum_memory(struct target *target,
-		uint32_t address, uint32_t size, uint32_t *crc);
+		target_addr_t address, uint32_t size, uint32_t *crc);
 int target_blank_check_memory(struct target *target,
-		uint32_t address, uint32_t size, uint32_t *blank);
+		struct target_memory_check_block *blocks, int num_blocks,
+		uint8_t erased_value);
 int target_wait_state(struct target *target, enum target_state state, int ms);
 
 /**
@@ -678,14 +718,19 @@ void target_buffer_set_u64_array(struct target *target, uint8_t *buffer, uint32_
 void target_buffer_set_u32_array(struct target *target, uint8_t *buffer, uint32_t count, const uint32_t *srcbuf);
 void target_buffer_set_u16_array(struct target *target, uint8_t *buffer, uint32_t count, const uint16_t *srcbuf);
 
-int target_read_u64(struct target *target, uint64_t address, uint64_t *value);
-int target_read_u32(struct target *target, uint32_t address, uint32_t *value);
-int target_read_u16(struct target *target, uint32_t address, uint16_t *value);
-int target_read_u8(struct target *target, uint32_t address, uint8_t *value);
-int target_write_u64(struct target *target, uint64_t address, uint64_t value);
-int target_write_u32(struct target *target, uint32_t address, uint32_t value);
-int target_write_u16(struct target *target, uint32_t address, uint16_t value);
-int target_write_u8(struct target *target, uint32_t address, uint8_t value);
+int target_read_u64(struct target *target, target_addr_t address, uint64_t *value);
+int target_read_u32(struct target *target, target_addr_t address, uint32_t *value);
+int target_read_u16(struct target *target, target_addr_t address, uint16_t *value);
+int target_read_u8(struct target *target, target_addr_t address, uint8_t *value);
+int target_write_u64(struct target *target, target_addr_t address, uint64_t value);
+int target_write_u32(struct target *target, target_addr_t address, uint32_t value);
+int target_write_u16(struct target *target, target_addr_t address, uint16_t value);
+int target_write_u8(struct target *target, target_addr_t address, uint8_t value);
+
+int target_write_phys_u64(struct target *target, target_addr_t address, uint64_t value);
+int target_write_phys_u32(struct target *target, target_addr_t address, uint32_t value);
+int target_write_phys_u16(struct target *target, target_addr_t address, uint16_t value);
+int target_write_phys_u8(struct target *target, target_addr_t address, uint8_t value);
 
 /* Issues USER() statements with target state information */
 int target_arch_state(struct target *target);
