@@ -108,8 +108,8 @@ extern struct target_type hla_target;
 extern struct target_type nds32_v2_target;
 extern struct target_type nds32_v3_target;
 extern struct target_type nds32_v3m_target;
-extern struct target_type esp108_target;
 extern struct target_type esp32_target;
+extern struct target_type esp32_s2_target;
 extern struct target_type or1k_target;
 extern struct target_type quark_x10xx_target;
 extern struct target_type quark_d20xx_target;
@@ -145,8 +145,8 @@ static struct target_type *target_types[] = {
 	&nds32_v2_target,
 	&nds32_v3_target,
 	&nds32_v3m_target,
-	&esp108_target,
 	&esp32_target,
+	&esp32_s2_target,
 	&or1k_target,
 	&quark_x10xx_target,
 	&quark_d20xx_target,
@@ -2211,8 +2211,8 @@ static int target_get_gdb_fileio_info_default(struct target *target,
 
 static size_t target_get_cores_count_default(struct target *target)
 {
-	/* If target has only one core.  */
-	return 1;
+	/* This API is not supported by target.  */
+	return 0;
 }
 
 static size_t target_get_active_core_default(struct target *target)

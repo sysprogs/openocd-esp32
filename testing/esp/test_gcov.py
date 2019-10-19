@@ -24,15 +24,18 @@ class GcovDataFile:
     GCOV_FUNC_TAG = 'function:'
     GCOV_LCOUNT_TAG = 'lcount:'
     GCOV_BRANCH_TAG = 'branch:'
+    GCOV_VERSION_TAG = 'version:'
 
-    def __init__(self, path, src_dirs=None):
+    def __init__(self, path, src_dirs, build_path='', proj_path=''):
         self._path = path
         self.data = {}
         self.src_dirs = src_dirs
         self._cur_file = ''
         get_logger().debug('Process gcov file "%s"', path)
         dir_name,file_name = os.path.split(path)
-        fname,file_ext = os.path.splitext(file_name)
+        get_logger().debug('Gcov file dir "%s" filename "%s"', dir_name, file_name)
+        _,file_ext = os.path.splitext(file_name)
+        # get_logger().debug('Gcov filename "%s" ext "%s"', fname, file_ext)
         if file_ext == '.gcov':
             gcov_name = path
         else:
@@ -43,6 +46,22 @@ class GcovDataFile:
         for ln in f:
             if ln.startswith(self.GCOV_FILE_TAG):
                 fname = ln[len(self.GCOV_FILE_TAG):].rstrip()
+                # skip path conversion if it is already done, e.g. in case of reference .gcov file
+                if not (fname.startswith('$PROJECT_PATH') or fname.startswith('$IDF_PATH')):
+                    if not os.path.isabs(fname):
+                        # path relative to the build dir
+                        fname = os.path.normpath(os.path.join(build_path, fname))
+                    idf_path = os.getenv('IDF_PATH', '')
+                    get_logger().debug('SRC FILE "%s"', fname)
+                    prefix = os.path.commonprefix([idf_path, fname])
+                    get_logger().debug('IDF_PREF "%s" "%s"', idf_path, prefix)
+                    if prefix == idf_path:
+                        fname = '$IDF_PATH' + fname[len(prefix):]
+                    else:
+                        prefix = os.path.commonprefix([proj_path, fname])
+                        get_logger().debug('PROJ_PREF "%s" "%s"', proj_path, prefix)
+                        if prefix == proj_path:
+                            fname = '$PROJECT_PATH' + fname[len(prefix):]
                 get_logger().debug('Found src file "%s"', fname)
                 self.data[fname] = {}
                 self.data[fname]['funcs'] = {}
@@ -65,13 +84,17 @@ class GcovDataFile:
                 if len(br) < 2:
                     raise GcovDataError('Too short BR line')
                 self.data[self._cur_file]['br'].append(br)
+            elif ln.startswith(self.GCOV_VERSION_TAG):
+                pass
             else:
                 raise GcovDataError('Unknown tag in line "%s"' % ln)
         f.close()
 
     def __eq__(self, other):
         for fname in self.data:
+            get_logger().debug('Check Gcov fname: %s', fname)
             if fname not in other.data:
+                get_logger().error('Check Gcov fname: %s not in %s (%s)', fname, other.data.keys(), other._path)
                 return False
             in_src_dirs = False
             for d in self.src_dirs:
@@ -127,25 +150,52 @@ class GcovTestsImpl:
     DYN_LINES_START = [28, 6]
     DYN_LINES_END = [39, 10]
 
+    # This function expcets normalized path
+    def strip_gcov_path(self, path):
+        gcov_prefix_strip = int(os.getenv('OPENOCD_GCOV_PREFIX_STRIP', '0'))
+        if gcov_prefix_strip > 0:
+            path_comps = path.split(os.sep)
+            # del the leading empty string
+            if len(path_comps) > 0 and path_comps[0] == '':
+                path_comps = path_comps[1:]
+            if gcov_prefix_strip > (len(path_comps) - 1):
+                gcov_prefix_strip = len(path_comps) - 1
+            path = os.path.join(*path_comps[gcov_prefix_strip:])
+        return path
+
+
     def setUp(self):
         self.gcov_files = []
-        src_dirs = [self.test_app_cfg.build_src_dir(),]
-        src_path = os.path.join(self.test_app_cfg.build_src_dir(), 'main/gcov_tests.c')
-        ref_data = GcovDataFile(os.path.join(self.test_app_cfg.build_src_dir(), 'main/gcov_tests.gcda.gcov'), src_dirs)
+        # for test app project path is two level higher than build dir
+        self.proj_path = os.path.normpath(os.path.join(self.test_app_cfg.build_obj_dir(), '..', '..'))
+        self.gcov_prefix = os.getenv('OPENOCD_GCOV_PREFIX', self.test_app_cfg.build_obj_dir())
+        self.src_dirs = [self.test_app_cfg.build_src_dir(),]
+        src_path = os.path.join(self.test_app_cfg.build_src_dir(), 'main', 'gcov_tests.c')
+        if IdfVersion.get_current() < IdfVersion.fromstr('4.0'):
+            data_path = os.path.join(self.test_app_cfg.build_obj_dir(), 'main', 'gcov_tests.gcda')
+        else:
+            # starting from IDF 4.0 test app supports cmake build system which uses another build dir structure
+            data_path = os.path.join(self.test_app_cfg.build_obj_dir(), 'esp-idf', 'main', 'CMakeFiles', '__idf_main.dir', 'gcov_tests.c.gcda')
+        ref_data = GcovDataFile(os.path.join(self.test_app_cfg.build_src_dir(), 'main', 'gcov_tests.gcda.gcov'), self.src_dirs)
         self.gcov_files.append({
             'src_path' : src_path,
-            'data_path' : os.path.join(self.test_app_cfg.build_obj_dir(), 'main/gcov_tests.gcda'),
+            'data_path' : os.path.join(self.gcov_prefix, self.strip_gcov_path(data_path)),
             'ref_data' : ref_data,
             # lines executed only once
             'c_lines' : ref_data.get_lines_coverage(src_path, self.CONST_LINES_START[0], self.CONST_LINES_END[0]),
             # lines executed every gcov dump cycle
             'd_lines' : ref_data.get_lines_coverage(src_path, self.DYN_LINES_START[0], self.DYN_LINES_END[0])
             })
-        src_path = os.path.join(self.test_app_cfg.build_src_dir(), 'main/helper_funcs.c')
-        ref_data = GcovDataFile(os.path.join(self.test_app_cfg.build_src_dir(), 'main/helper_funcs.gcda.gcov'), src_dirs)
+        src_path = os.path.join(self.test_app_cfg.build_src_dir(), 'main', 'helper_funcs.c')
+        if IdfVersion.get_current() < IdfVersion.fromstr('4.0'):
+            data_path = os.path.join(self.test_app_cfg.build_obj_dir(), 'main', 'helper_funcs.gcda')
+        else:
+            # starting from IDF 4.0 test app supports cmake build system which uses another build dir structure
+            data_path = os.path.join(self.test_app_cfg.build_obj_dir(), 'esp-idf', 'main', 'CMakeFiles', '__idf_main.dir', 'helper_funcs.c.gcda')
+        ref_data = GcovDataFile(os.path.join(self.test_app_cfg.build_src_dir(), 'main', 'helper_funcs.gcda.gcov'), self.src_dirs)
         self.gcov_files.append({
             'src_path' : src_path,
-            'data_path' : os.path.join(self.test_app_cfg.build_obj_dir(), 'main/helper_funcs.gcda'),
+            'data_path' : os.path.join(self.gcov_prefix, self.strip_gcov_path(data_path)),
             'ref_data' : ref_data,
             # lines executed only once
             'c_lines' : None,
@@ -181,13 +231,12 @@ class GcovTestsImpl:
             cur_frame = self.gdb.get_current_frame()
             self.assertEqual(cur_frame['func'], 'esp_gcov_dump')
             self.step()
-            self.gdb.monitor_run('esp32 gcov dump', tmo=20)
+            self.gdb.gcov_dump(False)
             # parse and check gcov data
-            src_dirs = [self.test_app_cfg.build_src_dir(),]
             gcov_data_files = []
             for f in self.gcov_files:
-                gcov_data_files.append(GcovDataFile(f['data_path'], src_dirs))
-            #if False: #i == 0:
+                gcov_data_files.append(GcovDataFile(f['data_path'], self.src_dirs, 
+                                        self.test_app_cfg.build_obj_dir(), self.proj_path))
             if i == 0:
                 # after first test iteration gcov data should be equal to reference ones
                 for k in range(len(gcov_data_files)):
@@ -228,14 +277,25 @@ class GcovTestsImpl:
         # TODO: better way to ensure that test app called esp_gcov_dump
         time.sleep(3)
         self.stop_exec()
-        self.oocd.cmd_exec('esp32 gcov dump')
+        self.oocd.gcov_dump(False)
         # parse and check gcov data
-        src_dirs = [self.test_app_cfg.build_src_dir(),]
-        f = GcovDataFile(os.path.join(self.test_app_cfg.build_obj_dir(), 'main/gcov_tests.gcda'), src_dirs)
-        f2 = GcovDataFile(os.path.join(self.test_app_cfg.build_src_dir(), 'main/gcov_tests.gcda.gcov'), src_dirs)
+        if IdfVersion.get_current() < IdfVersion.fromstr('4.0'):
+            data_path = os.path.join(self.test_app_cfg.build_obj_dir(), 'main', 'gcov_tests.gcda')
+        else:
+            # starting from IDF 4.0 test app supports cmake build system which uses another build dir structure
+            data_path = os.path.join(self.test_app_cfg.build_obj_dir(), 'esp-idf', 'main', 'CMakeFiles', '__idf_main.dir', 'gcov_tests.c.gcda')
+        f = GcovDataFile(os.path.join(self.gcov_prefix, self.strip_gcov_path(data_path)), self.src_dirs, 
+                        self.test_app_cfg.build_obj_dir(), self.proj_path)
+        f2 = GcovDataFile(os.path.join(self.test_app_cfg.build_src_dir(), 'main', 'gcov_tests.gcda.gcov'), self.src_dirs)
         self.assertEqual(f, f2)
-        f = GcovDataFile(os.path.join(self.test_app_cfg.build_obj_dir(), 'main/helper_funcs.gcda'), src_dirs)
-        f2 = GcovDataFile(os.path.join(self.test_app_cfg.build_src_dir(), 'main/helper_funcs.gcda.gcov'), src_dirs)
+        if IdfVersion.get_current() < IdfVersion.fromstr('4.0'):
+            data_path = os.path.join('main', 'helper_funcs.gcda')
+        else:
+            # starting from IDF 4.0 test app supports cmake build system which uses another build dir structure
+            data_path = os.path.join('esp-idf', 'main', 'CMakeFiles', '__idf_main.dir', 'helper_funcs.c.gcda')
+        f = GcovDataFile(os.path.join(self.gcov_prefix, self.strip_gcov_path(data_path)), self.src_dirs, 
+                        self.test_app_cfg.build_obj_dir(), self.proj_path)
+        f2 = GcovDataFile(os.path.join(self.test_app_cfg.build_src_dir(), 'main', 'helper_funcs.gcda.gcov'), self.src_dirs)
         self.assertEqual(f, f2)
 
     def test_on_the_fly_gdb(self):
@@ -254,11 +314,21 @@ class GcovTestsImpl:
         # wait some time to let app run and generate gcov data
         time.sleep(3)
         self.stop_exec()
-        self.gdb.monitor_run('esp32 gcov', tmo=20)
+        self.gdb.gcov_dump(True)
         # do not check gcov data, because its hard to precdict their contents
         # just check that files exist, contents are checked in test_simple_xxx tests
-        self.assertTrue(os.path.exists(os.path.join(self.test_app_cfg.build_obj_dir(), 'main/gcov_tests.gcda')))
-        self.assertTrue(os.path.exists(os.path.join(self.test_app_cfg.build_obj_dir(), 'main/helper_funcs.gcda')))
+        if IdfVersion.get_current() < IdfVersion.fromstr('4.0'):
+            data_path = os.path.join(self.test_app_cfg.build_obj_dir(), 'main', 'gcov_tests.gcda')
+        else:
+            # starting from IDF 4.0 test app supports cmake build system which uses another build dir structure
+            data_path = os.path.join(self.test_app_cfg.build_obj_dir(), 'esp-idf', 'main', 'CMakeFiles', '__idf_main.dir', 'gcov_tests.c.gcda')
+        self.assertTrue(os.path.exists(os.path.join(self.gcov_prefix, self.strip_gcov_path(data_path))))
+        if IdfVersion.get_current() < IdfVersion.fromstr('4.0'):
+            data_path = os.path.join(self.test_app_cfg.build_obj_dir(), 'main', 'helper_funcs.gcda')
+        else:
+            # starting from IDF 4.0 test app supports cmake build system which uses another build dir structure
+            data_path = os.path.join(self.test_app_cfg.build_obj_dir(), 'esp-idf', 'main', 'CMakeFiles', '__idf_main.dir', 'helper_funcs.c.gcda')
+        self.assertTrue(os.path.exists(os.path.join(self.gcov_prefix, self.strip_gcov_path(data_path))))
 
     def test_on_the_fly_oocd(self):
         """
@@ -274,12 +344,22 @@ class GcovTestsImpl:
         self.resume_exec()
         # wait some time to let app run and generate gcov data
         time.sleep(3)
-        self.oocd.cmd_exec('esp32 gcov')
+        self.oocd.gcov_dump(True)
         time.sleep(1)
         # do not check gcov data, because its hard to precdict their contents
         # just check that files exist, contents are checked in test_simple_xxx tests
-        self.assertTrue(os.path.exists(os.path.join(self.test_app_cfg.build_obj_dir(), 'main/gcov_tests.gcda')))
-        self.assertTrue(os.path.exists(os.path.join(self.test_app_cfg.build_obj_dir(), 'main/helper_funcs.gcda')))
+        if IdfVersion.get_current() < IdfVersion.fromstr('4.0'):
+            data_path = os.path.join(self.test_app_cfg.build_obj_dir(), 'main', 'gcov_tests.gcda')
+        else:
+            # starting from IDF 4.0 test app supports cmake build system which uses another build dir structure
+            data_path = os.path.join(self.test_app_cfg.build_obj_dir(), 'esp-idf', 'main', 'CMakeFiles', '__idf_main.dir', 'gcov_tests.c.gcda')
+        self.assertTrue(os.path.exists(os.path.join(self.gcov_prefix, self.strip_gcov_path(data_path))))
+        if IdfVersion.get_current() < IdfVersion.fromstr('4.0'):
+            data_path = os.path.join(self.test_app_cfg.build_obj_dir(), 'main', 'helper_funcs.gcda')
+        else:
+            # starting from IDF 4.0 test app supports cmake build system which uses another build dir structure
+            data_path = os.path.join(self.test_app_cfg.build_obj_dir(), 'esp-idf', 'main', 'CMakeFiles', '__idf_main.dir', 'helper_funcs.c.gcda')
+        self.assertTrue(os.path.exists(os.path.join(self.gcov_prefix, self.strip_gcov_path(data_path))))
 
 
 ########################################################################

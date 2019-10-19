@@ -15,17 +15,23 @@ import traceback
 
 
 BOARD_TCL_CONFIG = {
-    'esp-wrover-kit' :  {
+    'esp32-wrover-kit-3.3v' :  {
         'files' : [
-            os.path.join('interface', 'ftdi', 'esp32_devkitj_v1.cfg'),
-            os.path.join('board', 'esp-wroom-32.cfg')
+            os.path.join('board', 'esp32-wrover-kit-3.3v.cfg')
         ],
         'commands' : []
     },
-    'esp32_solo-devkitj' :  {
+    'esp32-solo-devkitj' :  {
         'files' : [
             os.path.join('interface', 'ftdi', 'esp32_devkitj_v1.cfg'),
-            os.path.join('board', 'esp32-solo-1.cfg')
+            os.path.join('target', 'esp32-solo-1.cfg')
+        ],
+        'commands' : []
+    },
+    'esp32s2-devkitj' :  {
+        'files' : [
+            os.path.join('interface', 'ftdi', 'esp32_devkitj_v1.cfg'),
+            os.path.join('target', 'esp32s2.cfg')
         ],
         'commands' : []
     }
@@ -78,6 +84,7 @@ def main():
     ch.setFormatter(log_formatter)
     ch.setLevel(logging.WARNING)
     fh = None
+    log_lev = logging.WARNING
     if args.log_file:
         if args.log_file == 'stdout':
             fh = ch
@@ -85,26 +92,28 @@ def main():
             fh = logging.FileHandler(args.log_file, 'w')
         fh.setFormatter(log_formatter)
         if args.debug == 0:
-            fh.setLevel(logging.CRITICAL)
+            log_lev = logging.CRITICAL
         elif args.debug == 1:
-            fh.setLevel(logging.ERROR)
+            log_lev = logging.ERROR
         elif args.debug == 2:
-            fh.setLevel(logging.WARNING)
+            log_lev = logging.WARNING
         elif args.debug == 3:
-            fh.setLevel(logging.INFO)
+            log_lev = logging.INFO
         else:
-            fh.setLevel(logging.DEBUG)
+            log_lev = logging.DEBUG
     # config log levels in modules
-    def setup_logger(logger, conh, fileh):
-        logger.setLevel(logging.DEBUG)
+    def setup_logger(logger, conh, fileh, lev):
+        logger.setLevel(lev)
+        fileh.setLevel(lev)
         logger.addHandler(conh)
         if fileh:
             logger.addHandler(fileh)
-    setup_logger(debug_backend.Oocd.get_logger(), ch, fh)
-    setup_logger(debug_backend.Gdb.get_logger(), ch, fh)
-    setup_logger(debug_backend_tests.get_logger(), ch, fh)
+        logger.propagate = False
+    setup_logger(debug_backend.Oocd.get_logger(), ch, fh, log_lev)
+    setup_logger(debug_backend.Gdb.get_logger(), ch, fh, log_lev)
+    setup_logger(debug_backend_tests.get_logger(), ch, fh, log_lev)
     if board_uart_reader:
-        setup_logger(board_uart_reader.get_logger(), ch, fh)
+        setup_logger(board_uart_reader.get_logger(), ch, fh, log_lev)
         board_uart_reader.start()
     board_tcl = BOARD_TCL_CONFIG[args.board_type]
     if args.idf_ver_min != 'auto':
@@ -121,7 +130,6 @@ def main():
     else:
         debug_backend_tests.get_logger().error('Wrong test-runner argument')
         return
-
 
     def load_tests_by_pattern(search_dir, pattern):
         if pattern.find('*') == -1:
@@ -172,7 +180,7 @@ def main():
             suite = pattern_suite
     # setup loggers in test modules
     for m in suite.modules:
-        setup_logger(suite.modules[m].get_logger(), ch, fh)
+        setup_logger(suite.modules[m].get_logger(), ch, fh, log_lev)
     suite.load_app_bins = not args.no_load
     try:
         res = test_runner.run(suite)
@@ -214,15 +222,15 @@ if __name__ == '__main__':
                         default=os.environ.get('OOCD_TEST_TCL_DIR', os.path.join(os.getcwd(), 'tcl')))
     parser.add_argument('--board-type', '-b',
                         help='Type of the board to run tests on',
-                        choices=['esp-wrover-kit', 'esp32_solo-devkitj'],
-                        default=os.environ.get('OOCD_TEST_BOARD', 'esp-wrover-kit'))
+                        choices=list(BOARD_TCL_CONFIG.keys()),
+                        default=os.environ.get('OOCD_TEST_BOARD', 'esp32-wrover-kit-3.3v'))
     parser.add_argument('--apps-dir', '-a',
                         help='Path to test apps',
                         default=os.environ.get('OOCD_TEST_APPS_DIR', os.path.join(os.getcwd(), 'testing', 'esp', 'test_apps')))
     parser.add_argument('--pattern', '-p', nargs='*',
                         help="""Pattern of test cases to run. Format: <module>[.<test_case>[.<test_method>]].
                                 User can specify several strings separated by space. Wildcards (*) are supported in <module> and <test_case> parts""",
-                        default='*')
+                        default='test_*')
     parser.add_argument('--no-load', '-n',
                         help='Do not load test app binaries',
                         action='store_true', default=False)

@@ -63,6 +63,8 @@ add_library(ocdflashnor
 	w600.c
 	xcf.c
 	xmc1xxx.c
-	xmc4xxx.c)
+	xmc4xxx.c
+	esp_xtensa.c
+	esp32_s2.c)
 
 target_include_directories(ocdflashnor PRIVATE ../../..)

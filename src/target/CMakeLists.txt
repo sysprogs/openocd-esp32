@@ -42,7 +42,6 @@ add_library(target
 	dsp563xx_once.c
 	dsp5680xx.c
 	embeddedice.c
-	esp108.c
 	etb.c
 	etm.c
 	etm_dummy.c
@@ -77,9 +76,10 @@ add_library(target
 	trace.c
 	x86_32_common.c
 	xscale.c
-	esp108_common.c
 	esp32.c
-	esp108_apptrace.c
+	esp32_apptrace.c
+	esp32_s2.c
+	xtensa_debug_module.c
 	arm_cti.c
 	arm_dap.c
 	armv7a_mmu.c
@@ -98,7 +98,12 @@ add_library(target
 	riscv/riscv.c
 	riscv/riscv_semihosting.c
 	riscv/riscv-011.c
-	riscv/riscv-013.c)
+	riscv/riscv-013.c
+	xtensa.c
+	xtensa_algorithm.c
+	xtensa_mcore.c
+	esp_xtensa.c
+	esp_xtensa_apptrace.c)
 target_include_directories(target PRIVATE ../..)
 	
 SET_TARGET_PROPERTIES(target PROPERTIES COMPILE_FLAGS -I${CMAKE_CURRENT_BINARY_DIR})

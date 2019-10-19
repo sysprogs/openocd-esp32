@@ -22,7 +22,7 @@ noinst_LTLIBRARIES += %D%/libtarget.la
 	$(MIPS32_SRC) \
 	$(NDS32_SRC) \
 	$(STM8_SRC) \
-	$(ESP108_SRC) \
+	$(XTENSA_SRC) \
 	$(ESP32_SRC) \
 	$(INTEL_IA32_SRC) \
 	$(ESIRISC_SRC) \
@@ -137,13 +137,18 @@ NDS32_SRC = \
 STM8_SRC = \
 	%D%/stm8.c
 
-ESP108_SRC= \
-	%D%/esp108_common.c \
-	%D%/esp108.c \
-	%D%/esp108_apptrace.c
+XTENSA_SRC= \
+	%D%/xtensa.c \
+	%D%/xtensa_debug_module.c \
+	%D%/xtensa_algorithm.c \
+	%D%/xtensa_mcore.c \
+	%D%/esp_xtensa.c \
+	%D%/esp_xtensa_apptrace.c
 
 ESP32_SRC= \
-	%D%/esp32.c
+	%D%/esp32.c \
+	%D%/esp32_s2.c \
+ 	%D%/esp32_apptrace.c
 
 INTEL_IA32_SRC = \
 	%D%/quark_x10xx.c \
