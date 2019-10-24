@@ -1,0 +1,28 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 15
+VisualStudioVersion = 15.0.26430.15
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{803FD0C6-D64E-4E16-9DC3-1DAEC859A3D2}") = "openocd-esp32", "openocd-esp32.vgdbcmake", "{FA2455F7-C96C-4CB1-8A04-11891A85074F}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|VisualGDB = Debug|VisualGDB
+		MinSizeRel|VisualGDB = MinSizeRel|VisualGDB
+		Release|VisualGDB = Release|VisualGDB
+		RelWithDebInfo|VisualGDB = RelWithDebInfo|VisualGDB
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{FA2455F7-C96C-4CB1-8A04-11891A85074F}.Debug|VisualGDB.ActiveCfg = Debug|VisualGDB
+		{FA2455F7-C96C-4CB1-8A04-11891A85074F}.Debug|VisualGDB.Build.0 = Debug|VisualGDB
+		{FA2455F7-C96C-4CB1-8A04-11891A85074F}.MinSizeRel|VisualGDB.ActiveCfg = MinSizeRel|VisualGDB
+		{FA2455F7-C96C-4CB1-8A04-11891A85074F}.MinSizeRel|VisualGDB.Build.0 = MinSizeRel|VisualGDB
+		{FA2455F7-C96C-4CB1-8A04-11891A85074F}.Release|VisualGDB.ActiveCfg = Release|VisualGDB
+		{FA2455F7-C96C-4CB1-8A04-11891A85074F}.Release|VisualGDB.Build.0 = Release|VisualGDB
+		{FA2455F7-C96C-4CB1-8A04-11891A85074F}.RelWithDebInfo|VisualGDB.ActiveCfg = RelWithDebInfo|VisualGDB
+		{FA2455F7-C96C-4CB1-8A04-11891A85074F}.RelWithDebInfo|VisualGDB.Build.0 = RelWithDebInfo|VisualGDB
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal

@@ -100,4 +100,6 @@ TAGS
 # ctags tag files
 tags
 /VisualGDB
-/openocd-esp32
+/CodeDB
+/VisualGDBCache
+/.vs
