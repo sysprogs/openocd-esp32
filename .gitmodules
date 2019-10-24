@@ -7,3 +7,6 @@
 [submodule "src/jtag/drivers/libjaylink"]
 	path = src/jtag/drivers/libjaylink
 	url = http://repo.or.cz/r/libjaylink.git
+[submodule "libusb1"]
+	path = libusb1
+	url = https://github.com/libusb/libusb
