@@ -8,5 +8,8 @@
 	path = src/jtag/drivers/libjaylink
 	url = http://repo.or.cz/r/libjaylink.git
 [submodule "libusb1"]
-	path = libusb1
+	path = external/libusb1/source
 	url = https://github.com/libusb/libusb
+[submodule "external/hidapi/source"]
+	path = external/hidapi/source
+	url = https://github.com/signal11/hidapi

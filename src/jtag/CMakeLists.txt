@@ -81,5 +81,5 @@ SET_TARGET_PROPERTIES(ocdjlink PROPERTIES COMPILE_FLAGS -I${CMAKE_CURRENT_BINARY
 
 target_link_libraries(ocdaice PUBLIC libusb1)
 target_link_libraries(ocdjlink PUBLIC libusb1)
-target_link_libraries(ocdjtagdrivers PUBLIC libusb1)
+target_link_libraries(ocdjtagdrivers PUBLIC libusb0 libusb1 ftd2xx hidapi)
 target_link_libraries(ocdusbblaster PUBLIC libusb1)
