@@ -45,7 +45,7 @@ add_library(ocdjtagdrivers STATIC
 	drivers/opendous.c
 	drivers/cmsis_dap_usb.c
 	drivers/xds110.c
-	)
+	drivers/jtag_usb_common.c)
 
 	
 add_library(ocdjlink STATIC

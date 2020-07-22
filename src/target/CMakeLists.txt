@@ -78,7 +78,7 @@ add_library(target
 	xscale.c
 	esp32.c
 	esp32_apptrace.c
-	esp32_s2.c
+	esp32s2.c
 	xtensa_debug_module.c
 	arm_cti.c
 	arm_dap.c
@@ -101,9 +101,10 @@ add_library(target
 	riscv/riscv-013.c
 	xtensa.c
 	xtensa_algorithm.c
-	xtensa_mcore.c
 	esp_xtensa.c
-	esp_xtensa_apptrace.c)
+	esp_xtensa_apptrace.c
+	xtensa_semihosting.c
+	esp_xtensa_semihosting.c)
 target_include_directories(target PRIVATE ../..)
 	
 SET_TARGET_PROPERTIES(target PROPERTIES COMPILE_FLAGS -I${CMAKE_CURRENT_BINARY_DIR})

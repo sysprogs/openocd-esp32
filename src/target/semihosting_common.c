@@ -81,7 +81,7 @@ static uint64_t semihosting_get_field(struct target *target, size_t index,
 static void semihosting_set_field(struct target *target, uint64_t value,
 	size_t index,
 	uint8_t *fields);
-static char *semihosting_common_get_file_name(struct target * target, uint64_t addr_fn, size_t len, uint32_t * mode);
+static char *semihosting_common_get_file_name(struct target * target, target_addr_t addr_fn, size_t len, uint32_t * mode);
 
 /* Attempts to include gdb_server.h failed. */
 extern int gdb_actual_connections;

@@ -36,7 +36,7 @@
 #define SYSCALL_PARAM2_REG  XT_REG_IDX_A3
 
 static char *esp_xtensa_semihosting_get_file_name(struct target *target,
-	target_addr_t addr_fn,
+	uint64_t addr_fn,
 	size_t len,
 	uint32_t *mode)
 {

@@ -109,3 +109,4 @@ temp/**
 /CodeDB
 /VisualGDBCache
 /.vs
+.visualgdb
