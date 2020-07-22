@@ -10,19 +10,26 @@
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/xtensa_api.h"
+#include "xtensa/core-macros.h"
 #include "driver/gpio.h"
 #include "driver/timer.h"
-#include "sdkconfig.h"
 #include "gen_ut_app.h"
 
-/* Can run 'make menuconfig' to choose the GPIO to blink,
-   or you can edit the following line and set a number here.
-*/
-#define BLINK_GPIO CONFIG_BLINK_GPIO
 
 #define LOG_LOCAL_LEVEL CONFIG_LOG_DEFAULT_LEVEL
 #include "esp_log.h"
 const static char *TAG = "ut_app";
+
+#if CONFIG_IDF_TARGET_ESP32S2BETA || CONFIG_IDF_TARGET_ESP32S2
+#define TIM_CLR(_tg_, _tn_) do{ TIMERG ## _tg_.int_clr.t ## _tn_ = 1;}while(0)
+#define TIM_UPD(_tg_, _tn_) do{ TIMERG ## _tg_.hw_timer[(_tn_)].update.update = 1;}while(0)
+#else
+#define TIM_CLR(_tg_, _tn_) do{ TIMERG ## _tg_.int_clr_timers.t ## _tn_ = 1;}while(0)
+#define TIM_UPD(_tg_, _tn_) do{ TIMERG ## _tg_.hw_timer[(_tn_)].update = 1;}while(0)
+#endif
+
+#define SPIRAM_TEST_ARRAY_SZ    5
 
 // test app algorithm selector
 volatile static int s_run_test = 0;
@@ -35,12 +42,15 @@ extern ut_result_t gcov_test_do(int test_num);
 extern ut_result_t thread_test_do(int test_num);
 extern ut_result_t tracing_test_do(int test_num);
 extern ut_result_t semihost_test_do(int test_num);
+extern ut_result_t special_test_do(int test_num);
 
 static test_func_t s_test_funcs[] = {
     gcov_test_do,
     thread_test_do,
     tracing_test_do,
-    semihost_test_do
+    semihost_test_do,
+    special_test_do // test num start from 800
+    //TODO: auto-manage test numbers and addition of new tests
 };
 
 struct blink_task_arg {
@@ -49,10 +59,13 @@ struct blink_task_arg {
     uint32_t tim_period;
 };
 
+#define TIMER_DIVIDER         16  //  Hardware timer clock divider
+#define TIMER_SCALE           (TIMER_BASE_CLK / TIMER_DIVIDER)  // convert counter value to seconds
+
 void test_timer_init(int timer_group, int timer_idx, uint32_t period)
 {
     timer_config_t config;
-    uint64_t alarm_val = (period * (TIMER_BASE_CLK / 1000000UL)) / 2;
+    uint64_t alarm_val = ((float)period / 1000000UL) * TIMER_SCALE;
 
     config.alarm_en = 1;
     config.auto_reload = 1;
@@ -76,22 +89,22 @@ void test_timer_rearm(int timer_group, int timer_idx)
 {
     if (timer_group == 0) {
         if (timer_idx == 0) {
-            TIMERG0.int_clr_timers.t0 = 1;
-            TIMERG0.hw_timer[0].update = 1;
+            TIM_CLR(0, 0);
+            TIM_UPD(0, 0);
             TIMERG0.hw_timer[0].config.alarm_en = 1;
         } else {
-            TIMERG0.int_clr_timers.t1 = 1;
-            TIMERG0.hw_timer[1].update = 1;
+            TIM_CLR(0, 1);
+            TIM_UPD(0, 1);
             TIMERG0.hw_timer[1].config.alarm_en = 1;
         }
     } else if (timer_group == 1) {
         if (timer_idx == 0) {
-            TIMERG1.int_clr_timers.t0 = 1;
-            TIMERG1.hw_timer[0].update = 1;
+            TIM_CLR(1, 0);
+            TIM_UPD(1, 0);
             TIMERG1.hw_timer[0].config.alarm_en = 1;
         } else {
-            TIMERG1.int_clr_timers.t1 = 1;
-            TIMERG1.hw_timer[1].update = 1;
+            TIM_CLR(1, 1);
+            TIM_UPD(1, 1);
             TIMERG1.hw_timer[1].config.alarm_en = 1;
         }
     }
@@ -210,6 +223,16 @@ void step_out_of_function_test()
     }
 }
 
+#define L5_TIMER_INUM   16
+
+void level5_int_test(void* arg)
+{
+    XTHAL_SET_CCOMPARE(2, XTHAL_GET_CCOUNT() + 1000000);
+    xt_ints_on(BIT(L5_TIMER_INUM));
+    while(true) {
+        vTaskDelay(1);
+    }
+}
 
 static void scratch_reg_using_task(void *pvParameter)
 {
@@ -269,7 +292,7 @@ static void step_over_bp_task(void *pvParameter)
     }
 }
 
-static void fibonacci_calc(void)
+static void fibonacci_calc(void* arg)
 /* calculation of 3 fibonacci sequences: f0, f1 abd f2
  * f(n) = f(n-1) + f(n-2) -> f(n) : 0, 1, 1, 2, 3, 5, 8, 13, 21, 34, ...*/
 {
@@ -286,7 +309,7 @@ static void fibonacci_calc(void)
     f2_nm1 = 5;
     while (1)
     {
-        LABEL_SYMBOL("fib_while");
+        LABEL_SYMBOL(fib_while);
         f0_n = f0_nm1 + f0_nm2; // calculating f0_n
         f0_nm2 = f0_nm1; // n shift
         f0_nm1 = f0_n;
@@ -324,6 +347,8 @@ void app_main()
         xTaskCreate(&window_exception_test, "win_exc_task", 8192, NULL, 5, NULL);
     } else if (s_run_test == 201){
         xTaskCreate(&step_out_of_function_test, "step_out_func", 2048, NULL, 5, NULL);
+    } else if (s_run_test == 202){
+        xTaskCreate(&level5_int_test, "level5_int_test", 2048, NULL, 5, NULL);
     } else {
         ut_result_t res = UT_UNSUPPORTED;
         for (int i = 0; i < sizeof(s_test_funcs)/sizeof(s_test_funcs[0]); i++) {
@@ -336,9 +361,10 @@ void app_main()
             ESP_LOGE(TAG, "Invalid test id (%d)!", s_run_test);
         } else if (res != UT_OK) {
             ESP_LOGE(TAG, "Test %d failed (%d)!", s_run_test, res);
+        } else {
+            ESP_LOGI(TAG, "Test %d completed!", s_run_test);
         }
-        while(1) {
-            vTaskDelay(1);
-        }
+        // wait forever
+        ulTaskNotifyTake(pdFALSE, portMAX_DELAY);
     }
 }

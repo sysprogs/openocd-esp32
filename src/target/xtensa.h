@@ -152,7 +152,7 @@ struct xtensa_cache_config {
 };
 
 struct xtensa_local_mem_region_config {
-	uint32_t base;
+	target_addr_t base;
 	uint32_t size;
 	enum xtensa_mem_err_detect mem_err_check;
 	int access;
@@ -266,12 +266,6 @@ struct xtensa_sw_breakpoint {
 	uint8_t insn_sz;	/* 2 or 3 bytes */
 };
 
-struct xtensa_chip_ops {
-	void (*on_reset)(struct target *target);
-	void (*on_poll)(struct target *target);
-	bool (*on_halt)(struct target *target);
-};
-
 /**
  * Represents a generic Xtensa core.
  */
@@ -281,15 +275,15 @@ struct xtensa {
 	struct reg_cache *core_cache;
 	uint32_t regs_num;
 	struct target *target;
-	const struct xtensa_chip_ops *chip_ops;
 	bool reset_asserted;
 	enum xtensa_stepping_isr_mode stepping_isr_mode;
 	struct breakpoint **hw_brps;
 	struct watchpoint **hw_wps;
 	struct xtensa_sw_breakpoint *sw_brps;
 	bool trace_active;
-	bool permissive_mode;
+	bool permissive_mode;	/* bypass memory checks */
 	bool suppress_dsr_errors;
+	uint32_t smp_break;
 };
 
 static inline struct xtensa *target_to_xtensa(struct target *target)
@@ -345,9 +339,9 @@ static inline void xtensa_queue_exec_ins(struct xtensa *xtensa, int32_t ins)
 int xtensa_init_arch_info(struct target *target,
 	struct xtensa *xtensa,
 	const struct xtensa_config *cfg,
-	const struct xtensa_debug_module_config *dm_cfg,
-	const struct xtensa_chip_ops *chip_ops);
-void xtensa_build_reg_cache(struct target *target);
+	const struct xtensa_debug_module_config *dm_cfg);
+int xtensa_target_init(struct command_context *cmd_ctx, struct target *target);
+void xtensa_target_deinit(struct target *target);
 
 static inline void xtensa_stepping_isr_mode_set(struct target *target,
 	enum xtensa_stepping_isr_mode mode)
@@ -396,6 +390,7 @@ int xtensa_core_status_check(struct target *target);
 int xtensa_examine(struct target *target);
 int xtensa_wakeup(struct target *target);
 int xtensa_smpbreak_set(struct target *target, uint32_t set);
+int xtensa_smpbreak_get(struct target *target, uint32_t *val);
 xtensa_reg_val_t xtensa_reg_get(struct target *target, enum xtensa_reg_id reg_id);
 void xtensa_reg_set(struct target *target, enum xtensa_reg_id reg_id, xtensa_reg_val_t value);
 int xtensa_fetch_all_regs(struct target *target);
@@ -467,9 +462,14 @@ int xtensa_run_algorithm(struct target *target,
 	int num_reg_params, struct reg_param *reg_params,
 	target_addr_t entry_point, target_addr_t exit_point,
 	int timeout_ms, void *arch_info);
+int xtensa_handle_target_event(struct target *target,
+	enum target_event event,
+	void *priv);
+void xtensa_set_permissive_mode(struct target *target, bool state);
 
 COMMAND_HELPER(xtensa_cmd_permissive_mode_do, struct xtensa *xtensa);
 COMMAND_HELPER(xtensa_cmd_mask_interrupts_do, struct xtensa *xtensa);
+COMMAND_HELPER(xtensa_cmd_smpbreak_do, struct target *target);
 COMMAND_HELPER(xtensa_cmd_perfmon_dump_do, struct xtensa *xtensa);
 COMMAND_HELPER(xtensa_cmd_perfmon_enable_do, struct xtensa *xtensa);
 COMMAND_HELPER(xtensa_cmd_tracestart_do, struct xtensa *xtensa);

@@ -346,7 +346,8 @@ static int xtensa_algo_run(struct target *target, struct xtensa_algo_image *imag
 			/* otherwise should hold UINT_MAX */
 			uint32_t usr_param_num = run->mem_args.params[i].address;
 			if (image) {
-				struct working_area *area;
+				static struct working_area *area;	/* see TODO at target.c:2018
+									 *for why this is static */
 				retval =
 					target_alloc_alt_working_area(target,
 					run->mem_args.params[i].size,
@@ -411,7 +412,7 @@ static int xtensa_algo_run(struct target *target, struct xtensa_algo_image *imag
 		goto _cleanup;
 	}
 #endif
-	LOG_DEBUG("Algorithm start @ 0x" TARGET_ADDR_FMT ", stack %d bytes @ 0x" TARGET_ADDR_FMT,
+	LOG_DEBUG("Algorithm start @ " TARGET_ADDR_FMT ", stack %d bytes @ " TARGET_ADDR_FMT,
 		run->priv.stub.tramp_addr, run->stack_size, run->priv.stub.stack_addr);
 	retval = target_start_algorithm(target,
 		run->mem_args.count, run->mem_args.params,
@@ -504,7 +505,7 @@ int xtensa_run_algorithm_image(struct target *target,
 
 int xtensa_run_algorithm_onboard(struct target *target,
 	struct xtensa_algo_run_data *run,
-	uint32_t entry)
+	void *func_entry)
 {
 	int res;
 	struct xtensa *xtensa = target_to_xtensa(target);
@@ -550,7 +551,7 @@ int xtensa_run_algorithm_onboard(struct target *target,
 	} else
 		run->priv.stub.stack_addr = run->on_board.min_stack_addr + run->stack_size;
 	run->priv.stub.tramp_addr = run->on_board.code_buf_addr;
-	run->priv.stub.entry = entry;
+	run->priv.stub.entry = (uintptr_t)func_entry;
 
 	res = xtensa_algo_run(target, NULL, run);
 

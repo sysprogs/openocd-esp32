@@ -21,19 +21,19 @@ class StepTestsImpl():
 
     def do_step_over_bp_check(self, funcs):
         self.resume_exec()
-        rsn = self.gdb.wait_target_state(dbg.Gdb.TARGET_STATE_STOPPED, 5)
-        self.assertEqual(rsn, dbg.Gdb.TARGET_STOP_REASON_BP)
-        cur_frame = self.gdb.get_current_frame()
-        self.assertEqual(cur_frame['func'], funcs[0])
+        rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 5)
+        self.assertEqual(rsn, dbg.TARGET_STOP_REASON_BP)
         old_pc = self.gdb.get_reg('pc')
+        faddr = self.gdb.extract_exec_addr(self.gdb.data_eval_expr('&%s' % funcs[0]))
+        self.assertEqual(old_pc, faddr)
         self.step(insn=True) # step over movi
         new_pc = self.gdb.get_reg('pc')
         self.assertTrue(((new_pc - old_pc) == 2) or ((new_pc - old_pc) == 3))
         old_pc = new_pc
-        self.step(insn=True, stop_rsn=dbg.Gdb.TARGET_STOP_REASON_BP) # step over nop
-        cur_frame = self.gdb.get_current_frame()
-        self.assertEqual(cur_frame['func'], funcs[1])
+        self.step(insn=True, stop_rsn=dbg.TARGET_STOP_REASON_BP) # step over nop
         new_pc = self.gdb.get_reg('pc')
+        faddr = self.gdb.extract_exec_addr(self.gdb.data_eval_expr('&%s' % funcs[1]))
+        self.assertEqual(new_pc, faddr)
         self.assertTrue(((new_pc - old_pc) == 2) or ((new_pc - old_pc) == 3))
 
     def test_step_over_bp(self):
@@ -55,16 +55,16 @@ class StepTestsImpl():
         self.select_sub_test(103)
         for i in range(2):
             # step from and over HW BPs
-            self.do_step_over_bp_check(['step_over_bp_task', '_step_over_bp_break2'])
+            self.do_step_over_bp_check(['_step_over_bp_break1', '_step_over_bp_break2'])
             # step from and over SW flash BPs
             self.do_step_over_bp_check(['_step_over_bp_break3', '_step_over_bp_break4'])
             # step from and over SW RAM BPs
-            self.do_step_over_bp_check(['dummy_iram_func', '_step_over_bp_break6'])
+            self.do_step_over_bp_check(['_step_over_bp_break5', '_step_over_bp_break6'])
 
     def do_step_over_wp_check(self, func):
         self.resume_exec()
-        rsn = self.gdb.wait_target_state(dbg.Gdb.TARGET_STATE_STOPPED, 5)
-        self.assertEqual(rsn, dbg.Gdb.TARGET_STOP_REASON_SIGTRAP)
+        rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 5)
+        self.assertEqual(rsn, dbg.TARGET_STOP_REASON_SIGTRAP)
         cur_frame = self.gdb.get_current_frame()
         self.assertEqual(cur_frame['func'], func)
         old_pc = self.gdb.get_reg('pc')
@@ -100,8 +100,8 @@ class StepTestsImpl():
         self.select_sub_test(200)
         bp = self.gdb.add_bp('window_exception_test')
         self.resume_exec()
-        rsn = self.gdb.wait_target_state(dbg.Gdb.TARGET_STATE_STOPPED, 5)
-        self.assertEqual(rsn, dbg.Gdb.TARGET_STOP_REASON_BP)
+        rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 5)
+        self.assertEqual(rsn, dbg.TARGET_STOP_REASON_BP)
         self.gdb.delete_bp(bp)
 
         # do "step in", 3 steps per recursion level
@@ -140,8 +140,8 @@ class StepTestsImpl():
         self.add_bp('_scratch_reg_using_task_break')
         for i in range(5):
             self.resume_exec()
-            rsn = self.gdb.wait_target_state(dbg.Gdb.TARGET_STATE_STOPPED, 5)
-            self.assertEqual(rsn, dbg.Gdb.TARGET_STOP_REASON_BP)
+            rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 5)
+            self.assertEqual(rsn, dbg.TARGET_STOP_REASON_BP)
             cur_frame = self.gdb.get_current_frame()
             self.assertEqual(cur_frame['func'], 'scratch_reg_using_task')
             self.step(insn=True)
@@ -170,8 +170,8 @@ class StepTestsImpl():
             # catching of bp
             self.resume_exec()
             get_logger().info('bp1 ')
-            rsn = self.gdb.wait_target_state(dbg.Gdb.TARGET_STATE_STOPPED, 5)
-            self.assertEqual(rsn, dbg.Gdb.TARGET_STOP_REASON_BP)
+            rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 5)
+            self.assertEqual(rsn, dbg.TARGET_STOP_REASON_BP)
             cur_frame = self.gdb.get_current_frame()
             self.assertEqual(cur_frame['func'], "fibonacci_calc")
 
@@ -201,8 +201,8 @@ class StepTestsImpl():
             # catching of bp
             self.resume_exec()
             get_logger().info('bp2 ')
-            rsn = self.gdb.wait_target_state(dbg.Gdb.TARGET_STATE_STOPPED, 5)
-            self.assertEqual(rsn, dbg.Gdb.TARGET_STOP_REASON_BP)
+            rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 5)
+            self.assertEqual(rsn, dbg.TARGET_STOP_REASON_BP)
             cur_frame = self.gdb.get_current_frame()
             self.assertEqual(cur_frame['func'], "fibonacci_calc")
 
@@ -246,8 +246,8 @@ class StepTestsImpl():
 
             # catching the BP
             self.resume_exec()
-            rsn = self.gdb.wait_target_state(dbg.Gdb.TARGET_STATE_STOPPED, 5)
-            self.assertEqual(rsn, dbg.Gdb.TARGET_STOP_REASON_BP)
+            rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 5)
+            self.assertEqual(rsn, dbg.TARGET_STOP_REASON_BP)
             cur_frame = self.gdb.get_current_frame()
             self.assertEqual(cur_frame['func'], 'nested_bottom')
 
@@ -261,6 +261,31 @@ class StepTestsImpl():
             self.step_out()
             cur_frame = self.gdb.get_current_frame()
             self.assertEqual(cur_frame['func'], 'step_out_of_function_test')
+
+    def test_step_level5_int(self):
+        """
+            1) Set a breakpoint inside a level 5 interrupt vector
+            2) Wait until it hits
+            3) Step into the handler
+            4) Return from the interrupt
+        """
+        self.select_sub_test(202)
+        self.add_bp('_Level5Vector')
+        for _ in range(3):
+            self.resume_exec()
+            rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 5)
+            self.assertEqual(rsn, dbg.TARGET_STOP_REASON_BP)
+            self.assertEqual(self.gdb.get_current_frame()['func'], '_Level5Vector')
+
+            # Step into the interrupt handler
+            self.step(insn=True)
+            self.step(insn=True)
+            self.assertEqual(self.gdb.get_current_frame()['func'], 'xt_highint5')
+
+            # Step out of the interrupt handler
+            for _ in range(12):
+                self.step(insn=True)
+            self.assertNotEqual(self.gdb.get_current_frame()['func'], 'xt_highint5')
 
 
 ########################################################################

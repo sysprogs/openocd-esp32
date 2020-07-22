@@ -81,6 +81,7 @@ static uint64_t semihosting_get_field(struct target *target, size_t index,
 static void semihosting_set_field(struct target *target, uint64_t value,
 	size_t index,
 	uint8_t *fields);
+static char *semihosting_common_get_file_name(struct target * target, uint64_t addr_fn, size_t len, uint32_t * mode);
 
 /* Attempts to include gdb_server.h failed. */
 extern int gdb_actual_connections;
@@ -127,6 +128,10 @@ int semihosting_common_init(struct target *target, void *setup,
 
 	semihosting->setup = setup;
 	semihosting->post_result = post_result;
+	semihosting->read_fields = NULL; // a place for a possible custom fields api
+	semihosting->write_fields = NULL; // a place for a possible custom fields api
+	semihosting->get_filename = NULL; // a place for a possible get filename custom implementation
+	semihosting->lseek = NULL; // a place for a possible lseek custom implementation
 
 	target->semihosting = semihosting;
 
@@ -680,17 +685,16 @@ int semihosting_common(struct target *target)
 					semihosting->sys_errno = EINVAL;
 					break;
 				}
-				uint8_t *fn = malloc(len+1);
-				if (!fn) {
+				char *fn;
+				if (semihosting->get_filename == NULL)
+					fn = semihosting_common_get_file_name(target, addr, len, &mode);
+				else
+					fn = semihosting->get_filename(target, addr, len, &mode);
+				if (fn == NULL) {
 					semihosting->result = -1;
 					semihosting->sys_errno = ENOMEM;
 				} else {
-					retval = target_read_memory(target, addr, 1, len, fn);
-					if (retval != ERROR_OK) {
-						free(fn);
-						return retval;
-					}
-					fn[len] = 0;
+					len = strlen(fn); // updated len_size based on gotten fn
 					/* TODO: implement the :semihosting-features special file.
 					 * */
 					if (semihosting->is_fileio) {
@@ -740,11 +744,16 @@ int semihosting_common(struct target *target)
 									(int)semihosting->result);
 							}
 						} else {
+							uint32_t flags = open_modeflags[mode];
+#ifdef _WIN32
+							/* Windows needs O_BINARY flag for proper handling of EOLs */
+							flags |= O_BINARY;
+#endif
 							/* cygwin requires the permission setting
 							 * otherwise it will fail to reopen a previously
 							 * written file */
 							semihosting->result = open((char *)fn,
-									open_modeflags[mode],
+									flags,
 									0644);
 							semihosting->sys_errno = errno;
 							LOG_DEBUG("open('%s')=%d", fn,
@@ -998,7 +1007,11 @@ int semihosting_common(struct target *target)
 			 * Note: The effect of seeking outside the current extent of
 			 * the file object is undefined.
 			 */
-			retval = semihosting_read_fields(target, 2, fields);
+
+			if (semihosting->lseek == NULL)
+				retval = semihosting_read_fields(target, 2, fields);
+			else
+				retval = semihosting_read_fields(target, 3, fields);
 			if (retval != ERROR_OK)
 				return retval;
 			else {
@@ -1011,7 +1024,12 @@ int semihosting_common(struct target *target)
 					fileio_info->param_2 = pos;
 					fileio_info->param_3 = SEEK_SET;
 				} else {
-					semihosting->result = lseek(fd, pos, SEEK_SET);
+					if (semihosting->lseek == NULL)
+						semihosting->result = lseek(fd, pos, SEEK_SET);
+					else{
+						int whence = semihosting_get_field(target, 2, fields);
+						semihosting->result = semihosting->lseek(fd, pos, whence);
+					}
 					semihosting->sys_errno = errno;
 					LOG_DEBUG("lseek(%d, %d)=%d", fd, (int)pos,
 						(int)semihosting->result);
@@ -1411,9 +1429,13 @@ static int semihosting_read_fields(struct target *target, size_t number,
 	uint8_t *fields)
 {
 	struct semihosting *semihosting = target->semihosting;
-	/* Use 4-byte multiples to trigger fast memory access. */
-	return target_read_memory(target, semihosting->param, 4,
-			number * (semihosting->word_size_bytes / 4), fields);
+
+	if (!semihosting->read_fields) {/* default write_fields implementation */
+		/* Use 4-byte multiples to trigger fast memory access. */
+		return target_read_memory(target, semihosting->param, 4,
+				number * (semihosting->word_size_bytes / 4), fields);
+	} else
+		return semihosting->read_fields(target, number, fields);
 }
 
 /**
@@ -1423,9 +1445,17 @@ static int semihosting_write_fields(struct target *target, size_t number,
 	uint8_t *fields)
 {
 	struct semihosting *semihosting = target->semihosting;
-	/* Use 4-byte multiples to trigger fast memory access. */
-	return target_write_memory(target, semihosting->param, 4,
-			number * (semihosting->word_size_bytes / 4), fields);
+
+	if(!semihosting->write_fields) // default write_fields implementation
+	{
+		/* Use 4-byte multiples to trigger fast memory access. */
+		return target_write_memory(target, semihosting->param, 4,
+				number * (semihosting->word_size_bytes / 4), fields);
+	}
+	else
+	{
+		return semihosting->write_fields(target, number, fields);
+	}
 }
 
 /**
@@ -1455,6 +1485,22 @@ static void semihosting_set_field(struct target *target, uint64_t value,
 		target_buffer_set_u32(target, fields + (index * 4), value);
 }
 
+static char *semihosting_common_get_file_name(struct target * target, target_addr_t  addr_fn, size_t len, uint32_t * mode)
+{
+	int retval;
+
+	uint8_t *fn = malloc(len+1);
+	if (!fn) return NULL; // error!
+
+	retval = target_read_memory(target, addr_fn, 1, len, fn);
+	if (retval != ERROR_OK)
+	{
+		free(fn);
+		return NULL;
+	}
+	fn[len] = 0;
+	return (char*)fn;
+}
 
 /* -------------------------------------------------------------------------
  * Common semihosting commands handlers. */
@@ -1470,7 +1516,7 @@ __COMMAND_HANDLER(handle_common_semihosting_command)
 
 	struct semihosting *semihosting = target->semihosting;
 	if (!semihosting) {
-		command_print(CMD_CTX, "semihosting not supported for current target");
+		command_print(CMD, "semihosting not supported for current target");
 		return ERROR_FAIL;
 	}
 
@@ -1493,7 +1539,7 @@ __COMMAND_HANDLER(handle_common_semihosting_command)
 		semihosting->is_active = is_active;
 	}
 
-	command_print(CMD_CTX, "semihosting is %s",
+	command_print(CMD, "semihosting is %s",
 		semihosting->is_active
 		? "enabled" : "disabled");
 
@@ -1512,19 +1558,19 @@ __COMMAND_HANDLER(handle_common_semihosting_fileio_command)
 
 	struct semihosting *semihosting = target->semihosting;
 	if (!semihosting) {
-		command_print(CMD_CTX, "semihosting not supported for current target");
+		command_print(CMD, "semihosting not supported for current target");
 		return ERROR_FAIL;
 	}
 
 	if (!semihosting->is_active) {
-		command_print(CMD_CTX, "semihosting not yet enabled for current target");
+		command_print(CMD, "semihosting not yet enabled for current target");
 		return ERROR_FAIL;
 	}
 
 	if (CMD_ARGC > 0)
 		COMMAND_PARSE_ENABLE(CMD_ARGV[0], semihosting->is_fileio);
 
-	command_print(CMD_CTX, "semihosting fileio is %s",
+	command_print(CMD, "semihosting fileio is %s",
 		semihosting->is_fileio
 		? "enabled" : "disabled");
 
@@ -1543,7 +1589,7 @@ __COMMAND_HANDLER(handle_common_semihosting_cmdline)
 
 	struct semihosting *semihosting = target->semihosting;
 	if (!semihosting) {
-		command_print(CMD_CTX, "semihosting not supported for current target");
+		command_print(CMD, "semihosting not supported for current target");
 		return ERROR_FAIL;
 	}
 
@@ -1558,7 +1604,7 @@ __COMMAND_HANDLER(handle_common_semihosting_cmdline)
 		semihosting->cmdline = cmdline;
 	}
 
-	command_print(CMD_CTX, "semihosting command line is [%s]",
+	command_print(CMD, "semihosting command line is [%s]",
 		semihosting->cmdline);
 
 	return ERROR_OK;
@@ -1575,19 +1621,19 @@ __COMMAND_HANDLER(handle_common_semihosting_resumable_exit_command)
 
 	struct semihosting *semihosting = target->semihosting;
 	if (!semihosting) {
-		command_print(CMD_CTX, "semihosting not supported for current target");
+		command_print(CMD, "semihosting not supported for current target");
 		return ERROR_FAIL;
 	}
 
 	if (!semihosting->is_active) {
-		command_print(CMD_CTX, "semihosting not yet enabled for current target");
+		command_print(CMD, "semihosting not yet enabled for current target");
 		return ERROR_FAIL;
 	}
 
 	if (CMD_ARGC > 0)
 		COMMAND_PARSE_ENABLE(CMD_ARGV[0], semihosting->has_resumable_exit);
 
-	command_print(CMD_CTX, "semihosting resumable exit is %s",
+	command_print(CMD, "semihosting resumable exit is %s",
 		semihosting->has_resumable_exit
 		? "enabled" : "disabled");
 

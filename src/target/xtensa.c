@@ -5,6 +5,7 @@
  *   Author: Angus Gratton gus@projectgus.com                              *
  *   Author: Jeroen Domburg <jeroen@espressif.com>                         *
  *   Author: Alexey Gerenkov <alexey@espressif.com>                        *
+ *   Author: Andrey Gramakov <andrei.gramakov@espressif.com>               *
  *                                                                         *
  *   This program is free software; you can redistribute it and/or modify  *
  *   it under the terms of the GNU General Public License as published by  *
@@ -22,6 +23,7 @@
  *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.           *
  ***************************************************************************/
 
+#include <stdlib.h>
 #include "xtensa.h"
 #include "xtensa_algorithm.h"
 #include "register.h"
@@ -233,6 +235,51 @@ const struct xtensa_reg_desc xtensa_regs[XT_NUM_REGS] = {
 	{ "a15",                XT_REG_IDX_AR15, XT_REG_RELGEN, 0 },
 };
 
+
+/**
+ * Types of memory used at xtensa target
+ */
+typedef enum {
+	XTENSA_MEM_REG_IROM = 0x0,
+	XTENSA_MEM_REG_IRAM,
+	XTENSA_MEM_REG_DROM,
+	XTENSA_MEM_REG_DRAM,
+	XTENSA_MEM_REG_URAM,
+	XTENSA_MEM_REG_XLMI,
+	XTENSA_MEM_REGS_NUM
+} xtensa_mem_region_type_t;
+
+
+/**
+ * Gets a config for the specific mem type
+ */
+static inline const struct xtensa_local_mem_config *xtensa_get_mem_config(
+	struct xtensa *xtensa,
+	xtensa_mem_region_type_t type)
+{
+	switch (type) {
+		case XTENSA_MEM_REG_IROM:
+			return &(xtensa->core_config->irom);
+		case XTENSA_MEM_REG_IRAM:
+			return &(xtensa->core_config->iram);
+		case XTENSA_MEM_REG_DROM:
+			return &(xtensa->core_config->drom);
+		case XTENSA_MEM_REG_DRAM:
+			return &(xtensa->core_config->dram);
+		case XTENSA_MEM_REG_URAM:
+			return &(xtensa->core_config->uram);
+		case XTENSA_MEM_REG_XLMI:
+			return &(xtensa->core_config->xlmi);
+		default:
+			return NULL;
+	}
+}
+
+/**
+ * Extracts an exact xtensa_local_mem_region_config from xtensa_local_mem_config
+ * for a given address
+ * Returns NULL if nothing found
+ */
 static inline const struct xtensa_local_mem_region_config *xtensa_memory_region_find(
 	const struct xtensa_local_mem_config *mem,
 	target_addr_t address)
@@ -241,6 +288,26 @@ static inline const struct xtensa_local_mem_region_config *xtensa_memory_region_
 		const struct xtensa_local_mem_region_config *region = &mem->regions[i];
 		if (address >= region->base && address < (region->base+region->size))
 			return region;
+	}
+	return NULL;
+}
+
+/**
+ * Returns a corresponding xtensa_local_mem_region_config from the xtensa target
+ * for a given address
+ * Returns NULL if nothing found
+ */
+static inline const struct xtensa_local_mem_region_config *xtensa_target_memory_region_find(
+	struct xtensa *xtensa,
+	target_addr_t address)
+{
+	const struct xtensa_local_mem_region_config *result = NULL;
+	const struct xtensa_local_mem_config *mcgf = NULL;
+	for (size_t mtype = 0; mtype < XTENSA_MEM_REGS_NUM; mtype++) {
+		mcgf = xtensa_get_mem_config(xtensa, mtype);
+		result = xtensa_memory_region_find(mcgf, address);
+		if (result)
+			return result;
 	}
 	return NULL;
 }
@@ -578,22 +645,53 @@ int xtensa_wakeup(struct target *target)
 	return jtag_execute_queue();
 }
 
-int xtensa_smpbreak_set(struct target *target, uint32_t set)
+static int xtensa_smpbreak_write(struct xtensa *xtensa, uint32_t set)
 {
-	struct xtensa *xtensa = target_to_xtensa(target);
 	int res = ERROR_OK;
 	uint32_t dsr_data = 0x00110000;
-	uint32_t clear = set ^
-		(OCDDCR_BREAKINEN|OCDDCR_BREAKOUTEN|OCDDCR_RUNSTALLINEN|OCDDCR_DEBUGMODEOUTEN);
+	uint32_t clear = (set|OCDDCR_ENABLEOCD) ^
+		(OCDDCR_BREAKINEN|OCDDCR_BREAKOUTEN|OCDDCR_RUNSTALLINEN|OCDDCR_DEBUGMODEOUTEN|
+		OCDDCR_ENABLEOCD);
 
+	LOG_DEBUG("%s: write smpbreak=0x%x", target_name(xtensa->target), set);
 	xtensa_queue_dbg_reg_write(xtensa, NARADR_DCRSET, set|OCDDCR_ENABLEOCD);
 	xtensa_queue_dbg_reg_write(xtensa, NARADR_DCRCLR, clear);
 	xtensa_queue_dbg_reg_write(xtensa, NARADR_DSR, dsr_data);
 	xtensa_dm_queue_tdi_idle(&xtensa->dbg_mod);
 	res = jtag_execute_queue();
 
-	LOG_DEBUG("%s set smpbreak=%x, state=%i", __func__, set, xtensa->target->state);
 	return res;
+}
+
+int xtensa_smpbreak_set(struct target *target, uint32_t set)
+{
+	struct xtensa *xtensa = target_to_xtensa(target);
+	int res = ERROR_OK;
+
+	xtensa->smp_break = set;
+	if (target_was_examined(target))
+		res = xtensa_smpbreak_write(xtensa, xtensa->smp_break);
+	LOG_DEBUG("%s: set smpbreak=%x, state=%i", target_name(target), set, target->state);
+	return res;
+}
+
+static int xtensa_smpbreak_read(struct xtensa *xtensa, uint32_t *val)
+{
+	int res = ERROR_OK;
+	uint8_t dcr_buf[sizeof(uint32_t)];
+
+	xtensa_queue_dbg_reg_read(xtensa, NARADR_DCRSET, dcr_buf);
+	xtensa_dm_queue_tdi_idle(&xtensa->dbg_mod);
+	res = jtag_execute_queue();
+	*val = buf_get_u32(dcr_buf, 0, 32);
+
+	return res;
+}
+
+int xtensa_smpbreak_get(struct target *target, uint32_t *val)
+{
+	struct xtensa *xtensa = target_to_xtensa(target);
+	return xtensa_smpbreak_read(xtensa, val);
 }
 
 static inline xtensa_reg_val_t xtensa_reg_get_value(struct reg *reg)
@@ -668,10 +766,8 @@ int xtensa_assert_reset(struct target *target)
 	struct xtensa *xtensa = target_to_xtensa(target);
 	int res;
 
-	LOG_DEBUG("%s[%s] coreid=%i, target_number=%i, begin",
-		__func__,
+	LOG_DEBUG("%s: target_number=%i, begin",
 		target_name(target),
-		target->coreid,
 		target->target_number);
 	target->state = TARGET_RESET;
 	xtensa_queue_pwr_reg_write(xtensa,
@@ -691,7 +787,7 @@ int xtensa_deassert_reset(struct target *target)
 	struct xtensa *xtensa = target_to_xtensa(target);
 	int res;
 
-	LOG_DEBUG("%s coreid=%d halt=%d", __func__, target->coreid, target->reset_halt);
+	LOG_DEBUG("%s halt=%d", target_name(target), target->reset_halt);
 	if (target->reset_halt)
 		xtensa_queue_dbg_reg_write(xtensa,
 			NARADR_DCRSET,
@@ -907,7 +1003,9 @@ int xtensa_halt(struct target *target)
 		LOG_ERROR("%s: Failed to read core status!", target_name(target));
 		return res;
 	}
-	if (!(xtensa_dm_core_status_get(&xtensa->dbg_mod) & OCDDSR_STOPPED)) {
+	LOG_DEBUG("%s: Core status 0x%x", target_name(target),
+		xtensa_dm_core_status_get(&xtensa->dbg_mod));
+	if (!xtensa_is_stopped(target)) {
 		xtensa_queue_dbg_reg_write(xtensa,
 			NARADR_DCRSET,
 			OCDDCR_ENABLEOCD|OCDDCR_DEBUGINTERRUPT);
@@ -944,7 +1042,7 @@ int xtensa_prepare_resume(struct target *target,
 		debug_execution);
 
 	if (target->state != TARGET_HALTED) {
-		LOG_WARNING("%s: %s: target not halted", target_name(target), __func__);
+		LOG_WARNING("%s: target not halted", target_name(target));
 		return ERROR_TARGET_NOT_HALTED;
 	}
 
@@ -962,7 +1060,7 @@ int xtensa_prepare_resume(struct target *target,
 		if (cause & (DEBUGCAUSE_BI|DEBUGCAUSE_BN)) {
 			/*We stopped due to a break instruction. We can't just resume executing the
 			 * instruction again because */
-			/*that would trigger the breake again. To fix this, we single-step, which
+			/*that would trigger the break again. To fix this, we single-step, which
 			 * ignores break. */
 			xtensa_do_step(target, current, address, handle_breakpoints);
 		}
@@ -1012,8 +1110,7 @@ int xtensa_resume(struct target *target,
 	int handle_breakpoints,
 	int debug_execution)
 {
-	LOG_DEBUG("%s:", target_name(target));
-
+	LOG_DEBUG("%s", target_name(target));
 	int res = xtensa_prepare_resume(target,
 		current,
 		address,
@@ -1034,9 +1131,8 @@ int xtensa_resume(struct target *target,
 		target->state = TARGET_RUNNING;
 	else
 		target->state = TARGET_DEBUG_RUNNING;
-	int res1 = target_call_event_callbacks(target, TARGET_EVENT_RESUMED);
-	if (res1 != ERROR_OK)
-		res = res1;
+
+	target_call_event_callbacks(target, TARGET_EVENT_RESUMED);
 	return res;
 }
 
@@ -1091,22 +1187,6 @@ int xtensa_do_step(struct target *target,
 	oldps = xtensa_reg_get(target, XT_REG_IDX_PS);
 	oldpc = xtensa_reg_get(target, XT_REG_IDX_PC);
 
-	if (xtensa->stepping_isr_mode == XT_STEPPING_ISR_OFF) {
-		if (!xtensa->core_config->high_irq.enabled) {
-			LOG_WARNING(
-				"%s: disabling IRQs while stepping is not implemented w/o high prio IRQs option!",
-				target_name(target));
-			return ERROR_FAIL;
-		}
-		/* Increasing the interrupt level to avoid taking interrupts while stepping. */
-		xtensa_reg_val_t temp_ps = (oldps & ~0xF) |
-			xtensa->core_config->high_irq.excm_level;
-		xtensa_reg_set(target, XT_REG_IDX_PS, temp_ps);
-		/* Now we have to set up max posssible interrupt level (ilevel + 1) */
-		icountlvl = xtensa->core_config->high_irq.excm_level + 1;
-	} else
-		icountlvl = (oldps & 0xF) + 1;
-
 	cause = xtensa_reg_get(target, XT_REG_IDX_DEBUGCAUSE);
 	LOG_DEBUG("%s: oldps=%x, oldpc=%x dbg_cause=%x exc_cause=%x",
 		target_name(target),
@@ -1127,6 +1207,31 @@ int xtensa_do_step(struct target *target,
 			xtensa_reg_set(target, XT_REG_IDX_PC, oldpc + 2);	/* PC = PC+2 */
 		return ERROR_OK;
 	}
+
+	/* Xtensa has an ICOUNTLEVEL register which sets the maximum interrupt level at which the
+	 * instructions are to be counted while stepping.
+	 * For example, if we need to step by 2 instructions, and an interrupt occurs inbetween,
+	 * the processor will execute the interrupt, return, and halt after the 2nd instruction.
+	 * However, sometimes we don't want the interrupt handlers to be executed at all, while
+	 * stepping through the code. In this case (XT_STEPPING_ISR_OFF), PS.INTLEVEL can be raised
+	 * to only allow Debug and NMI interrupts.
+	 */
+	if (xtensa->stepping_isr_mode == XT_STEPPING_ISR_OFF) {
+		if (!xtensa->core_config->high_irq.enabled) {
+			LOG_WARNING(
+				"%s: disabling IRQs while stepping is not implemented w/o high prio IRQs option!",
+				target_name(target));
+			return ERROR_FAIL;
+		}
+		/* Mask all interrupts below Debug, i.e. PS.INTLEVEL = DEBUGLEVEL - 1 */
+		xtensa_reg_val_t temp_ps = (oldps & ~0xF) |
+			(xtensa->core_config->debug.irq_level - 1);
+		xtensa_reg_set(target, XT_REG_IDX_PS, temp_ps);
+		/* Update ICOUNTLEVEL accordingly */
+		icountlvl = xtensa->core_config->debug.irq_level;
+	} else
+		icountlvl = (oldps & 0xF) + 1;
+
 	if (cause & DEBUGCAUSE_DB) {
 		/*We stopped due to a watchpoint. We can't just resume executing the instruction
 		 * again because */
@@ -1176,7 +1281,7 @@ int xtensa_do_step(struct target *target,
 			/*Do not use target_poll here, it also triggers other things... just
 			 * manually read the DSR until stepping */
 			/*is complete. */
-			usleep(50000);
+			usleep(1000);
 			res = xtensa_dm_core_status_read(&xtensa->dbg_mod);
 			if (res != ERROR_OK) {
 				LOG_ERROR("%s: Failed to read core status!", target_name(target));
@@ -1185,7 +1290,7 @@ int xtensa_do_step(struct target *target,
 			if (xtensa_is_stopped(target))
 				break;
 			else
-				usleep(50000);
+				usleep(1000);
 		}
 		LOG_DEBUG("%s: Finish stepping. dsr=0x%08x",
 			target_name(target),
@@ -1268,27 +1373,72 @@ int xtensa_step(struct target *target,
 	return retval;
 }
 
-static inline bool xtensa_memory_op_validate(struct xtensa *xtensa,
+/**
+ * Returns true if two ranges are overlapping
+ */
+static inline bool xtensa_memory_regions_overlap(target_addr_t r1_start,
+	target_addr_t r1_end,
+	target_addr_t r2_start,
+	target_addr_t r2_end)
+{
+	if ((r2_start >= r1_start) && (r2_start < r1_end))
+		return true;	/* r2_start is in r1 region */
+	if ((r2_end > r1_start) && (r2_end <= r1_end))
+		return true;	/* r2_end is in r1 region */
+	return false;
+}
+
+/**
+ * Returns a size of overlapped region of two ranges.
+ */
+static inline target_addr_t xtensa_get_overlap_size(const target_addr_t r1_start,
+	const target_addr_t r1_end,
+	const target_addr_t r2_start,
+	const target_addr_t r2_end)
+{
+	target_addr_t ov_start;
+	target_addr_t ov_end;
+	if (xtensa_memory_regions_overlap(r1_start, r1_end, r2_start, r2_end)) {
+		if (r1_start < r2_start)
+			ov_start = r2_start;
+		else
+			ov_start = r1_start;
+
+		if (r1_end > r2_end)
+			ov_end = r2_end;
+		else
+			ov_end = r1_end;
+
+		return ov_end - ov_start;
+	}
+	return 0;
+}
+
+/**
+ * Check if the address gets to memory regions, and it's access mode
+ */
+static bool xtensa_memory_op_validate_range(
+	struct xtensa *xtensa,
 	target_addr_t address,
+	size_t size,
 	int access)
 {
-	const struct xtensa_local_mem_region_config *mem_region = xtensa_memory_region_find(
-		&xtensa->core_config->irom,
-		address);
-	if (mem_region)
-		return (mem_region->access & access) == access;
-	mem_region = xtensa_memory_region_find(&xtensa->core_config->drom, address);
-	if (mem_region)
-		return (mem_region->access & access) == access;
-	mem_region = xtensa_memory_region_find(&xtensa->core_config->iram, address);
-	if (mem_region)
-		return (mem_region->access & access) == access;
-	mem_region = xtensa_memory_region_find(&xtensa->core_config->dram, address);
-	if (mem_region)
-		return (mem_region->access & access) == access;
-	mem_region = xtensa_memory_region_find(&xtensa->core_config->uram, address);
-	if (mem_region)
-		return (mem_region->access & access) == access;
+	target_addr_t adr_pos = address;	/* address cursor set to the beginning start */
+	target_addr_t adr_end = address + size;	/* region end */
+	target_addr_t overlap_size;
+	const struct xtensa_local_mem_region_config *cm;	/* current mem region */
+
+	while (adr_pos < adr_end) {
+		cm = xtensa_target_memory_region_find(xtensa, adr_pos);
+		if (!cm)/* address is not belong to anything */
+			return false;
+		if ((cm->access & access) != access)	/* access check */
+			return false;
+		overlap_size =
+			xtensa_get_overlap_size(cm->base, (cm->base + cm->size), adr_pos, adr_end);
+		assert(overlap_size != 0);
+		adr_pos += overlap_size;
+	}
 	return true;
 }
 
@@ -1315,10 +1465,12 @@ int xtensa_read_memory(struct target *target,
 		return ERROR_TARGET_NOT_HALTED;
 	}
 
-	if (!xtensa_memory_op_validate(xtensa, address,
-			XT_MEM_ACCESS_READ) && !xtensa->permissive_mode) {
-		LOG_DEBUG("address "TARGET_ADDR_FMT " not readable", address);
-		return ERROR_FAIL;
+	if (!xtensa->permissive_mode) {
+		if (!xtensa_memory_op_validate_range(xtensa, address, (size*count),
+				XT_MEM_ACCESS_READ)) {
+			LOG_DEBUG("address "TARGET_ADDR_FMT " not readable", address);
+			return ERROR_FAIL;
+		}
 	}
 
 	if (addrstart_al == address && addrend_al == address + (size*count))
@@ -1390,10 +1542,12 @@ int xtensa_write_memory(struct target *target,
 		return ERROR_TARGET_NOT_HALTED;
 	}
 
-	if (!xtensa_memory_op_validate(xtensa, address,
-			XT_MEM_ACCESS_WRITE) && !xtensa->permissive_mode) {
-		LOG_DEBUG("address "TARGET_ADDR_FMT " not writable", address);
-		return ERROR_FAIL;
+	if (!xtensa->permissive_mode) {
+		if (!xtensa_memory_op_validate_range(xtensa, address, (size*count),
+				XT_MEM_ACCESS_WRITE)) {
+			LOG_DEBUG("address "TARGET_ADDR_FMT " not writable", address);
+			return ERROR_FAIL;
+		}
 	}
 
 /*  LOG_INFO("%s: %s: writing %d bytes to addr %08X", target_name(target), __FUNCTION__, size*count,
@@ -1492,52 +1646,23 @@ int xtensa_checksum_memory(struct target *target,
 	return ERROR_FAIL;
 }
 
-/* do some general work upon poll */
-void xtensa_on_poll(struct target *target)
-{
-	struct xtensa *xtensa = target_to_xtensa(target);
-	int res;
-
-	if (xtensa->trace_active) {
-		/*Detect if tracing was active but has stopped. */
-		struct xtensa_trace_status trace_status;
-		res = xtensa_dm_trace_status_read(&xtensa->dbg_mod, &trace_status);
-		if (res == ERROR_OK) {
-			if (!(trace_status.stat & TRAXSTAT_TRACT)) {
-				LOG_INFO("Detected end of trace.");
-				if (trace_status.stat & TRAXSTAT_PCMTG)
-					LOG_INFO("%s: Trace stop triggered by PC match",
-						target_name(target));
-				if (trace_status.stat &TRAXSTAT_PTITG)
-					LOG_INFO(
-						"%s: Trace stop triggered by Processor Trigger Input",
-						target_name(target));
-				if (trace_status.stat & TRAXSTAT_CTITG)
-					LOG_INFO("%s: Trace stop triggered by Cross-trigger Input",
-						target_name(target));
-				xtensa->trace_active = false;
-			}
-		}
-	}
-}
-
 int xtensa_poll(struct target *target)
 {
 	struct xtensa *xtensa = target_to_xtensa(target);
-	bool need_resume = false;
 
 	int res = xtensa_dm_power_status_read(&xtensa->dbg_mod,
 		PWRSTAT_DEBUGWASRESET|PWRSTAT_COREWASRESET);
 	if (res != ERROR_OK)
 		return res;
 
-	if (xtensa_dm_tap_was_reset(&xtensa->dbg_mod))
-		LOG_INFO("%s: Debug controller %d was reset.", target_name(target), target->coreid);
-	if (xtensa_dm_core_was_reset(&xtensa->dbg_mod)) {
-		LOG_INFO("%s: Core %d was reset.", target_name(target), target->coreid);
-		if (xtensa->chip_ops != NULL && xtensa->chip_ops->on_reset != NULL)
-			xtensa->chip_ops->on_reset(target);
+	if (xtensa_dm_tap_was_reset(&xtensa->dbg_mod)) {
+		LOG_INFO("%s: Debug controller was reset.", target_name(target));
+		res = xtensa_smpbreak_write(xtensa, xtensa->smp_break);
+		if (res != ERROR_OK)
+			return res;
 	}
+	if (xtensa_dm_core_was_reset(&xtensa->dbg_mod))
+		LOG_INFO("%s: Core was reset.", target_name(target));
 	xtensa_dm_power_status_cache(&xtensa->dbg_mod);
 	/*Enable JTAG, set reset if needed */
 	res = xtensa_wakeup(target);
@@ -1547,22 +1672,27 @@ int xtensa_poll(struct target *target)
 	res = xtensa_dm_core_status_read(&xtensa->dbg_mod);
 	if (res != ERROR_OK)
 		return res;
-	/*LOG_DEBUG("%s: 0x%x %d", target_name(target), xtensa->dbg_mod.core_status.dsr,
-	 * xtensa->dbg_mod.core_status.dsr & OCDDSR_STOPPED); */
-	if (xtensa_dm_power_status_get(&xtensa->dbg_mod) & PWRSTAT_COREWASRESET)
+	if (xtensa->dbg_mod.power_status.stath & PWRSTAT_COREWASRESET) {
+		/* if RESET state is persitent  */
 		target->state = TARGET_RESET;
-	else if (xtensa->dbg_mod.core_status.dsr & OCDDSR_STOPPED) {
+	} else if (!xtensa_dm_is_powered(&xtensa->dbg_mod)) {
+		LOG_DEBUG("%s: not powered 0x%x %d", target_name(
+				target), xtensa->dbg_mod.core_status.dsr,
+			xtensa->dbg_mod.core_status.dsr & OCDDSR_STOPPED);
+		target->examined = false;
+	} else if (xtensa_is_stopped(target)) {
 		if (target->state != TARGET_HALTED) {
 			enum target_state oldstate = target->state;
 			target->state = TARGET_HALTED;
 			/*Examine why the target has been halted */
 			target->debug_reason = DBG_REASON_DBGRQ;
 			xtensa_fetch_all_regs(target);
-			/* When setting debug reason DEBUGCAUSE events have the followuing
-			 * priorites: watchpoint == breakpoint > single step > debug interrupt. */
+			/* When setting debug reason DEBUGCAUSE events have the following
+			 * priorities: watchpoint == breakpoint > single step > debug interrupt. */
 			/* Watchpoint and breakpoint events at the same time results in special
 			 * debug reason: DBG_REASON_WPTANDBKPT. */
 			xtensa_reg_val_t halt_cause = xtensa_reg_get(target, XT_REG_IDX_DEBUGCAUSE);
+			/* TODO: Add handling of DBG_REASON_EXC_CATCH */
 			if (halt_cause & DEBUGCAUSE_IC)
 				target->debug_reason = DBG_REASON_SINGLESTEP;
 			if (halt_cause & (DEBUGCAUSE_IB | DEBUGCAUSE_BN | DEBUGCAUSE_BI)) {
@@ -1588,19 +1718,6 @@ int xtensa_poll(struct target *target)
 			xtensa_dm_core_status_clear(&xtensa->dbg_mod,
 				OCDDSR_DEBUGPENDBREAK|OCDDSR_DEBUGINTBREAK|OCDDSR_DEBUGPENDHOST|
 				OCDDSR_DEBUGINTHOST);
-
-			/*Call any event callbacks that are applicable */
-			if (oldstate == TARGET_DEBUG_RUNNING)
-				target_call_event_callbacks(target, TARGET_EVENT_DEBUG_HALTED);
-			else {
-				need_resume = xtensa->chip_ops != NULL &&
-					xtensa->chip_ops->on_halt !=
-					NULL ? xtensa->chip_ops->on_halt(target) : false;
-				/* in case of semihosting call we will resume automatically a bit
-				 * later, so do not confuse GDB */
-				if (!need_resume)
-					target_call_event_callbacks(target, TARGET_EVENT_HALTED);
-			}
 		}
 	} else {
 		target->debug_reason = DBG_REASON_NOTHALTED;
@@ -1609,15 +1726,27 @@ int xtensa_poll(struct target *target)
 			target->debug_reason = DBG_REASON_NOTHALTED;
 		}
 	}
-	if (xtensa->chip_ops != NULL && xtensa->chip_ops->on_poll != NULL)
-		xtensa->chip_ops->on_poll(target);
-
-	if (need_resume) {
-		res = target_resume(target, 1, 0, 1, 0);
-		if (res != ERROR_OK)
-			LOG_ERROR("Failed to resume target upon core request!");
+	if (xtensa->trace_active) {
+		/*Detect if tracing was active but has stopped. */
+		struct xtensa_trace_status trace_status;
+		res = xtensa_dm_trace_status_read(&xtensa->dbg_mod, &trace_status);
+		if (res == ERROR_OK) {
+			if (!(trace_status.stat & TRAXSTAT_TRACT)) {
+				LOG_INFO("Detected end of trace.");
+				if (trace_status.stat & TRAXSTAT_PCMTG)
+					LOG_INFO("%s: Trace stop triggered by PC match",
+						target_name(target));
+				if (trace_status.stat &TRAXSTAT_PTITG)
+					LOG_INFO(
+						"%s: Trace stop triggered by Processor Trigger Input",
+						target_name(target));
+				if (trace_status.stat & TRAXSTAT_CTITG)
+					LOG_INFO("%s: Trace stop triggered by Cross-trigger Input",
+						target_name(target));
+				xtensa->trace_active = false;
+			}
+		}
 	}
-
 	return ERROR_OK;
 }
 
@@ -1696,7 +1825,7 @@ int xtensa_breakpoint_add(struct target *target, struct breakpoint *breakpoint)
 			break;
 	}
 	if (slot == xtensa->core_config->debug.ibreaks_num) {
-		LOG_WARNING("%s: No free slots to add HW breakpoint!", target_name(target));
+		LOG_DEBUG("%s: No free slots to add HW breakpoint!", target_name(target));
 		return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
 	}
 
@@ -1744,7 +1873,7 @@ int xtensa_breakpoint_remove(struct target *target, struct breakpoint *breakpoin
 			break;
 	}
 	if (slot == xtensa->core_config->debug.ibreaks_num) {
-		LOG_WARNING("%s: HW breakpoint not found!", target_name(target));
+		LOG_DEBUG("%s: HW breakpoint not found!", target_name(target));
 		return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
 	}
 	xtensa->hw_brps[slot] = NULL;
@@ -1836,7 +1965,8 @@ int xtensa_watchpoint_remove(struct target *target, struct watchpoint *watchpoin
 			break;
 	}
 	if (slot == xtensa->core_config->debug.dbreaks_num) {
-		LOG_WARNING("%s: HW watchpoint not found!", target_name(target));
+		LOG_WARNING("%s: HW watchpoint " TARGET_ADDR_FMT " not found!", target_name(
+				target), watchpoint->address);
 		return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
 	}
 	xtensa_reg_set(target, XT_REG_IDX_DBREAKC0 + slot, 0);
@@ -1996,7 +2126,7 @@ int xtensa_wait_algorithm(struct target *target,
 				xtensa->core_cache->reg_list[i].name,
 				regvalue,
 				algorithm_info->context[i]);
-			xtensa_reg_set(target, XT_REG_IDX_DEBUGCAUSE, 0);
+			xtensa_reg_set(target, XT_REG_IDX_DEBUGCAUSE, algorithm_info->context[i]);
 			xtensa->core_cache->reg_list[XT_REG_IDX_DEBUGCAUSE].dirty = 0;
 			xtensa->core_cache->reg_list[XT_REG_IDX_DEBUGCAUSE].valid = 0;
 			continue;
@@ -2043,7 +2173,7 @@ int xtensa_run_algorithm(struct target *target,
 	return retval;
 }
 
-void xtensa_build_reg_cache(struct target *target)
+static void xtensa_build_reg_cache(struct target *target)
 {
 	struct xtensa *xtensa = target_to_xtensa(target);
 	struct reg_cache **cache_p = register_get_last_cache_p(&target->reg_cache);
@@ -2092,15 +2222,33 @@ void xtensa_build_reg_cache(struct target *target)
 	(*cache_p) = reg_cache;
 }
 
+int xtensa_handle_target_event(struct target *target, enum target_event event,
+	void *priv)
+{
+	int res = ERROR_OK;
+	struct xtensa *xtensa = target_to_xtensa(target);
+
+	if (target != priv)
+		return ERROR_OK;
+
+	LOG_DEBUG("%d", event);
+	switch (event) {
+		case TARGET_EVENT_EXAMINE_END:
+			res = xtensa_smpbreak_write(xtensa, xtensa->smp_break);
+			break;
+		default:
+			break;
+	}
+	return res;
+}
+
 int xtensa_init_arch_info(struct target *target, struct xtensa *xtensa,
 	const struct xtensa_config *xtensa_config,
-	const struct xtensa_debug_module_config *dm_cfg,
-	const struct xtensa_chip_ops *chip_ops)
+	const struct xtensa_debug_module_config *dm_cfg)
 {
 	target->arch_info = xtensa;
 	xtensa->target = target;
 	xtensa->core_config = xtensa_config;
-	xtensa->chip_ops = chip_ops;
 	xtensa->stepping_isr_mode = XT_STEPPING_ISR_ON;
 
 	if (!xtensa->core_config->exc.enabled || !xtensa->core_config->irq.enabled ||
@@ -2135,6 +2283,37 @@ int xtensa_init_arch_info(struct target *target, struct xtensa *xtensa,
 	return ERROR_OK;
 }
 
+void xtensa_set_permissive_mode(struct target *target, bool state)
+{
+	target_to_xtensa(target)->permissive_mode = state;
+}
+
+int xtensa_target_init(struct command_context *cmd_ctx, struct target *target)
+{
+	xtensa_build_reg_cache(target);
+	return ERROR_OK;
+}
+
+void xtensa_target_deinit(struct target *target)
+{
+	struct xtensa *xtensa = target_to_xtensa(target);
+
+	LOG_DEBUG("start");
+	if (!xtensa->core_cache)
+		return;
+	int ret = xtensa_queue_dbg_reg_write(xtensa, NARADR_DCRCLR, OCDDCR_ENABLEOCD);
+	if (ret != ERROR_OK) {
+		LOG_ERROR("Failed to queue OCDDCR_ENABLEOCD clear operation!");
+		return;
+	}
+	xtensa_dm_queue_tdi_idle(&xtensa->dbg_mod);
+	ret = jtag_execute_queue();
+	if (ret != ERROR_OK) {
+		LOG_ERROR("Failed to clear OCDDCR_ENABLEOCD!");
+		return;
+	}
+}
+
 COMMAND_HELPER(xtensa_cmd_permissive_mode_do, struct xtensa *xtensa)
 {
 	if (CMD_ARGC != 1)
@@ -2165,20 +2344,20 @@ COMMAND_HELPER(xtensa_cmd_perfmon_enable_do, struct xtensa *xtensa)
 		return ERROR_COMMAND_SYNTAX_ERROR;
 	unsigned counter_id = strtoul(CMD_ARGV[0], NULL, 0);
 	if (counter_id >= XTENSA_MAX_PERF_COUNTERS) {
-		command_print(CMD_CTX, "counter_id should be < %d", XTENSA_MAX_PERF_COUNTERS);
+		command_print(CMD, "counter_id should be < %d", XTENSA_MAX_PERF_COUNTERS);
 		return ERROR_COMMAND_SYNTAX_ERROR;
 	}
 
 	config.select = strtoul(CMD_ARGV[1], NULL, 0);
 	if (config.select > XTENSA_MAX_PERF_SELECT) {
-		command_print(CMD_CTX, "select should be < %d", XTENSA_MAX_PERF_SELECT);
+		command_print(CMD, "select should be < %d", XTENSA_MAX_PERF_SELECT);
 		return ERROR_COMMAND_SYNTAX_ERROR;
 	}
 
 	if (CMD_ARGC >= 3) {
 		config.mask = strtoul(CMD_ARGV[2], NULL, 0);
 		if (config.mask > XTENSA_MAX_PERF_MASK) {
-			command_print(CMD_CTX, "mask should be < %d", XTENSA_MAX_PERF_MASK);
+			command_print(CMD, "mask should be < %d", XTENSA_MAX_PERF_MASK);
 			return ERROR_COMMAND_SYNTAX_ERROR;
 		}
 	}
@@ -2186,7 +2365,7 @@ COMMAND_HELPER(xtensa_cmd_perfmon_enable_do, struct xtensa *xtensa)
 	if (CMD_ARGC >= 4) {
 		config.kernelcnt = strtoul(CMD_ARGV[3], NULL, 0);
 		if (config.kernelcnt > 1) {
-			command_print(CMD_CTX, "kernelcnt should be 0 or 1");
+			command_print(CMD, "kernelcnt should be 0 or 1");
 			return ERROR_COMMAND_SYNTAX_ERROR;
 		}
 	}
@@ -2194,7 +2373,7 @@ COMMAND_HELPER(xtensa_cmd_perfmon_enable_do, struct xtensa *xtensa)
 	if (CMD_ARGC >= 5) {
 		config.tracelevel = strtoul(CMD_ARGV[4], NULL, 0);
 		if (config.tracelevel > 7) {
-			command_print(CMD_CTX, "tracelevel should be <=7");
+			command_print(CMD, "tracelevel should be <=7");
 			return ERROR_COMMAND_SYNTAX_ERROR;
 		}
 	}
@@ -2265,7 +2444,7 @@ COMMAND_HELPER(xtensa_cmd_mask_interrupts_do, struct xtensa *xtensa)
 			st = "ON";
 		else
 			st = "UNKNOWN";
-		command_print(CMD_CTX, "Current ISR step mode: %s", st);
+		command_print(CMD, "Current ISR step mode: %s", st);
 		return ERROR_OK;
 	}
 	/* Masking is ON -> interrupts during stepping are OFF, and vice versa */
@@ -2275,7 +2454,7 @@ COMMAND_HELPER(xtensa_cmd_mask_interrupts_do, struct xtensa *xtensa)
 		state = XT_STEPPING_ISR_OFF;
 
 	if (state == -1) {
-		command_print(CMD_CTX, "Argument unknown. Please pick one of ON, OFF");
+		command_print(CMD, "Argument unknown. Please pick one of ON, OFF");
 		return ERROR_FAIL;
 	}
 	xtensa->stepping_isr_mode = state;
@@ -2283,6 +2462,59 @@ COMMAND_HELPER(xtensa_cmd_mask_interrupts_do, struct xtensa *xtensa)
 }
 
 COMMAND_HANDLER(xtensa_cmd_mask_interrupts)
+{
+	return CALL_COMMAND_HANDLER(xtensa_cmd_mask_interrupts_do,
+		target_to_xtensa(get_current_target(CMD_CTX)));
+}
+
+COMMAND_HELPER(xtensa_cmd_smpbreak_do, struct target *target)
+{
+	int res = ERROR_OK;
+	uint32_t val = 0;
+
+	if (CMD_ARGC >= 1) {
+		for (uint32_t i = 0; i < CMD_ARGC; i++) {
+			if (!strcasecmp(CMD_ARGV[0], "none"))
+				val = 0;
+			else if (!strcasecmp(CMD_ARGV[i], "BreakIn"))
+				val |= OCDDCR_BREAKINEN;
+			else if (!strcasecmp(CMD_ARGV[i], "BreakOut"))
+				val |= OCDDCR_BREAKOUTEN;
+			else if (!strcasecmp(CMD_ARGV[i], "RunStallIn"))
+				val |= OCDDCR_RUNSTALLINEN;
+			else if (!strcasecmp(CMD_ARGV[i], "DebugModeOut"))
+				val |= OCDDCR_DEBUGMODEOUTEN;
+			else if (!strcasecmp(CMD_ARGV[i], "BreakInOut"))
+				val |= OCDDCR_BREAKINEN|OCDDCR_BREAKOUTEN;
+			else if (!strcasecmp(CMD_ARGV[i], "RunStall"))
+				val |= OCDDCR_RUNSTALLINEN|OCDDCR_DEBUGMODEOUTEN;
+			else {
+				command_print(CMD, "Unknown arg %s", CMD_ARGV[i]);
+				command_print(
+					CMD,
+					"use either BreakInOut, None or RunStall as arguments, or any combination of BreakIn, BreakOut, RunStallIn and DebugModeOut.");
+				return ERROR_OK;
+			}
+		}
+		res = xtensa_smpbreak_set(target, val);
+		if (res != ERROR_OK)
+			command_print(CMD, "Failed to set smpbreak config %d", res);
+	} else {
+		res = xtensa_smpbreak_get(target, &val);
+		if (res == ERROR_OK) {
+			command_print(CMD, "Current bits set:%s%s%s%s",
+				(val & OCDDCR_BREAKINEN) ? " BreakIn" : "",
+				(val & OCDDCR_BREAKOUTEN) ? " BreakOut" : "",
+				(val & OCDDCR_RUNSTALLINEN) ? " RunStallIn" : "",
+				(val & OCDDCR_DEBUGMODEOUTEN) ? " DebugModeOut" : ""
+				);
+		} else
+			command_print(CMD, "Failed to get smpbreak config %d", res);
+	}
+	return res;
+}
+
+COMMAND_HANDLER(xtensa_cmd_smpbreak)
 {
 	return CALL_COMMAND_HANDLER(xtensa_cmd_mask_interrupts_do,
 		target_to_xtensa(get_current_target(CMD_CTX)));
@@ -2316,7 +2548,7 @@ COMMAND_HELPER(xtensa_cmd_tracestart_do, struct xtensa *xtensa)
 		else if (!strcasecmp(CMD_ARGV[i], "words"))
 			cfg.after_is_words = 1;
 		else {
-			command_print(CMD_CTX, "Did not understand %s", CMD_ARGV[i]);
+			command_print(CMD, "Did not understand %s", CMD_ARGV[i]);
 			return ERROR_FAIL;
 		}
 	}
@@ -2332,7 +2564,7 @@ COMMAND_HELPER(xtensa_cmd_tracestart_do, struct xtensa *xtensa)
 		return res;
 
 	xtensa->trace_active = true;
-	command_print(CMD_CTX, "Trace started.");
+	command_print(CMD, "Trace started.");
 	return ERROR_OK;
 }
 
@@ -2351,7 +2583,7 @@ COMMAND_HELPER(xtensa_cmd_tracestop_do, struct xtensa *xtensa)
 		return res;
 
 	if (!(trace_status.stat & TRAXSTAT_TRACT)) {
-		command_print(CMD_CTX, "No trace is currently active.");
+		command_print(CMD, "No trace is currently active.");
 		return ERROR_FAIL;
 	}
 
@@ -2360,7 +2592,7 @@ COMMAND_HELPER(xtensa_cmd_tracestop_do, struct xtensa *xtensa)
 		return res;
 
 	xtensa->trace_active = false;
-	command_print(CMD_CTX, "Trace stop triggered.");
+	command_print(CMD, "Trace stop triggered.");
 	return ERROR_OK;
 }
 
@@ -2381,7 +2613,7 @@ COMMAND_HELPER(xtensa_cmd_tracedump_do, struct xtensa *xtensa, const char *fname
 		return res;
 
 	if (trace_status.stat & TRAXSTAT_TRACT) {
-		command_print(CMD_CTX, "Tracing is still active. Please stop it first.");
+		command_print(CMD, "Tracing is still active. Please stop it first.");
 		return ERROR_FAIL;
 	}
 
@@ -2390,7 +2622,7 @@ COMMAND_HELPER(xtensa_cmd_tracedump_do, struct xtensa *xtensa, const char *fname
 		return res;
 
 	if (!(trace_config.ctrl & TRAXCTRL_TREN)) {
-		command_print(CMD_CTX, "No active trace found; nothing to dump.");
+		command_print(CMD, "No active trace found; nothing to dump.");
 		return ERROR_FAIL;
 	}
 
@@ -2417,7 +2649,7 @@ COMMAND_HELPER(xtensa_cmd_tracedump_do, struct xtensa *xtensa, const char *fname
 
 	uint8_t *tracemem = malloc(memsz*4);
 	if (tracemem == NULL) {
-		command_print(CMD_CTX, "Failed to alloc memory for trace data!");
+		command_print(CMD, "Failed to alloc memory for trace data!");
 		return ERROR_FAIL;
 	}
 	res = xtensa_dm_trace_data_read(&xtensa->dbg_mod, tracemem, memsz*4);
@@ -2427,13 +2659,13 @@ COMMAND_HELPER(xtensa_cmd_tracedump_do, struct xtensa *xtensa, const char *fname
 	int f = open(fname, O_WRONLY|O_CREAT|O_TRUNC, 0666);
 	if (f <= 0) {
 		free(tracemem);
-		command_print(CMD_CTX, "Unable to open file %s", fname);
+		command_print(CMD, "Unable to open file %s", fname);
 		return ERROR_FAIL;
 	}
 	if (write(f, tracemem, memsz*4) != (int)memsz*4)
-		command_print(CMD_CTX, "Unable to write to file %s", fname);
+		command_print(CMD, "Unable to write to file %s", fname);
 	else
-		command_print(CMD_CTX, "Written %d bytes of trace data to %s", memsz*4, fname);
+		command_print(CMD, "Written %d bytes of trace data to %s", memsz*4, fname);
 	close(f);
 
 	bool is_all_zeroes = true;
@@ -2445,7 +2677,7 @@ COMMAND_HELPER(xtensa_cmd_tracedump_do, struct xtensa *xtensa, const char *fname
 	}
 	if (is_all_zeroes)
 		command_print(
-			CMD_CTX,
+			CMD,
 			"WARNING: File written is all zeroes. Are you sure you enabled trace memory?");
 
 	return ERROR_OK;
@@ -2454,7 +2686,7 @@ COMMAND_HELPER(xtensa_cmd_tracedump_do, struct xtensa *xtensa, const char *fname
 COMMAND_HANDLER(xtensa_cmd_tracedump)
 {
 	if (CMD_ARGC < 1) {
-		command_print(CMD_CTX, "Need filename to dump to as output!");
+		command_print(CMD, "Need filename to dump to as output!");
 		return ERROR_FAIL;
 	}
 
@@ -2467,7 +2699,7 @@ const struct command_registration xtensa_command_handlers[] = {
 		.name = "set_permissive",
 		.handler = xtensa_cmd_permissive_mode,
 		.mode = COMMAND_ANY,
-		.help = "When set to 1, enable ESP108 permissive mode (less client-side checks)",
+		.help = "When set to 1, enable Xtensa permissive mode (less client-side checks)",
 		.usage = "[0|1]",
 	},
 	{
@@ -2476,6 +2708,14 @@ const struct command_registration xtensa_command_handlers[] = {
 		.mode = COMMAND_ANY,
 		.help = "mask Xtensa interrupts at step",
 		.usage = "['on'|'off']",
+	},
+	{
+		.name = "smpbreak",
+		.handler = xtensa_cmd_smpbreak,
+		.mode = COMMAND_ANY,
+		.help = "Set the way the CPU chains OCD breaks",
+		.usage =
+			"[none|breakinout|runstall] | [BreakIn] [BreakOut] [RunStallIn] [DebugModeOut]",
 	},
 	{
 		.name = "perfmon_enable",

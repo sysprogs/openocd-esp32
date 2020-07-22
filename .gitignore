@@ -99,6 +99,12 @@ TAGS
 
 # ctags tag files
 tags
+
+#temp file
+*.bak
+*.old
+temp/**
+
 /VisualGDB
 /CodeDB
 /VisualGDBCache

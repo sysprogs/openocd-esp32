@@ -20,6 +20,7 @@
 #define OPENOCD_RTOS_RTOS_H
 
 #include "server/server.h"
+#include "target/target.h"
 #include <jim-nvp.h>
 
 typedef int64_t threadid_t;
@@ -49,22 +50,21 @@ struct rtos {
 	symbol_table_elem_t *symbols;
 	struct target *target;
 	/*  add a context variable instead of global variable */
+	/* The thread currently selected by gdb. */
 	int64_t current_threadid;
+	/* The currently selected thread according to the target. */
 	threadid_t current_thread;
 	struct thread_detail *thread_details;
 	int thread_count;
 	int (*gdb_thread_packet)(struct connection *connection, char const *packet, int packet_size);
 	int (*gdb_target_for_threadid)(struct connection *connection, int64_t thread_id, struct target **p_target);
 	void *rtos_specific_params;
-	void *rtos_specific_data;
-	/*Threads that are currently running on cores of the target*/
-	int32_t* core_running_threads;
 };
 
 struct rtos_reg {
 	uint32_t number;
 	uint32_t size;
-	uint8_t value[8];
+	uint8_t value[16];
 };
 
 struct rtos_type {
@@ -73,13 +73,16 @@ struct rtos_type {
 	int (*create)(struct target *target);
 	int (*smp_init)(struct target *target);
 	int (*update_threads)(struct rtos *rtos);
+	/** Return a list of general registers, with their values filled out. */
 	int (*get_thread_reg_list)(struct rtos *rtos, int64_t thread_id,
 			struct rtos_reg **reg_list, int *num_regs);
+	int (*get_thread_reg)(struct rtos *rtos, int64_t thread_id,
+			uint32_t reg_num, struct rtos_reg *reg);
 	int (*get_symbol_list_to_lookup)(symbol_table_elem_t *symbol_list[]);
 	int (*clean)(struct target *target);
 	char * (*ps_command)(struct target *target);
+	int (*set_reg)(struct rtos *rtos, uint32_t reg_num, uint8_t *reg_value);
 	int (*post_reset_cleanup)(struct target *target);
-	void(*set_current_thread)(struct rtos *rtos, int32_t threadid);
 };
 
 struct stack_register_offset {
@@ -114,6 +117,8 @@ struct rtos_register_stacking {
 #define GDB_THREAD_PACKET_NOT_CONSUMED (-40)
 
 int rtos_create(Jim_GetOptInfo *goi, struct target *target);
+int rtos_set_reg(struct connection *connection, int reg_num,
+		uint8_t *reg_value);
 int rtos_generic_stack_read(struct target *target,
 		const struct rtos_register_stacking *stacking,
 		int64_t stack_ptr,

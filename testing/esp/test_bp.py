@@ -14,48 +14,7 @@ def get_logger():
 #                         TESTS IMPLEMENTATION                         #
 ########################################################################
 
-class PoiTestsImpl:
-    """ Break/Watchpoint test cases common functions
-    """
-
-
-    def run_to_bp_and_check_basic(self, exp_rsn, func_name):
-        cur_frame = self.run_to_bp(exp_rsn, func_name)
-        frames = self.gdb.get_backtrace()
-        self.assertTrue(len(frames) > 0)
-        self.assertEqual(frames[0]['func'], cur_frame['func'])
-        self.assertEqual(frames[0]['line'], cur_frame['line'])
-        return frames
-
-    def run_to_bp_and_check(self, exp_rsn, func_name, lineno_var_prefs):
-        frames = self.run_to_bp_and_check_basic(exp_rsn, func_name)
-        if IdfVersion.get_current() == IdfVersion.fromstr('latest'):
-            outmost_frame = len(frames) - 2 # -2 because our task function is called by FreeRTOS task wrapper
-        else:
-            outmost_frame = len(frames) - 1
-        # Sometimes GDB does not provide full backtrace. so check this
-        # we can only check line numbers in 'blink_task',
-        # because its code is under control of test framework
-        if outmost_frame == 0 and func_name != 'blink_task':
-            return
-        # outermost frame should be in 'blink_task' function
-        self.assertEqual(frames[outmost_frame]['func'], 'blink_task')
-        self.gdb.select_frame(outmost_frame)
-        # read line number from variable and compare with what GDB provides
-        if len(lineno_var_prefs) == 1:
-            line_num = self.gdb.data_eval_expr('%s_break_ln' % lineno_var_prefs[0])
-            self.assertEqual(frames[outmost_frame]['line'], line_num)
-        else:
-            # for tests which set multiple BPs/WPs and expect hits on both cores
-            # it is hard to predict the order of hits,
-            # so just check that debugger has stopped on one of the locations
-            line_nums = []
-            for p in lineno_var_prefs:
-                line_nums.append(self.gdb.data_eval_expr('%s_break_ln' % p))
-            self.assertTrue(frames[outmost_frame]['line'] in line_nums)
-
-
-class BreakpointTestsImpl(PoiTestsImpl):
+class BreakpointTestsImpl:
     """ Breakpoints test cases which are common for dual and single core modes
     """
 
@@ -74,12 +33,12 @@ class BreakpointTestsImpl(PoiTestsImpl):
         """
         for i in range(3):
             self.gdb.target_reset()
-            rsn = self.gdb.wait_target_state(dbg.Gdb.TARGET_STATE_STOPPED, 5)
+            rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 5)
             self.add_bp('app_main')
             self.resume_exec()
-            rsn = self.gdb.wait_target_state(dbg.Gdb.TARGET_STATE_STOPPED, 5)
+            rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 5)
             self.gdb.delete_bp(self.bpns.pop())
-            self.assertEqual(rsn, dbg.Gdb.TARGET_STOP_REASON_BP)
+            self.assertEqual(rsn, dbg.TARGET_STOP_REASON_BP)
             cur_frame = self.gdb.get_current_frame()
             self.assertEqual(cur_frame['func'], 'app_main')
 
@@ -108,14 +67,14 @@ class BreakpointTestsImpl(PoiTestsImpl):
             self.add_bp(f)
         self.readd_bps()
         # break at gpio_set_direction
-        self.run_to_bp_and_check(dbg.Gdb.TARGET_STOP_REASON_BP, 'gpio_set_direction', ['gpio_set_direction'])
+        self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'gpio_set_direction', ['gpio_set_direction'])
         self.readd_bps()
         for i in range(2):
             # break at gpio_set_level
-            self.run_to_bp_and_check(dbg.Gdb.TARGET_STOP_REASON_BP, 'gpio_set_level', ['gpio_set_level%d' % (i % 2)])
+            self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'gpio_set_level', ['gpio_set_level%d' % (i % 2)])
             self.readd_bps()
             # break at vTaskDelay
-            self.run_to_bp_and_check(dbg.Gdb.TARGET_STOP_REASON_BP, 'vTaskDelay', ['vTaskDelay%d' % (i % 2)])
+            self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'vTaskDelay', ['vTaskDelay%d' % (i % 2)])
             self.readd_bps()
 
     def test_bp_ignore_count(self):
@@ -136,13 +95,13 @@ class BreakpointTestsImpl(PoiTestsImpl):
             else:
                 self.add_bp(f)
         # break at gpio_set_direction
-        self.run_to_bp_and_check(dbg.Gdb.TARGET_STOP_REASON_BP, 'gpio_set_direction', ['gpio_set_direction'])
+        self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'gpio_set_direction', ['gpio_set_direction'])
         for i in range(3):
             # break at gpio_set_level
-            self.run_to_bp_and_check(dbg.Gdb.TARGET_STOP_REASON_BP, 'gpio_set_level', ['gpio_set_level%d' % (i % 2)])
+            self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'gpio_set_level', ['gpio_set_level%d' % (i % 2)])
             if i > 1:
                 # break at vTaskDelay
-                self.run_to_bp_and_check(dbg.Gdb.TARGET_STOP_REASON_BP, 'vTaskDelay', ['vTaskDelay%d' % (i % 2)])
+                self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'vTaskDelay', ['vTaskDelay%d' % (i % 2)])
 
     def test_bp_cond_expr(self):
         """
@@ -162,14 +121,14 @@ class BreakpointTestsImpl(PoiTestsImpl):
             else:
                 self.add_bp(f)
         # break at gpio_set_direction
-        self.run_to_bp_and_check(dbg.Gdb.TARGET_STOP_REASON_BP, 'gpio_set_direction', ['gpio_set_direction'])
+        self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'gpio_set_direction', ['gpio_set_direction'])
         for i in range(6):
             # break at gpio_set_level
-            self.run_to_bp_and_check(dbg.Gdb.TARGET_STOP_REASON_BP, 'gpio_set_level', ['gpio_set_level%d' % (i % 2)])
+            self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'gpio_set_level', ['gpio_set_level%d' % (i % 2)])
             # 'count' var is increased once per two calls to vTaskDelay
             if i == 2 or i == 3:
                 # break at vTaskDelay
-                self.run_to_bp_and_check(dbg.Gdb.TARGET_STOP_REASON_BP, 'vTaskDelay', ['vTaskDelay%d' % (i % 2)])
+                self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'vTaskDelay', ['vTaskDelay%d' % (i % 2)])
 
     def test_bp_and_reconnect(self):
         """
@@ -189,8 +148,8 @@ class BreakpointTestsImpl(PoiTestsImpl):
             self.add_bp(f)
         for i in range(5):
             self.resume_exec()
-            rsn = self.gdb.wait_target_state(dbg.Gdb.TARGET_STATE_STOPPED, 5)
-            self.assertEqual(rsn, dbg.Gdb.TARGET_STOP_REASON_BP)
+            rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 5)
+            self.assertEqual(rsn, dbg.TARGET_STOP_REASON_BP)
             cur_frame = self.gdb.get_current_frame()
             self.assertTrue(cur_frame['func'] in self.bps)
             frames = self.gdb.get_backtrace()
@@ -215,12 +174,12 @@ class BreakpointTestsImpl(PoiTestsImpl):
         for f in self.bps:
             self.add_bp(f)
         for i in range(3):
-            self.run_to_bp_and_check_basic(dbg.Gdb.TARGET_STOP_REASON_BP, 'test_timer_isr')
-            self.run_to_bp_and_check_basic(dbg.Gdb.TARGET_STOP_REASON_BP, 'test_timer_isr_func')
-            self.run_to_bp_and_check_basic(dbg.Gdb.TARGET_STOP_REASON_BP, 'test_timer_isr_ram_func')
+            self.run_to_bp_and_check_basic(dbg.TARGET_STOP_REASON_BP, 'test_timer_isr')
+            self.run_to_bp_and_check_basic(dbg.TARGET_STOP_REASON_BP, 'test_timer_isr_func')
+            self.run_to_bp_and_check_basic(dbg.TARGET_STOP_REASON_BP, 'test_timer_isr_ram_func')
 
 
-class WatchpointTestsImpl(PoiTestsImpl):
+class WatchpointTestsImpl:
     """ Watchpoints test cases which are common for dual and single core modes
     """
 
@@ -242,15 +201,15 @@ class WatchpointTestsImpl(PoiTestsImpl):
         cnt = 0
         for i in range(3):
             # 'count' read
-            self.run_to_bp_and_check(dbg.Gdb.TARGET_STOP_REASON_SIGTRAP, 'blink_task', ['s_count10'])
+            self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_SIGTRAP, 'blink_task', ['s_count10'])
             var_val = int(self.gdb.data_eval_expr('s_count1'))
             self.assertEqual(var_val, cnt)
             # 'count' read
-            self.run_to_bp_and_check(dbg.Gdb.TARGET_STOP_REASON_SIGTRAP, 'blink_task', ['s_count11'])
+            self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_SIGTRAP, 'blink_task', ['s_count11'])
             var_val = int(self.gdb.data_eval_expr('s_count1'))
             self.assertEqual(var_val, cnt)
             # 'count' write
-            self.run_to_bp_and_check(dbg.Gdb.TARGET_STOP_REASON_SIGTRAP, 'blink_task', ['s_count11'])
+            self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_SIGTRAP, 'blink_task', ['s_count11'])
             var_val = int(self.gdb.data_eval_expr('s_count1'))
             self.assertEqual(var_val, cnt)
             cnt += 1
@@ -276,12 +235,12 @@ class WatchpointTestsImpl(PoiTestsImpl):
             self.add_wp(e, 'w')
         for i in range(5):
             if (i % 2) == 0:
-                self.run_to_bp_and_check(dbg.Gdb.TARGET_STOP_REASON_SIGTRAP, 'blink_task', ['s_count11'])
+                self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_SIGTRAP, 'blink_task', ['s_count11'])
                 var_val = int(self.gdb.data_eval_expr('s_count1'))
                 self.assertEqual(var_val, cnt)
                 cnt += 1
             else:
-                self.run_to_bp_and_check(dbg.Gdb.TARGET_STOP_REASON_SIGTRAP, 'blink_task', ['s_count2'])
+                self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_SIGTRAP, 'blink_task', ['s_count2'])
                 var_val = int(self.gdb.data_eval_expr('s_count2'))
                 self.assertEqual(var_val, cnt2)
                 cnt2 -= 1
@@ -318,8 +277,8 @@ class DebuggerBreakpointTestsDual(DebuggerGenericTestAppTestsDual, BreakpointTes
             self.add_bp(f)
         for i in range(30):
             self.resume_exec()
-            rsn = self.gdb.wait_target_state(dbg.Gdb.TARGET_STATE_STOPPED, 10)
-            self.assertEqual(rsn, dbg.Gdb.TARGET_STOP_REASON_BP)
+            rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 10)
+            self.assertEqual(rsn, dbg.TARGET_STOP_REASON_BP)
             cur_frame = self.gdb.get_current_frame()
             self.assertTrue(cur_frame['func'] in self.bps)
             f_idx = self.bps.index(cur_frame['func'])
@@ -362,7 +321,7 @@ class DebuggerWatchpointTestsDual(DebuggerGenericTestAppTestsDual, WatchpointTes
         for e in self.wps:
             self.add_wp(e, 'w')
         for i in range(10):
-            self.run_to_bp_and_check(dbg.Gdb.TARGET_STOP_REASON_SIGTRAP, 'blink_task', ['s_count11', 's_count2'])
+            self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_SIGTRAP, 'blink_task', ['s_count11', 's_count2'])
 
 
 class DebuggerWatchpointTestsSingle(DebuggerGenericTestAppTestsSingle, WatchpointTestsImpl):

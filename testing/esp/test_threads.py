@@ -37,7 +37,7 @@ class DebuggerThreadsTestsImpl:
                     return 0
                 self.gdb.set_thread(int(ti['id'],0))
                 frames = self.gdb.get_backtrace()
-                if IdfVersion.get_current() == IdfVersion.fromstr('latest'):
+                if testee_info.idf_ver == IdfVersion.fromstr('latest'):
                     self.assertEqual(len(frames), num+2) # task entry + vPortTaskWrapper
                 else:
                     self.assertEqual(len(frames), num+1) # task entry
@@ -66,7 +66,7 @@ class DebuggerThreadsTestsImpl:
 
         for i in range(10):
             self.resume_exec()
-            self.gdb.wait_target_state(dbg.Gdb.TARGET_STATE_STOPPED, 5)
+            self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 5)
             _,threads_info = self.gdb.get_thread_info() # get info for all threads
             s = len(threads_info)
             get_logger().debug('Loop = %d', i)

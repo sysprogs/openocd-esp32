@@ -33,10 +33,12 @@ extern struct rtos_type ThreadX_rtos;
 extern struct rtos_type eCos_rtos;
 extern struct rtos_type Linux_os;
 extern struct rtos_type ChibiOS_rtos;
+extern struct rtos_type chromium_ec_rtos;
 extern struct rtos_type embKernel_rtos;
 extern struct rtos_type mqx_rtos;
 extern struct rtos_type uCOS_III_rtos;
 extern struct rtos_type nuttx_rtos;
+extern struct rtos_type hwthread_rtos;
 
 static struct rtos_type *rtos_types[] = {
 	&ThreadX_rtos,
@@ -44,10 +46,12 @@ static struct rtos_type *rtos_types[] = {
 	&eCos_rtos,
 	&Linux_os,
 	&ChibiOS_rtos,
+	&chromium_ec_rtos,
 	&embKernel_rtos,
 	&mqx_rtos,
 	&uCOS_III_rtos,
 	&nuttx_rtos,
+	&hwthread_rtos,
 	NULL
 };
 
@@ -65,6 +69,8 @@ static int rtos_target_for_threadid(struct connection *connection, int64_t threa
 	struct target *curr = get_target_from_connection(connection);
 	if (t)
 		*t = curr;
+
+	LOG_DEBUG("%s, core %d for thread 0x%x", curr->type->name, curr->coreid, (int)threadid);
 
 	return ERROR_OK;
 }
@@ -220,7 +226,7 @@ int rtos_qsymbol(struct connection *connection, char const *packet, int packet_s
 	int rtos_detected = 0;
 	uint64_t addr = 0;
 	size_t reply_len;
-	char reply[GDB_BUFFER_SIZE], cur_sym[GDB_BUFFER_SIZE / 2] = "";
+	char reply[GDB_BUFFER_SIZE + 1], cur_sym[GDB_BUFFER_SIZE / 2 + 1] = ""; /* Extra byte for nul-termination */
 	symbol_table_elem_t *next_sym = NULL;
 	struct target *target = get_target_from_connection(connection);
 	struct rtos *os = target->rtos;
@@ -428,9 +434,6 @@ int rtos_thread_packet(struct connection *connection, char const *packet, int pa
 				target->rtos->current_threadid = target->rtos->current_thread;
 			else
 				target->rtos->current_threadid = threadid;
-			if (target->rtos->type->set_current_thread != NULL) {
-				target->rtos->type->set_current_thread(target->rtos, target->rtos->current_threadid);
-			}
 		}
 		gdb_put_packet(connection, "OK", 2);
 		return ERROR_OK;
@@ -462,6 +465,7 @@ static int rtos_put_gdb_reg_list(struct connection *connection,
 	return ERROR_OK;
 }
 
+/** Look through all registers to find this register. */
 int rtos_get_gdb_reg(struct connection *connection, int reg_num)
 {
 	struct target *target = get_target_from_connection(connection);
@@ -473,19 +477,31 @@ int rtos_get_gdb_reg(struct connection *connection, int reg_num)
 		struct rtos_reg *reg_list;
 		int num_regs;
 
-		LOG_DEBUG("RTOS: getting register %d for thread 0x%" PRIx64
-				  ", target->rtos->current_thread=0x%" PRIx64 "\r\n",
+		LOG_DEBUG("getting register %d for thread 0x%" PRIx64
+				  ", target->rtos->current_thread=0x%" PRIx64,
 										reg_num,
 										current_threadid,
 										target->rtos->current_thread);
 
-		int retval = target->rtos->type->get_thread_reg_list(target->rtos,
-				current_threadid,
-				&reg_list,
-				&num_regs);
-		if (retval != ERROR_OK) {
-			LOG_ERROR("RTOS: failed to get register list");
-			return retval;
+		int retval;
+		if (target->rtos->type->get_thread_reg) {
+			reg_list = calloc(1, sizeof(*reg_list));
+			num_regs = 1;
+			retval = target->rtos->type->get_thread_reg(target->rtos,
+					current_threadid, reg_num, &reg_list[0]);
+			if (retval != ERROR_OK) {
+				LOG_ERROR("RTOS: failed to get register %d", reg_num);
+				return retval;
+			}
+		} else {
+			retval = target->rtos->type->get_thread_reg_list(target->rtos,
+					current_threadid,
+					&reg_list,
+					&num_regs);
+			if (retval != ERROR_OK) {
+				LOG_ERROR("RTOS: failed to get register list");
+				return retval;
+			}
 		}
 
 		for (int i = 0; i < num_regs; ++i) {
@@ -501,6 +517,7 @@ int rtos_get_gdb_reg(struct connection *connection, int reg_num)
 	return ERROR_FAIL;
 }
 
+/** Return a list of general registers. */
 int rtos_get_gdb_reg_list(struct connection *connection)
 {
 	struct target *target = get_target_from_connection(connection);
@@ -512,13 +529,6 @@ int rtos_get_gdb_reg_list(struct connection *connection)
 		struct rtos_reg *reg_list;
 		int num_regs;
 
-		// registers for threads currently running on CPUs are not on task's stack and
-		// should retrieved from reg caches via target_get_gdb_reg_list, so return error here
-		for (size_t i = 0; i < target->type->get_cores_count(target); i++)	{
-			if (((int)current_threadid == target->rtos->core_running_threads[i])) {
-				return ERROR_FAIL;
-			}
-		}
 		LOG_DEBUG("RTOS: getting register list for thread 0x%" PRIx64
 				  ", target->rtos->current_thread=0x%" PRIx64 "\r\n",
 										current_threadid,
@@ -541,6 +551,19 @@ int rtos_get_gdb_reg_list(struct connection *connection)
 	return ERROR_FAIL;
 }
 
+int rtos_set_reg(struct connection *connection, int reg_num,
+		uint8_t *reg_value)
+{
+	struct target *target = get_target_from_connection(connection);
+	int64_t current_threadid = target->rtos->current_threadid;
+	if ((target->rtos != NULL) &&
+			(target->rtos->type->set_reg != NULL) &&
+			(current_threadid != -1) &&
+			(current_threadid != 0)) {
+		return target->rtos->type->set_reg(target->rtos, reg_num, reg_value);
+	}
+	return ERROR_FAIL;
+}
 
 int rtos_generic_stack_read(struct target *target,
 	const struct rtos_register_stacking *stacking,
@@ -576,7 +599,7 @@ int rtos_generic_stack_read(struct target *target,
 
 #if 0
 		LOG_OUTPUT("Stack Data :");
-		for (i = 0; i < stacking->stack_registers_size; i++)
+		for (int i = 0; i < stacking->stack_registers_size; i++)
 			LOG_OUTPUT("%02X", stack_data[i]);
 		LOG_OUTPUT("\r\n");
 #endif

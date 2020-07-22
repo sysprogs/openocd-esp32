@@ -113,6 +113,11 @@ struct esp_xtensa_flash_bp_op_state {
 static int esp_xtensa_flasher_image_init(struct xtensa_algo_image *flasher_image,
 	const struct esp_xtensa_flasher_stub_config *stub_cfg)
 {
+	if (!stub_cfg) {
+		LOG_ERROR("Invalid stub!");
+		return ERROR_FAIL;
+	}
+
 	flasher_image->bss_size = stub_cfg->bss_sz;
 	memset(&flasher_image->image, 0, sizeof(flasher_image->image));
 	int ret = image_open(&flasher_image->image, NULL, "build");
@@ -149,19 +154,17 @@ int esp_xtensa_flash_init(struct esp_xtensa_flash_bank *esp_xtensa_info, uint32_
 		struct xtensa_algo_image *image, uint32_t num_args, ...),
 	bool (*is_irom_address)(target_addr_t addr),
 	bool (*is_drom_address)(target_addr_t addr),
-	const struct esp_xtensa_flasher_stub_config *stub_cfg)
+	const struct esp_xtensa_flasher_stub_config *(*get_stub)(struct flash_bank *bank))
 {
 
 	esp_xtensa_info->probed = 0;
 	esp_xtensa_info->sec_sz = sec_sz;
+	esp_xtensa_info->get_stub = get_stub;
 	esp_xtensa_info->run_func_image = run_func_image;
 	esp_xtensa_info->is_irom_address = is_irom_address;
 	esp_xtensa_info->is_drom_address = is_drom_address;
 	esp_xtensa_info->hw_flash_base = 0;
 	esp_xtensa_info->appimage_flash_base = (uint32_t)-1;
-	int ret = esp_xtensa_flasher_image_init(&esp_xtensa_info->flasher_image, stub_cfg);
-	if (ret != ERROR_OK)
-		return ret;
 	return ERROR_OK;
 }
 
@@ -179,11 +182,16 @@ int esp_xtensa_blank_check(struct flash_bank *bank)
 {
 	struct esp_xtensa_flash_bank *esp_xtensa_info = bank->driver_priv;
 	struct xtensa_algo_run_data run;
+	struct xtensa_algo_image flasher_image;
 
 	if (bank->target->state != TARGET_HALTED) {
 		LOG_ERROR("Target not halted!");
 		return ERROR_TARGET_NOT_HALTED;
 	}
+
+	int ret = esp_xtensa_flasher_image_init(&flasher_image, esp_xtensa_info->get_stub(bank));
+	if (ret != ERROR_OK)
+		return ret;
 
 	memset(&run, 0, sizeof(run));
 	run.stack_size = 1300;
@@ -192,9 +200,9 @@ int esp_xtensa_blank_check(struct flash_bank *bank)
 	run.mem_args.params = &mp;
 	run.mem_args.count = 1;
 
-	int ret = esp_xtensa_info->run_func_image(bank->target,
+	ret = esp_xtensa_info->run_func_image(bank->target,
 		&run,
-		&esp_xtensa_info->flasher_image,
+		&flasher_image,
 		4,
 		ESP_XTENSA_STUB_CMD_FLASH_ERASE_CHECK /*cmd*/,
 		esp_xtensa_info->hw_flash_base/esp_xtensa_info->sec_sz /*start*/,
@@ -221,12 +229,17 @@ static uint32_t esp_xtensa_get_size(struct flash_bank *bank)
 	struct esp_xtensa_flash_bank *esp_xtensa_info = bank->driver_priv;
 	uint32_t size = 0;
 	struct xtensa_algo_run_data run;
+	struct xtensa_algo_image flasher_image;
+
+	int ret = esp_xtensa_flasher_image_init(&flasher_image, esp_xtensa_info->get_stub(bank));
+	if (ret != ERROR_OK)
+		return ret;
 
 	memset(&run, 0, sizeof(run));
 	run.stack_size = 1024;
-	int ret = esp_xtensa_info->run_func_image(bank->target,
+	ret = esp_xtensa_info->run_func_image(bank->target,
 		&run,
-		&esp_xtensa_info->flasher_image,
+		&flasher_image,
 		1,
 		ESP_XTENSA_STUB_CMD_FLASH_SIZE);
 	if (ret != ERROR_OK) {
@@ -240,12 +253,17 @@ static uint32_t esp_xtensa_get_size(struct flash_bank *bank)
 	return size;
 }
 
-static int esp_xtensa_get_mappings(struct target *target,
+static int esp_xtensa_get_mappings(struct flash_bank *bank,
 	struct esp_xtensa_flash_bank *esp_xtensa_info,
 	struct esp_xtensa_flash_mapping *flash_map,
 	uint32_t appimage_flash_base)
 {
 	struct xtensa_algo_run_data run;
+	struct xtensa_algo_image flasher_image;
+
+	int ret = esp_xtensa_flasher_image_init(&flasher_image, esp_xtensa_info->get_stub(bank));
+	if (ret != ERROR_OK)
+		return ret;
 
 	memset(&run, 0, sizeof(run));
 	run.stack_size = 1300;
@@ -258,9 +276,9 @@ static int esp_xtensa_get_mappings(struct target *target,
 	run.mem_args.params = &mp;
 	run.mem_args.count = 1;
 
-	int ret = esp_xtensa_info->run_func_image(target,
+	ret = esp_xtensa_info->run_func_image(bank->target,
 		&run,
-		&esp_xtensa_info->flasher_image,
+		&flasher_image,
 		3 /*args num*/,
 		ESP_XTENSA_STUB_CMD_FLASH_MAP_GET /*cmd*/,
 		appimage_flash_base,
@@ -292,6 +310,7 @@ int esp_xtensa_erase(struct flash_bank *bank, int first, int last)
 {
 	struct esp_xtensa_flash_bank *esp_xtensa_info = bank->driver_priv;
 	struct xtensa_algo_run_data run;
+	struct xtensa_algo_image flasher_image;
 
 	if (bank->target->state != TARGET_HALTED) {
 		LOG_ERROR("Target not halted");
@@ -304,12 +323,16 @@ int esp_xtensa_erase(struct flash_bank *bank, int first, int last)
 		return ERROR_FAIL;
 	}
 
+	int ret = esp_xtensa_flasher_image_init(&flasher_image, esp_xtensa_info->get_stub(bank));
+	if (ret != ERROR_OK)
+		return ret;
+
 	memset(&run, 0, sizeof(run));
 	run.stack_size = 1024;
 	run.tmo = ESP_XTENSA_ERASE_TMO;
-	int ret = esp_xtensa_info->run_func_image(bank->target,
+	ret = esp_xtensa_info->run_func_image(bank->target,
 		&run,
-		&esp_xtensa_info->flasher_image,
+		&flasher_image,
 		3,
 		ESP_XTENSA_STUB_CMD_FLASH_ERASE,
 		/* cmd */
@@ -504,6 +527,7 @@ int esp_xtensa_write(struct flash_bank *bank, const uint8_t *buffer,
 	struct esp_xtensa_flash_bank *esp_xtensa_info = bank->driver_priv;
 	struct xtensa_algo_run_data run;
 	struct esp_xtensa_write_state wr_state;
+	struct xtensa_algo_image flasher_image;
 
 	if (esp_xtensa_info->hw_flash_base + offset < ESP_XTENSA_FLASH_MIN_OFFSET) {
 		LOG_ERROR("Invalid offset!");
@@ -518,6 +542,10 @@ int esp_xtensa_write(struct flash_bank *bank, const uint8_t *buffer,
 		return ERROR_TARGET_NOT_HALTED;
 	}
 
+	int ret = esp_xtensa_flasher_image_init(&flasher_image, esp_xtensa_info->get_stub(bank));
+	if (ret != ERROR_OK)
+		return ret;
+
 	memset(&run, 0, sizeof(run));
 	run.stack_size = 1024;
 	run.usr_func = esp_xtensa_rw_do;
@@ -531,9 +559,9 @@ int esp_xtensa_write(struct flash_bank *bank, const uint8_t *buffer,
 	wr_state.prev_block_id = (uint32_t)-1;
 	wr_state.esp_xtensa_info = esp_xtensa_info;
 
-	int ret = esp_xtensa_info->run_func_image(bank->target,
+	ret = esp_xtensa_info->run_func_image(bank->target,
 		&run,
-		&esp_xtensa_info->flasher_image,
+		&flasher_image,
 		5,
 		ESP_XTENSA_STUB_CMD_FLASH_WRITE,
 		/* cmd */
@@ -627,6 +655,7 @@ int esp_xtensa_read(struct flash_bank *bank, uint8_t *buffer,
 	struct esp_xtensa_flash_bank *esp_xtensa_info = bank->driver_priv;
 	struct xtensa_algo_run_data run;
 	struct esp_xtensa_read_state rd_state;
+	struct xtensa_algo_image flasher_image;
 
 	if (offset & 0x3UL) {
 		LOG_ERROR("Unaligned offset!");
@@ -636,6 +665,10 @@ int esp_xtensa_read(struct flash_bank *bank, uint8_t *buffer,
 		LOG_ERROR("Target not halted");
 		return ERROR_TARGET_NOT_HALTED;
 	}
+
+	int ret = esp_xtensa_flasher_image_init(&flasher_image, esp_xtensa_info->get_stub(bank));
+	if (ret != ERROR_OK)
+		return ret;
 
 	memset(&run, 0, sizeof(run));
 	run.stack_size = 1024;
@@ -647,9 +680,9 @@ int esp_xtensa_read(struct flash_bank *bank, uint8_t *buffer,
 	rd_state.rw.count = count;
 	rd_state.rw.xfer = esp_xtensa_read_xfer;
 
-	int ret = esp_xtensa_info->run_func_image(bank->target,
+	ret = esp_xtensa_info->run_func_image(bank->target,
 		&run,
-		&esp_xtensa_info->flasher_image,
+		&flasher_image,
 		3,
 		ESP_XTENSA_STUB_CMD_FLASH_READ,
 		/* cmd */
@@ -669,6 +702,8 @@ int esp_xtensa_read(struct flash_bank *bank, uint8_t *buffer,
 	return ret;
 }
 
+#define BANK_SUBNAME(_b_, _n_)  (strcmp((_b_)->name + strlen((_b_)->name) - strlen(_n_), _n_) == 0)
+
 int esp_xtensa_probe(struct flash_bank *bank)
 {
 	struct esp_xtensa_flash_bank *esp_xtensa_info = bank->driver_priv;
@@ -683,15 +718,18 @@ int esp_xtensa_probe(struct flash_bank *bank)
 		return ERROR_TARGET_NOT_HALTED;
 	}
 
-	LOG_DEBUG("Flash size = %d KB @ 0x%x '%s' - '%s'", bank->size/1024, bank->base,
-		target_name(bank->target), target_state_name(bank->target));
+	LOG_DEBUG("Flash size = %d KB @ "TARGET_ADDR_FMT " '%s' - '%s'",
+		bank->size/1024,
+		bank->base,
+		target_name(bank->target),
+		target_state_name(bank->target));
 
 	if (bank->sectors) {
 		free(bank->sectors);
 		bank->sectors = NULL;
 	}
 
-	int ret = esp_xtensa_get_mappings(bank->target,
+	int ret = esp_xtensa_get_mappings(bank,
 		esp_xtensa_info,
 		&flash_map,
 		esp_xtensa_info->appimage_flash_base);
@@ -724,11 +762,11 @@ int esp_xtensa_probe(struct flash_bank *bank)
 		}
 	}
 
-	if (strcmp(bank->name + strlen(target_name(bank->target)), ".irom") == 0) {
+	if (BANK_SUBNAME(bank, ".irom")) {
 		esp_xtensa_info->hw_flash_base = irom_flash_base;
 		bank->base = irom_base;
 		bank->size = irom_sz;
-	} else if (strcmp(bank->name + strlen(target_name(bank->target)), ".drom") == 0) {
+	} else if (BANK_SUBNAME(bank, ".drom")) {
 		esp_xtensa_info->hw_flash_base = drom_flash_base;
 		bank->base = drom_base;
 		bank->size = drom_sz;
@@ -807,25 +845,25 @@ static void esp_xtensa_flash_bp_op_state_cleanup(struct target *target,
 
 int esp_xtensa_flash_breakpoint_add(struct target *target,
 	struct breakpoint *breakpoint,
-	struct esp_xtensa_special_breakpoint *sw_bp)
+	struct esp_xtensa_flash_breakpoint *sw_bp)
 {
 	struct esp_xtensa_flash_bank *esp_xtensa_info;
 	struct xtensa_algo_run_data run;
 	struct flash_bank *bank;
 	struct esp_xtensa_flash_bp_op_state op_state;
 	struct mem_param mp;
-	struct esp_xtensa_common *esp_xtensa = target_to_esp_xtensa(target);
+	struct xtensa_algo_image flasher_image;
 
 	/* flash belongs to root target, so we need to find flash using it instead of core
 	 * sub-target */
-	int ret = get_flash_bank_by_addr(esp_xtensa->chip_target, breakpoint->address, true, &bank);
+	int ret = get_flash_bank_by_addr(target, breakpoint->address, true, &bank);
 	if (ret != ERROR_OK) {
 		LOG_ERROR("%s: Failed to get flash bank (%d)!", target_name(target), ret);
 		return ret;
 	}
 
 	/* can set set breakpoints in mapped app regions only */
-	if (strcmp(bank->name + strlen(target_name(bank->target)), ".irom") != 0) {
+	if (!BANK_SUBNAME(bank, ".irom")) {
 		LOG_ERROR("%s: Can not set BP outside of IROM (BP addr " TARGET_ADDR_FMT ")!",
 			target_name(target),
 			breakpoint->address);
@@ -845,14 +883,18 @@ int esp_xtensa_flash_breakpoint_add(struct target *target,
 	sw_bp->data.oocd_bp = breakpoint;
 	sw_bp->priv = bank;
 
+	ret = esp_xtensa_flasher_image_init(&flasher_image, esp_xtensa_info->get_stub(bank));
+	if (ret != ERROR_OK)
+		return ret;
+
 	init_mem_param(&mp, 2 /*2nd usr arg*/, 3 /*size in bytes*/, PARAM_IN);
 	run.mem_args.params = &mp;
 	run.mem_args.count = 1;
 	uint32_t bp_flash_addr = esp_xtensa_info->hw_flash_base +
 		(breakpoint->address - bank->base);
-	ret = esp_xtensa_info->run_func_image(esp_xtensa->chip_target,
+	ret = esp_xtensa_info->run_func_image(target,
 		&run,
-		&esp_xtensa_info->flasher_image,
+		&flasher_image,
 		4 /*args num*/,
 		ESP_XTENSA_STUB_CMD_FLASH_BP_SET /*cmd*/,
 		bp_flash_addr /*bp_addr*/,
@@ -885,14 +927,18 @@ int esp_xtensa_flash_breakpoint_add(struct target *target,
 }
 
 int esp_xtensa_flash_breakpoint_remove(struct target *target,
-	struct esp_xtensa_special_breakpoint *sw_bp)
+	struct esp_xtensa_flash_breakpoint *sw_bp)
 {
 	struct flash_bank *bank = (struct flash_bank *)(sw_bp->priv);
 	struct esp_xtensa_flash_bank *esp_xtensa_info = bank->driver_priv;
 	struct xtensa_algo_run_data run;
 	struct esp_xtensa_flash_bp_op_state op_state;
 	struct mem_param mp;
-	struct esp_xtensa_common *esp_xtensa = target_to_esp_xtensa(target);
+	struct xtensa_algo_image flasher_image;
+
+	int ret = esp_xtensa_flasher_image_init(&flasher_image, esp_xtensa_info->get_stub(bank));
+	if (ret != ERROR_OK)
+		return ret;
 
 	op_state.esp_xtensa_info = esp_xtensa_info;
 	memset(&run, 0, sizeof(run));
@@ -917,9 +963,9 @@ int esp_xtensa_flash_breakpoint_remove(struct target *target,
 		sw_bp->data.insn[1],
 		sw_bp->data.insn[2],
 		sw_bp->data.insn_sz);
-	int ret = esp_xtensa_info->run_func_image(esp_xtensa->chip_target,
+	ret = esp_xtensa_info->run_func_image(target,
 		&run,
-		&esp_xtensa_info->flasher_image,
+		&flasher_image,
 		4 /*args num*/,
 		ESP_XTENSA_STUB_CMD_FLASH_BP_CLEAR /*cmd*/,
 		bp_flash_addr /*bp_addr*/,
@@ -957,8 +1003,10 @@ static int esp_xtensa_appimage_flash_base_update(struct target *target,
 		return ERROR_FAIL;
 	}
 	ret = get_flash_bank_by_name(bank_name, &bank);
-	if (ret != ERROR_OK)
+	if (ret != ERROR_OK || bank == NULL) {
+		LOG_ERROR("Failed to find bank '%s'!",  bank_name);
 		return ret;
+	}
 	esp_xtensa_info = (struct esp_xtensa_flash_bank *)bank->driver_priv;
 	esp_xtensa_info->probed = 0;
 	esp_xtensa_info->appimage_flash_base = appimage_flash_base;
@@ -968,11 +1016,10 @@ static int esp_xtensa_appimage_flash_base_update(struct target *target,
 	return ERROR_OK;
 }
 
-COMMAND_HANDLER(esp_xtensa_cmd_appimage_flashoff)
+COMMAND_HELPER(esp_xtensa_cmd_appimage_flashoff_do, struct target *target)
 {
-	struct target *target = get_current_target(CMD_CTX);
 	if (CMD_ARGC != 1) {
-		command_print(CMD_CTX, "Flash offset not specified!");
+		command_print(CMD, "Flash offset not specified!");
 		return ERROR_FAIL;
 	}
 
@@ -989,7 +1036,13 @@ COMMAND_HANDLER(esp_xtensa_cmd_appimage_flashoff)
 	return ERROR_OK;
 }
 
-const struct command_registration esp_xtensa_exec_command_handlers[] = {
+COMMAND_HANDLER(esp_xtensa_cmd_appimage_flashoff)
+{
+	return CALL_COMMAND_HANDLER(esp_xtensa_cmd_appimage_flashoff_do,
+		get_current_target(CMD_CTX));
+}
+
+const struct command_registration esp_xtensa_exec_flash_command_handlers[] = {
 	{
 		.name = "appimage_offset",
 		.handler = esp_xtensa_cmd_appimage_flashoff,

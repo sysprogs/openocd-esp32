@@ -12,11 +12,11 @@ def get_logger():
 #              TESTS DEFINITION WITH SPECIAL TESTS                     #
 ########################################################################
 
-class MultiAppImagesTests(DebuggerGenericTestAppTests, test_bp.PoiTestsImpl):
+class MultiAppImagesTests(DebuggerGenericTestAppTests):
 
     def __init__(self, methodName):
         DebuggerGenericTestAppTests.__init__(self, methodName)
-        if IdfVersion.get_current() < IdfVersion.fromstr('4.0'):
+        if testee_info.idf_ver < IdfVersion.fromstr('4.0'):
             self.test_app_cfg.pt_path = 'partitions_multi_apps.bin'
         else:
             self.test_app_cfg.pt_path = os.path.join('partition_table', 'partition-table.bin')
@@ -35,11 +35,11 @@ class MultiAppImagesTests(DebuggerGenericTestAppTests, test_bp.PoiTestsImpl):
         for f in self.bps:
             self.add_bp(f)
         # break at gpio_set_direction
-        self.run_to_bp_and_check(dbg.Gdb.TARGET_STOP_REASON_BP, 'gpio_set_direction', ['gpio_set_direction'])
+        self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'gpio_set_direction', ['gpio_set_direction'])
         # break at gpio_set_level
-        self.run_to_bp_and_check(dbg.Gdb.TARGET_STOP_REASON_BP, 'gpio_set_level', ['gpio_set_level0'])
+        self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'gpio_set_level', ['gpio_set_level0'])
         # break at vTaskDelay
-        self.run_to_bp_and_check(dbg.Gdb.TARGET_STOP_REASON_BP, 'vTaskDelay', ['vTaskDelay0'])
+        self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'vTaskDelay', ['vTaskDelay0'])
         self.clear_bps()
         # erase current image to allow bootloader to start one from the next app partition after reset
         self.oocd.cmd_exec('flash erase_address 0x%x 4096' % off)

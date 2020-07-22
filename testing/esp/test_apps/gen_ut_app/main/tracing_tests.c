@@ -13,7 +13,7 @@ const static char *TAG = "tracing_tests";
 
 // need to protect part of the file with macro to get compiled successfully for the oldest supported IDF ver,
 // this comparison should be updated if oldest supported IDF ver is increased enough to provide those features
-#if UT_IDF_VER == UT_IDF_VER_LATEST
+#if UT_IDF_VER >= MAKE_UT_IDF_VER(4,0,0,0)
 #if CONFIG_HEAP_TRACING
 #include "esp_heap_trace.h"
 #endif //CONFIG_HEAP_TRACING
@@ -132,7 +132,21 @@ static void trace_test_heap_log_slave(trace_test_task_arg_t *arg)
 #endif
 #endif //CONFIG_HEAP_TRACING
 
-static void do_trace_test_log_continuous(uint32_t num, trace_printf_t trace_printf)
+static __attribute__((noinline)) void _trace_test_log_continuous_start(void)
+{
+    __asm__ volatile (
+        "   nop\n" \
+        :::);
+}
+
+static __attribute__((noinline)) void _trace_test_log_continuous_stop(void)
+{
+    __asm__ volatile (
+        "   nop\n" \
+        :::);
+}
+
+static __attribute__((noinline)) void do_trace_test_log_continuous(uint32_t num, trace_printf_t trace_printf)
 {
     volatile TaskHandle_t curr_task = xTaskGetCurrentTaskHandle();
 
@@ -143,23 +157,18 @@ static void do_trace_test_log_continuous(uint32_t num, trace_printf_t trace_prin
         vTaskDelay(1);
     }
     __asm__ volatile (
-        ".global _do_trace_test_log_continuous_end\n" \
-        ".type   _do_trace_test_log_continuous_end,@function\n" \
-        "_do_trace_test_log_continuous_end:\n" \
+        ".global _trace_test_log_continuous_end\n" \
+        ".type   _trace_test_log_continuous_end,@function\n" \
+        "_trace_test_log_continuous_end:\n" \
         "   nop\n" \
         :::);
 }
 
-static void trace_test_log_continuous_main(trace_test_task_arg_t *arg)
+static __attribute__((noinline)) void trace_test_log_continuous_main(trace_test_task_arg_t *arg)
 {
     static uint32_t num = 0;
 
-    __asm__ volatile (
-        ".global _trace_test_log_continuous_start\n" \
-        ".type   _trace_test_log_continuous_start,@function\n" \
-        "_trace_test_log_continuous_start:\n" \
-        "   nop\n" \
-        :::);
+    _trace_test_log_continuous_start();
 #if !CONFIG_FREERTOS_UNICORE
     xTaskNotify(arg->other_task, 0, eNoAction);
 #endif
@@ -171,12 +180,7 @@ static void trace_test_log_continuous_main(trace_test_task_arg_t *arg)
     xTaskNotifyWait(0, 0, NULL, portMAX_DELAY);
 #endif
     arg->trace_flush(ESP_APPTRACE_TMO_INFINITE);
-    __asm__ volatile (
-        ".global _trace_test_log_continuous_stop\n" \
-        ".type   _trace_test_log_continuous_stop,@function\n" \
-        "_trace_test_log_continuous_stop:\n" \
-        "   nop\n" \
-        :::);
+    _trace_test_log_continuous_stop();
 }
 
 #if !CONFIG_FREERTOS_UNICORE
@@ -244,15 +248,48 @@ static void os_trace_test_task(void *pvParameter)
     }
 }
 
+/* CONFIG_ESP32_APPTRACE_ENABLE is for IDF <= 4.0 */
+#if defined(CONFIG_APPTRACE_ENABLE) || defined(CONFIG_ESP32_APPTRACE_ENABLE)
+
+static int apptrace_writefn(void* cookie, const char* data, int size)
+{
+    int res = esp_apptrace_write(ESP_APPTRACE_DEST_TRAX, data, size, 1000);
+    if (res != ESP_OK) {
+        return 0;
+    }
+    esp_apptrace_flush(ESP_APPTRACE_DEST_TRAX, 1000);
+    return size;
+}
+
+static void raw_trace_log_done(void)
+{
+    __asm__ __volatile__("nop");
+}
+
+static void raw_trace_log(void* arg)
+{
+    uint32_t iter_count = (uint32_t)arg;
+    stdout = fwopen(NULL, &apptrace_writefn);
+    static char stdout_buf[128];
+    setvbuf(stdout, stdout_buf, _IOLBF, sizeof(stdout_buf));
+
+    for (int i = 0; i < iter_count; ++i) {
+        printf("[%d %*.s]\n", i, i * 20, "test");
+    }
+    raw_trace_log_done();
+    vTaskDelete(NULL);
+}
+#endif // CONFIG_APPTRACE_ENABLE
+
 ut_result_t tracing_test_do(int test_num)
 {
-#if UT_IDF_VER == UT_IDF_VER_LATEST
+#if UT_IDF_VER >= MAKE_UT_IDF_VER(4,0,0,0)
     static trace_test_task_arg_t task_args[2];
     memset(task_args, 0, sizeof(task_args));
 #endif // UT_IDF_VER
 
     switch(test_num) {
-#if UT_IDF_VER == UT_IDF_VER_LATEST
+#if UT_IDF_VER >= MAKE_UT_IDF_VER(4,0,0,0)
 #if CONFIG_HEAP_TRACING
         case 500:
         {
@@ -287,8 +324,8 @@ ut_result_t tracing_test_do(int test_num)
         case 502:
         {
             static struct os_trace_task_arg task_args[2] = {
-                { .tim_grp = TIMER_GROUP_1, .tim_id = TIMER_0, .tim_period = 300000UL, .task_period = 500},
-                { .tim_grp = TIMER_GROUP_1, .tim_id = TIMER_1, .tim_period = 500000UL, .task_period = 2000}
+                { .tim_grp = TIMER_GROUP_1, .tim_id = TIMER_0, .tim_period = 300000UL /*us*/, .task_period = 500 /*ms*/},
+                { .tim_grp = TIMER_GROUP_1, .tim_id = TIMER_1, .tim_period = 500000UL /*us*/, .task_period = 2000 /*ms*/}
             };
             xTaskCreatePinnedToCore(os_trace_test_task, "trace_task0", 2048, (void *)&task_args[0], 5, NULL, 0);
 #if !CONFIG_FREERTOS_UNICORE
@@ -296,6 +333,18 @@ ut_result_t tracing_test_do(int test_num)
 #endif
             break;
         }
+#if defined(CONFIG_APPTRACE_ENABLE) || defined(CONFIG_ESP32_APPTRACE_ENABLE)
+        case 503:
+        {
+            xTaskCreate(raw_trace_log, "raw_trace_log", 2048, (void *)10, 5, NULL);
+            break;
+        }
+        case 504:
+        {
+            xTaskCreate(raw_trace_log, "raw_trace_log", 2048, (void *)100, 5, NULL);
+            break;
+        }
+#endif //CONFIG_APPTRACE_ENABLE
         default:
             return UT_UNSUPPORTED;
     }

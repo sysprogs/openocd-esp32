@@ -111,6 +111,13 @@ struct target_type {
 	int (*get_gdb_reg_list)(struct target *target, struct reg **reg_list[],
 			int *reg_list_size, enum target_register_class reg_class);
 
+	/**
+	 * Same as get_gdb_reg_list, but doesn't read the register values.
+	 * */
+	int (*get_gdb_reg_list_noread)(struct target *target,
+			struct reg **reg_list[], int *reg_list_size,
+			enum target_register_class reg_class);
+
 	/* target memory access
 	* size: 1 = byte (8bit), 2 = half-word (16bit), 4 = word (32bit)
 	* count: number of items of <size>
@@ -286,16 +293,10 @@ struct target_type {
 			uint32_t max_num_samples, uint32_t *num_samples, uint32_t seconds);
 
 
-	// TODO: remove below interface
-	/* get amount of cores for multiprocessor systems.
-	*/
-	size_t(*get_cores_count)(struct target *target);
-	/* get current active core for multiprocessor systems.
-	*/
-	size_t(*get_active_core)(struct target *target);
-	/* set active core for multiprocessor systems.
-	*/
-	void(*set_active_core)(struct target *target, size_t core);
+	/* Return the number of address bits this target supports. This will
+	 * typically be 32 for 32-bit targets, and 64 for 64-bit targets. If not
+	 * implemented, it's assumed to be 32. */
+	unsigned (*address_bits)(struct target *target);
 };
 
 #endif /* OPENOCD_TARGET_TARGET_TYPE_H */
