@@ -104,7 +104,9 @@ add_library(target
 	esp_xtensa.c
 	esp_xtensa_apptrace.c
 	xtensa_semihosting.c
-	esp_xtensa_semihosting.c)
+	esp_xtensa_semihosting.c
+	esp_xtensa_smp.c
+	esp32s3.c)
 target_include_directories(target PRIVATE ../..)
 	
 SET_TARGET_PROPERTIES(target PROPERTIES COMPILE_FLAGS -I${CMAKE_CURRENT_BINARY_DIR})
