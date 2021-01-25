@@ -32,6 +32,7 @@ class IdfVersion:
         Keeps IDF ver as 4 bytes int. Format is: x.3.0.2, the most significant byte is not used.
     """
     IDF_VER_LATEST = 0xFFFFFFFF
+    IDF_VER_OTHER  = 0xEFFFFFFF
 
     def __init__(self, ver_num=IDF_VER_LATEST):
         self._idf_ver = ver_num
@@ -40,6 +41,9 @@ class IdfVersion:
     def fromstr(ver_str):
         if ver_str == 'latest':
             return IdfVersion()
+        if ver_str == 'other':
+            return IdfVersion(IdfVersion.IDF_VER_OTHER)
+
         vers = ver_str.split('.')
         # 3 -> 3.0.0
         # 3.1 -> 3.1.0
@@ -84,6 +88,8 @@ testee_info = TesteeInfo()
 def idf_ver_min(ver_str):
     return unittest.skipIf(testee_info.idf_ver < IdfVersion.fromstr(ver_str), "requires min IDF_VER='%s', current IDF_VER='%s'" % (ver_str, testee_info.idf_ver))
 
+def run_with_version(ver_str):
+    return unittest.skipIf(testee_info.idf_ver != IdfVersion.fromstr(ver_str), "Not Applicable to this version")
 
 def skip_for_hw_id(hw_ids_to_skip):
     skip = False
@@ -107,7 +113,8 @@ class DebuggerTestAppConfig:
         Application binaries (elf and bin) are implied to be located in $test_apps_dir/$app_name/$bin_dir
     """
 
-    def __init__(self, bin_dir='', build_dir='', src_dir='', app_name='', app_off=ESP32_APP_FLASH_OFF):
+    def __init__(self, bin_dir='', build_dir='', src_dir='', app_name='',
+            app_off=ESP32_APP_FLASH_OFF, entry_point='app_main'):
         # Base path for app binaries, relative $test_apps_dir/$app_name
         self.bin_dir = bin_dir
         # Base path for app object files, relative $test_apps_dir/$app_name
@@ -126,6 +133,12 @@ class DebuggerTestAppConfig:
         self.pt_off = ESP32_PT_FLASH_OFF
         # name of test app variable which selects sub-test to run
         self.test_select_var = None
+        # Program's entry point ("app_main" is IDF's default)
+        self.entry_point = entry_point
+        # File containing commands to execute at startup
+        self.startup_script = ''
+        # Execute the script only.
+        self.only_startup = True
 
     def __repr__(self):
         return '%s/%x-%s/%x-%s/%x-%s' % (self.bin_dir, self.app_off, self.app_name, self.bld_off, self.bld_path, self.pt_off, self.pt_path)
@@ -151,6 +164,8 @@ class DebuggerTestAppConfig:
     def build_app_elf_path(self):
         return os.path.join(self.build_bins_dir(), '%s.elf' % self.app_name)
 
+    def startup_script_path(self):
+        return os.path.join(self.build_bins_dir(), '%s' % self.startup_script)
 
 class DebuggerTestsBunch(unittest.BaseTestSuite):
     """ Custom suite which supports groupping tests by target app and
@@ -213,6 +228,11 @@ class DebuggerTestsBunch(unittest.BaseTestSuite):
                             result.addError(test, sys.exc_info())
                         continue
                 self.gdb.exec_file_set(self._groupped_suites[app_cfg_id][0].build_app_elf_path())
+
+                if self._groupped_suites[app_cfg_id][0].startup_script != '':
+                    self.gdb.set_prog_startup_script(self._groupped_suites[app_cfg_id][0].startup_script_path())
+                    self.gdb.exec_run(only_startup=self._groupped_suites[app_cfg_id][0].only_startup)
+
             self._groupped_suites[app_cfg_id][1]._run_tests(result, debug)
         return result
 
@@ -271,6 +291,12 @@ class DebuggerTestsBase(unittest.TestCase):
         self.gdb = None
         self.oocd = None
         self.toolchain = ''
+
+    def fail_if_not_hw_id(self, hw_ids):
+        for id in hw_ids:
+            if re.match(id, testee_info.hw_id):
+                return
+        return self.fail("failed due to HW ID '%s' does not match to any of %s" % (testee_info.hw_id, hw_ids))
 
     def stop_exec(self):
         """ Stops target execution and ensures that it is in STOPPED state
@@ -357,7 +383,7 @@ class DebuggerTestAppTests(DebuggerTestsBase):
         # TODO: chip dependent
         self.oocd.set_appimage_offset(app_flash_off)
         self.gdb.connect()
-        bp = self.gdb.add_bp('app_main')
+        bp = self.gdb.add_bp(self.test_app_cfg.entry_point)
         self.resume_exec()
         rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 10)
         # workarounds for strange debugger's behaviour
@@ -368,7 +394,7 @@ class DebuggerTestAppTests(DebuggerTestsBase):
             rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 10)
         self.assertEqual(rsn, dbg.TARGET_STOP_REASON_BP)
         frame = self.gdb.get_current_frame()
-        self.assertEqual(frame['func'], 'app_main')
+        self.assertEqual(frame['func'], self.test_app_cfg.entry_point)
         self.gdb.delete_bp(bp)
 
 
@@ -419,10 +445,10 @@ class DebuggerTestAppTests(DebuggerTestsBase):
 
     def run_to_bp_and_check(self, exp_rsn, func_name, lineno_var_prefs, outmost_func_name='blink_task'):
         frames = self.run_to_bp_and_check_basic(exp_rsn, func_name)
-        if testee_info.idf_ver == IdfVersion.fromstr('latest'):
-            outmost_frame = len(frames) - 2 # -2 because our task function is called by FreeRTOS task wrapper
-        else:
+        if testee_info.idf_ver < IdfVersion.fromstr('3.3'):
             outmost_frame = len(frames) - 1
+        else:
+            outmost_frame = len(frames) - 2 # -2 because our task function is called by FreeRTOS task wrapper
         get_logger().debug('outmost_frame = %d', outmost_frame)
         # Sometimes GDB does not provide full backtrace. so check this
         # we can only check line numbers in <outmost_func_name>,
@@ -454,10 +480,10 @@ class DebuggerGenericTestAppTests(DebuggerTestAppTests):
         super(DebuggerGenericTestAppTests, self).__init__(methodName)
         self.test_app_cfg.app_name = 'gen_ut_app'
         self.test_app_cfg.bld_path = os.path.join('bootloader', 'bootloader.bin')
-        if testee_info.idf_ver < IdfVersion.fromstr('4.0'):
+        if testee_info.idf_ver < IdfVersion.fromstr('3.3'):
             self.test_app_cfg.pt_path = 'partitions_singleapp.bin'
         else:
-            # starting from IDF 4.0 test app supports cmake build system which uses another build dir structure
+            # starting from IDF 3.3 test app supports cmake build system which uses another build dir structure
             self.test_app_cfg.pt_path = os.path.join('partition_table', 'partition-table.bin')
         self.test_app_cfg.test_select_var = 's_run_test'
 

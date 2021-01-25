@@ -1,6 +1,6 @@
 /***************************************************************************
- *   Reset stub used by esp32s2 target                                       *
- *   Copyright (C) 2019 Espressif Systems Ltd.                             *
+ *   Reset stub used by esp32s3 target                                     *
+ *   Copyright (C) 2020 Espressif Systems (Shanghai) Co. Ltd.              *
  *                                                                         *
  *   This program is free software; you can redistribute it and/or modify  *
  *   it under the terms of the GNU General Public License as published by  *
@@ -19,23 +19,26 @@
  ***************************************************************************/
 
 
-#define RTC_CNTL_RESET_STATE_REG    0x3f408038
-#define RTC_CNTL_RESET_STATE_DEF    0x3000
-#define RTC_CNTL_CLK_CONF_REG       0x3f408074
-#define RTC_CNTL_CLK_CONF_DEF       0x1583218
-#define RTC_CNTL_STORE4_REG         0x3f4080c0
-#define RTC_CNTL_STORE5_REG         0x3f4080c4
-#define WDT_WKEY_VALUE              0x50D83AA1
-#define TIMG0_WDTWPROTECT_REG       0x3F41F064
-#define TIMG0_WDTCONFIG0_REG        0x3F41F048
-#define TIMG1_WDTWPROTECT_REG       0x3F420064
-#define TIMG1_WDTCONFIG0_REG        0x3F420048
-#define RTC_CNTL_WDTCONFIG0_REG     0x3F408094
-#define RTC_CNTL_WDTWPROTECT_REG    0x3F4080ac
-#define RTC_CNTL_OPTIONS0_REG       0x3F408000
-#define RTC_CNTL_OPTIONS0_DEF       0x1C492000
-#define RTC_CNTL_SW_SYS_RST         0x80000000
-#define DPORT_PMS_OCCUPY_3_REG      0x3F4C10E0
+#define RTC_CNTL_RESET_STATE_REG            0x60008038
+#define RTC_CNTL_RESET_STATE_DEF            0x3000
+#define RTC_CNTL_CLK_CONF_REG               0x60008074
+#define RTC_CNTL_CLK_CONF_DEF               0x1583218
+#define RTC_CNTL_STORE4_REG                 0x600080BC
+#define RTC_CNTL_STORE5_REG                 0x600080C0
+#define WDT_WKEY_VALUE                      0x50D83AA1
+#define TIMG0_WDTWPROTECT_REG               0x6001F064
+#define TIMG0_WDTCONFIG0_REG                0x6001F048
+#define TIMG1_WDTWPROTECT_REG               0x60020064
+#define TIMG1_WDTCONFIG0_REG                0x60020048
+#define RTC_CNTL_WDTCONFIG0_REG             0x60008094
+#define RTC_CNTL_WDTWPROTECT_REG            0x600080AC
+#define RTC_CNTL_OPTIONS0_REG               0x60008000
+#define RTC_CNTL_OPTIONS0_DEF               0x1C00A000
+#define RTC_CNTL_SW_SYS_RST                 0x80000000
+#define SYSTEM_CORE_1_CONTROL_0_REG         0x600C0014
+#define SYSTEM_CONTROL_CORE_1_RESETING      0x4
+#define SYSTEM_CONTROL_CORE_1_CLKGATE_EN    0x2
+#define SYSTEM_CORE_1_CONTROL_1_REG         0x600C0018
 
 
 /* This stub is copied to RTC_SLOW_MEM by OpenOCD, and the CPU starts executing
@@ -92,6 +95,11 @@ reset:
 
     .align 4
 start:
+    /* If running on the APP CPU, skip directly to the parking loop */
+    rsr.prid a6
+    extui a6, a6, 1, 1
+    bnez a6, parking_loop
+
     /* Use a5 as a zero register */
     xor a5, a5, a5
     /* Disable the watchdogs */
@@ -108,8 +116,17 @@ start:
     s32i.n a5, a4, 0
     movi a4, TIMG1_WDTCONFIG0_REG
     s32i.n a5, a4, 0
-    /* Disable trace memory mapping */
-    movi a4, DPORT_PMS_OCCUPY_3_REG
+    /* Clear APP_CPU boot address */
+    movi a4, SYSTEM_CORE_1_CONTROL_1_REG
+    s32i.n a5, a4, 0
+    /* Clear APP_CPU clock gating */
+    movi a4, SYSTEM_CORE_1_CONTROL_0_REG
+    movi a3, SYSTEM_CONTROL_CORE_1_CLKGATE_EN
+    s32i.n a3, a4, 0
+    /* Set and clear APP_CPU reset */
+    movi a4, SYSTEM_CORE_1_CONTROL_0_REG
+    movi a3, SYSTEM_CONTROL_CORE_1_RESETING
+    s32i.n a3, a4, 0
     s32i.n a5, a4, 0
     /* Restore the reset vector to ROM */
     movi a4, RTC_CNTL_RESET_STATE_REG
@@ -118,7 +135,7 @@ start:
 
 
 parking_loop:
-    /* CPU will be in this loop, until OpenOCD
+    /* PRO and APP CPU will be in this loop, until OpenOCD
      * finds the JTAG taps and puts the CPUs into debug mode.
      */
     waiti 0

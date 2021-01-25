@@ -27,6 +27,7 @@
 #include "helper/binarybuffer.h"
 #include "target/esp32.h"
 #include "target/esp32s2.h"
+#include "target/riscv/riscv.h"
 
 static int rtos_freertos_esp_xtensa_stack_read_involuntary(struct target *target, int64_t stack_ptr, const struct rtos_register_stacking *stacking, uint8_t *stack_data);
 static int rtos_freertos_esp_xtensa_stack_read_voluntary(struct target *target, int64_t stack_ptr, const struct rtos_register_stacking *stacking, uint8_t *stack_data);
@@ -119,10 +120,10 @@ static const struct stack_register_offset rtos_freertos_esp32_stack_offsets[] = 
 	{ XT_REG_IDX_M1, -1, 32 },		/* m1 */
 	{ XT_REG_IDX_M2, -1, 32 },		/* m2 */
 	{ XT_REG_IDX_M3, -1, 32 },		/* m3 */
-	{ XT_REG_IDX_EXPSTATE, -1, 32 },		/* expstate */
-	{ XT_REG_IDX_F64R_LO, -1, 32 },		/* f64r_lo */
-	{ XT_REG_IDX_F64R_HI, -1, 32 },		/* f64r_hi */
-	{ XT_REG_IDX_F64S, -1, 32 },		/* f64s */
+	{ ESP32_REG_IDX_EXPSTATE, -1, 32 },		/* expstate */
+	{ ESP32_REG_IDX_F64R_LO, -1, 32 },		/* f64r_lo */
+	{ ESP32_REG_IDX_F64R_HI, -1, 32 },		/* f64r_hi */
+	{ ESP32_REG_IDX_F64S, -1, 32 },		/* f64s */
 	{ XT_REG_IDX_F0, -1, 32 },		/* f0 */
 	{ XT_REG_IDX_F1, -1, 32 },		/* f1 */
 	{ XT_REG_IDX_F2, -1, 32 },		/* f2 */
@@ -216,6 +217,7 @@ static const struct stack_register_offset rtos_freertos_esp32_s2_stack_offsets[]
 	{ XT_REG_IDX_CONFIGID1, -1, 32 },		/* configid1 */
 	{ XT_REG_IDX_PS, 0x08, 32 },		/* ps */
 	{ XT_REG_IDX_THREADPTR, -1, 32 },		/* threadptr */
+	{ ESP32_S2_REG_IDX_GPIOOUT, -1, 32 },		/* gpio_out */
 };
 
 //WARNING: There's some deeper magic going on when reading this. Please
@@ -305,10 +307,10 @@ static const struct stack_register_offset rtos_freertos_esp32_voluntary_stack_of
 	{ XT_REG_IDX_M1, -1, 32 },		/* m1 */
 	{ XT_REG_IDX_M2, -1, 32 },		/* m2 */
 	{ XT_REG_IDX_M3, -1, 32 },		/* m3 */
-	{ XT_REG_IDX_EXPSTATE, -1, 32 },		/* expstate */
-	{ XT_REG_IDX_F64R_LO, -1, 32 },		/* f64r_lo */
-	{ XT_REG_IDX_F64R_HI, -1, 32 },		/* f64r_hi */
-	{ XT_REG_IDX_F64S, -1, 32 },		/* f64s */
+	{ ESP32_REG_IDX_EXPSTATE, -1, 32 },		/* expstate */
+	{ ESP32_REG_IDX_F64R_LO, -1, 32 },		/* f64r_lo */
+	{ ESP32_REG_IDX_F64R_HI, -1, 32 },		/* f64r_hi */
+	{ ESP32_REG_IDX_F64S, -1, 32 },		/* f64s */
 	{ XT_REG_IDX_F0, -1, 32 },		/* f0 */
 	{ XT_REG_IDX_F1, -1, 32 },		/* f1 */
 	{ XT_REG_IDX_F2, -1, 32 },		/* f2 */
@@ -403,6 +405,7 @@ static const struct stack_register_offset rtos_freertos_esp32_s2_voluntary_stack
 	{ XT_REG_IDX_CONFIGID1, -1, 32 },		/* configid1 */
 	{ XT_REG_IDX_PS, 0x18, 32 },		/* ps */
 	{ XT_REG_IDX_THREADPTR, -1, 32 },		/* threadptr */
+	{ ESP32_S2_REG_IDX_GPIOOUT, -1, 32 },		/* gpio_out */
 };
 
 const struct rtos_register_stacking rtos_freertos_esp32_stacking = {
@@ -439,6 +442,51 @@ const struct rtos_register_stacking rtos_freertos_voluntary_esp32_s2_stacking = 
 	rtos_generic_stack_align8,	/* stack_alignment */
 	rtos_freertos_esp32_s2_voluntary_stack_offsets,	/* register_offsets */
 	rtos_freertos_esp_xtensa_stack_read_voluntary		/* Custom stack frame read function */
+};
+
+static const struct stack_register_offset rtos_freertos_riscv_stack_offsets[] = {
+	{ GDB_REGNO_ZERO, -1, 32 },
+	{ GDB_REGNO_RA, 0x04, 32 },
+	{ GDB_REGNO_A0, 0x08, 32 },
+	{ GDB_REGNO_A1, 0x0C, 32 },
+	{ GDB_REGNO_A2, 0x10, 32 },
+	{ GDB_REGNO_A3, 0x14, 32 },
+	{ GDB_REGNO_A4, 0x18, 32 },
+	{ GDB_REGNO_A5, 0x1C, 32 },
+	{ GDB_REGNO_A6, 0x20, 32 },
+	{ GDB_REGNO_A7, 0x24, 32 },
+	{ GDB_REGNO_T0, 0x28, 32 },
+	{ GDB_REGNO_T1, 0x2C, 32 },
+	{ GDB_REGNO_T2, 0x30, 32 },
+	{ GDB_REGNO_T3, 0x34, 32 },
+	{ GDB_REGNO_T4, 0x38, 32 },
+	{ GDB_REGNO_T5, 0x3C, 32 },
+	{ GDB_REGNO_T6, 0x40, 32 },
+	{ GDB_REGNO_SP, 0x44, 32 },
+	{ GDB_REGNO_GP, 0x48, 32 },
+	{ GDB_REGNO_TP, 0x4C, 32 },
+	{ GDB_REGNO_FP, 0x50, 32 },
+	{ GDB_REGNO_S1, 0x54, 32 },
+	{ GDB_REGNO_S2, 0x58, 32 },
+	{ GDB_REGNO_S3, 0x5C, 32 },
+	{ GDB_REGNO_S4, 0x60, 32 },
+	{ GDB_REGNO_S5, 0x64, 32 },
+	{ GDB_REGNO_S6, 0x68, 32 },
+	{ GDB_REGNO_S7, 0x6C, 32 },
+	{ GDB_REGNO_S8, 0x70, 32 },
+	{ GDB_REGNO_S9, 0x74, 32 },
+	{ GDB_REGNO_S10, 0x78, 32 },
+	{ GDB_REGNO_S11, 0x7C, 32 },
+	{ GDB_REGNO_PC, 0x00, 32 },
+};
+
+const struct rtos_register_stacking rtos_freertos_riscv_stacking = {
+	32*4,				/* stack_registers_size */
+	-1,					/* stack_growth_direction */
+	33,					/* num_output_registers */
+	rtos_generic_stack_align8,	/* stack_alignment */
+	rtos_freertos_riscv_stack_offsets,		/* register_offsets */
+	NULL		/* Custom stack frame read function */
 };
 
 /*
@@ -571,4 +619,7 @@ static int rtos_freertos_esp_xtensa_stack_read_voluntary(struct target *target, 
 	return retval;
 }
 
-
+const struct rtos_register_stacking *rtos_freertos_riscv_pick_stacking_info(struct rtos *rtos, int64_t thread_id, int64_t stack_addr)
+{
+	return &rtos_freertos_riscv_stacking;
+}

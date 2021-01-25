@@ -6,6 +6,7 @@
       <Directories />
       <PathStyle>Unknown</PathStyle>
     </CustomSourceDirectories>
+    <AutoProgramSPIFFSPartition>true</AutoProgramSPIFFSPartition>
     <MainSourceDirectory>$(ProjectDir)</MainSourceDirectory>
   </Project>
   <Build xsi:type="com.visualgdb.build.cmake">
@@ -13,8 +14,8 @@
     <ToolchainID>
       <ID>com.visualgdb.mingw32</ID>
       <Version>
-        <GCC>8.1.0</GCC>
-        <GDB>8.1</GDB>
+        <GCC>9.1.0</GCC>
+        <GDB>8.3</GDB>
         <Revision>1</Revision>
       </Version>
     </ToolchainID>
@@ -57,14 +58,16 @@
     <CMakeMakefileType>Ninja</CMakeMakefileType>
     <DeployAsRoot>false</DeployAsRoot>
     <CMakeCleanMode>RemoveBuildDirectory</CMakeCleanMode>
+    <UseCCache>false</UseCCache>
     <ProjectModeSettings>
       <ProjectItemSettings>
         <GroupSourcesByTypes>true</GroupSourcesByTypes>
         <GroupSourcesByPaths>true</GroupSourcesByPaths>
         <GroupTargetsByPaths>true</GroupTargetsByPaths>
+        <FollowCMakeSourceGroups>false</FollowCMakeSourceGroups>
         <AutoRefreshProject>true</AutoRefreshProject>
+        <AlwaysConsiderOutdated>false</AlwaysConsiderOutdated>
         <SortTargetsByName>true</SortTargetsByName>
-        <UseCMakeUpToDateCheck>false</UseCMakeUpToDateCheck>
         <RedundantTargetMode>HideOuterProjectTargets</RedundantTargetMode>
         <SortSourcesByName>false</SortSourcesByName>
         <BuildAllTargetsInSubdir>false</BuildAllTargetsInSubdir>
@@ -91,6 +94,8 @@
       <VirtualFolders />
       <ConfigurationNameCase>Upper</ConfigurationNameCase>
       <DefaultHeaderDiscoveryMode>None</DefaultHeaderDiscoveryMode>
+      <EnableFastUpToDateCheck>true</EnableFastUpToDateCheck>
+      <StartupTarget>openocd</StartupTarget>
     </ProjectModeSettings>
   </Build>
   <CustomBuild>
@@ -167,5 +172,6 @@
       <ArgumentEscapingMode>Auto</ArgumentEscapingMode>
     </LaunchGDBSettings>
     <GenerateCtrlBreakInsteadOfCtrlC>false</GenerateCtrlBreakInsteadOfCtrlC>
+    <SuppressArgumentVariablesCheck>false</SuppressArgumentVariablesCheck>
   </Debug>
 </VisualGDBProjectSettings2>

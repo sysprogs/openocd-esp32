@@ -43,6 +43,13 @@ BOARD_TCL_CONFIG = {
         ],
         'commands' : [],
         'chip_name' : 'esp32s2'
+    },
+    'esp32s2-kaluga-1' :  {
+        'files' : [
+            os.path.join('board', 'esp32s2-kaluga-1.cfg')
+        ],
+        'commands' : [],
+        'chip_name' : 'esp32s2'
     }
 }
 
@@ -111,6 +118,8 @@ def dbg_start(toolchain, oocd, oocd_tcl, oocd_cfg_files, oocd_cfg_cmds, debug_oo
         if len(gdb_log):
             _gdb_inst.gdb_set('remotelogfile', gdb_log)
         if debug_oocd > 2:
+            _gdb_inst.tmo_scale_factor = 5
+        else:
             _gdb_inst.tmo_scale_factor = 3
         _gdb_inst.gdb_set('remotetimeout', '%d' % remote_tmo)
         _gdb_inst.connect(tmo=connect_tmo)
@@ -222,6 +231,7 @@ def main():
         setup_logger(board_uart_reader.get_logger(), ch, fh, log_lev)
         board_uart_reader.start()
     board_tcl = BOARD_TCL_CONFIG[args.board_type]
+    board_tcl['commands'] = args.oocd_cmds.split(",")
 
     # init testee info
     debug_backend_tests.testee_info.hw_id = args.board_type
@@ -308,6 +318,9 @@ if __name__ == '__main__':
     parser.add_argument('--oocd-tcl', '-s',
                         help='Path to OpenOCD TCL scripts',
                         default=os.environ.get('OOCD_TEST_TCL_DIR', os.path.join(os.getcwd(), 'tcl')))
+    parser.add_argument('--oocd-cmds', '-c',
+                        help='Additional, comma separated, OpenOCD commands',
+                        default='')
     parser.add_argument('--board-type', '-b',
                         help='Type of the board to run tests on',
                         choices=list(BOARD_TCL_CONFIG.keys()),

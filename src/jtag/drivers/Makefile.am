@@ -102,6 +102,9 @@ endif
 if PRESTO
 DRIVERFILES += %D%/presto.c
 endif
+if ESP_USB_JTAG
+DRIVERFILES += %D%/esp_usb_jtag.c
+endif
 if USBPROG
 DRIVERFILES += %D%/usbprog.c
 endif
@@ -163,11 +166,15 @@ endif
 if XDS110
 DRIVERFILES += %D%/xds110.c
 endif
+if BUILD_ESP_REMOTE
+DRIVERFILES += %D%/jtag_esp_remote.c
+endif
 
 DRIVERHEADERS = \
 	%D%/bitbang.h \
 	%D%/bitq.h \
 	%D%/jtag_usb_common.h \
+	%D%/libftdi_helper.h \
 	%D%/libusb0_common.h \
 	%D%/libusb1_common.h \
 	%D%/libusb_common.h \

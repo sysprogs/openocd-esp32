@@ -7,7 +7,8 @@ noinst_LTLIBRARIES += %D%/librtos.la
 	%D%/rtos_embkernel_stackings.c \
 	%D%/rtos_mqx_stackings.c \
 	%D%/rtos_ucos_iii_stackings.c \
-    %D%/rtos_freertos_stackings.c \
+	%D%/rtos_freertos_stackings.c \
+	%D%/rtos_nuttx_stackings.c \
 	%D%/FreeRTOS.c \
 	%D%/ThreadX.c \
 	%D%/eCos.c \
@@ -16,19 +17,22 @@ noinst_LTLIBRARIES += %D%/librtos.la
 	%D%/chromium-ec.c \
 	%D%/embKernel.c \
 	%D%/mqx.c \
+	%D%/riscv_debug.c \
 	%D%/uCOS-III.c \
 	%D%/nuttx.c \
 	%D%/hwthread.c \
 	%D%/rtos.h \
 	%D%/rtos_standard_stackings.h \
 	%D%/rtos_ecos_stackings.h \
-    %D%/rtos_freertos_stackings.h \
+	%D%/rtos_freertos_stackings.h \
 	%D%/linux_header.h \
 	%D%/rtos_chibios_stackings.h \
 	%D%/rtos_embkernel_stackings.h \
 	%D%/rtos_mqx_stackings.h \
 	%D%/rtos_ucos_iii_stackings.h \
-	%D%/nuttx_header.h
+	%D%/riscv_debug.h \
+	%D%/nuttx_header.h \
+	%D%/rtos_nuttx_stackings.h
 
 %C%_librtos_la_CFLAGS = $(AM_CFLAGS)
 

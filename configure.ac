@@ -110,6 +110,7 @@ m4_define([ADAPTER_OPT], [m4_translit(ADAPTER_ARG($1), [_], [-])])
 
 m4_define([USB1_ADAPTERS],
 	[[[ftdi], [MPSSE mode of FTDI based devices], [FTDI]],
+	[[ftdi_oscan1], [cJTAG OSCAN1 tunneled thru MPSSE], [FTDI_OSCAN1]],
 	[[stlink], [ST-Link Programmer], [HLADAPTER_STLINK]],
 	[[ti_icdi], [TI ICDI JTAG Programmer], [HLADAPTER_ICDI]],
 	[[ulink], [Keil ULINK JTAG Programmer], [ULINK]],
@@ -121,6 +122,7 @@ m4_define([USB1_ADAPTERS],
 m4_define([USB_ADAPTERS],
 	[[[osbdm], [OSBDM (JTAG only) Programmer], [OSBDM]],
 	[[opendous], [eStick/opendous JTAG Programmer], [OPENDOUS]],
+	[[esp_usb_jtag], [Espressif JTAG Programmer], [ESP_USB_JTAG]],
 	[[aice], [Andes JTAG Programmer], [AICE]]])
 
 m4_define([USB0_ADAPTERS],
@@ -339,6 +341,11 @@ AC_ARG_ENABLE([internal-libjaylink],
 AC_ARG_ENABLE([target64],
   AS_HELP_STRING([--disable-target64], [Disable 64-bit target address]),
     [build_target64=$enableval], [build_target64=yes])
+
+AC_ARG_ENABLE([esp-remote],
+  AS_HELP_STRING([--disable-esp-remote],
+  [Disable building support for the ESP remote protocol over TCP or USB]),
+  [build_esp_remote=$enableval], [build_esp_remote=yes])
 
 build_minidriver=no
 AC_MSG_CHECKING([whether to enable ZY1000 minidriver])
@@ -560,7 +567,7 @@ AS_IF([test "x$build_buspirate" = "xyes"], [
 
 AS_IF([test "x$use_internal_jimtcl" = "xyes"], [
   AS_IF([test -f "$srcdir/jimtcl/configure.ac"], [
-    AX_CONFIG_SUBDIR_OPTION([jimtcl], [--disable-install-jim])
+    AX_CONFIG_SUBDIR_OPTION([jimtcl], [--disable-install-jim --with-ext="json"])
   ], [
     AC_MSG_ERROR([jimtcl not found, run git submodule init and git submodule update.])
   ])
@@ -584,6 +591,12 @@ AS_IF([test "x$build_target64" = "xyes"], [
   AC_DEFINE([BUILD_TARGET64], [1], [1 if you want 64-bit addresses.])
 ], [
   AC_DEFINE([BUILD_TARGET64], [0], [0 if you don't want 64-bit addresses.])
+])
+
+AS_IF([test "x$build_esp_remote" = "xyes"], [
+  AC_DEFINE([BUILD_ESP_REMOTE], [1], [1 if you want ESP remote protocol support.])
+], [
+  AC_DEFINE([BUILD_ESP_REMOTE], [0], [0 if you don't want ESP remote protocol support.])
 ])
 
 
@@ -613,7 +626,11 @@ for hidapi_lib in hidapi hidapi-hidraw hidapi-libusb; do
 	])
 done
 
-PKG_CHECK_MODULES([LIBFTDI], [libftdi1], [use_libftdi=yes], [
+PKG_CHECK_MODULES([LIBFTDI], [libftdi1], [
+	use_libftdi=yes
+	PKG_CHECK_EXISTS([libftdi1 >= 1.5],
+		[AC_DEFINE([HAVE_LIBFTDI_TCIOFLUSH], [1], [Define if your libftdi has ftdi_tcioflush()])])
+  ], [
 	PKG_CHECK_MODULES([LIBFTDI], [libftdi], [use_libftdi=yes], [use_libftdi=no])
 ])
 
@@ -679,6 +696,12 @@ AS_IF([test "x$enable_presto" != "xno"], [
   build_bitq=yes
 ])
 
+ # esp-usb-jtag also needs the bitq module
+AS_IF([test "x$enable_esp_usb_jtag" != "xno"], [
+  build_bitq=yes
+])
+
+
 AM_CONDITIONAL([RELEASE], [test "x$build_release" = "xyes"])
 AM_CONDITIONAL([PARPORT], [test "x$build_parport" = "xyes"])
 AM_CONDITIONAL([DUMMY], [test "x$build_dummy" = "xyes"])
@@ -716,6 +739,8 @@ AM_CONDITIONAL([MINIDRIVER_DUMMY], [test "x$build_minidriver_dummy" = "xyes"])
 
 AM_CONDITIONAL([INTERNAL_JIMTCL], [test "x$use_internal_jimtcl" = "xyes"])
 AM_CONDITIONAL([INTERNAL_LIBJAYLINK], [test "x$use_internal_libjaylink" = "xyes"])
+
+AM_CONDITIONAL([BUILD_ESP_REMOTE], [test "x$build_esp_remote" = "xyes"])
 
 # Look for environ alternatives.  Possibility #1: is environ in unistd.h or stdlib.h?
 AC_MSG_CHECKING([for environ in unistd.h and stdlib.h])

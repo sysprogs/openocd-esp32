@@ -22,7 +22,7 @@
 #define XTENSA_ESP32_H
 
 #include "xtensa_algorithm.h"
-#include "esp_xtensa.h"
+#include "esp_xtensa_smp.h"
 
 #define ESP32_DROM_LOW             0x3F400000
 #define ESP32_DROM_HIGH            0x3F800000
@@ -33,6 +33,17 @@
  *Corresponds to the amount of regs listed in regformats/reg-xtensa.dat in the gdb source */
 #define ESP32_NUM_REGS_G_COMMAND   105
 
+enum esp32_reg_id {
+	/* chip specific registers that extend ISA go after ISA-defined ones */
+	ESP32_REG_IDX_EXPSTATE = XT_USR_REG_START,
+	ESP32_REG_IDX_F64R_LO,
+	ESP32_REG_IDX_F64R_HI,
+	ESP32_REG_IDX_F64S,
+	ESP32_NUM_REGS,
+};
+
+
+
 /* 0 - don't care, 1 - TMS low, 2 - TMS high */
 enum esp32_flash_bootstrap {
 	FBS_DONTCARE = 0,
@@ -41,20 +52,13 @@ enum esp32_flash_bootstrap {
 };
 
 struct esp32_common {
-	struct esp_xtensa_common esp_xtensa;
+	struct esp_xtensa_smp_common esp_xtensa_smp;
 	enum esp32_flash_bootstrap flash_bootstrap;
-	bool other_core_does_resume;
 };
 
 static inline struct esp32_common *target_to_esp32(struct target *target)
 {
-	return container_of(target->arch_info, struct esp32_common, esp_xtensa);
+	return container_of(target->arch_info, struct esp32_common, esp_xtensa_smp);
 }
-
-int esp32_run_func_image(struct target *target,
-	struct xtensa_algo_run_data *run,
-	struct xtensa_algo_image *image,
-	uint32_t num_args,
-	...);
 
 #endif	/* XTENSA_ESP32_H */

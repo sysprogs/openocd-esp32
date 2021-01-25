@@ -21,7 +21,7 @@
 #include "esp_log.h"
 const static char *TAG = "ut_app";
 
-#if CONFIG_IDF_TARGET_ESP32S2BETA || CONFIG_IDF_TARGET_ESP32S2
+#if CONFIG_IDF_TARGET_ESP32S2BETA || CONFIG_IDF_TARGET_ESP32S2 || CONFIG_IDF_TARGET_ESP32S3
 #define TIM_CLR(_tg_, _tn_) do{ TIMERG ## _tg_.int_clr.t ## _tn_ = 1;}while(0)
 #define TIM_UPD(_tg_, _tn_) do{ TIMERG ## _tg_.hw_timer[(_tn_)].update.update = 1;}while(0)
 #else
@@ -32,7 +32,7 @@ const static char *TAG = "ut_app";
 #define SPIRAM_TEST_ARRAY_SZ    5
 
 // test app algorithm selector
-volatile static int s_run_test = 0;
+volatile static int s_run_test = CONFIG_GEN_UT_APP_RUNTEST;
 // vars for WP tests
 volatile static int s_count1 = 0;
 volatile static int s_count2 = 100;
@@ -153,7 +153,7 @@ static void blink_task(void *pvParameter)
        Technical Reference for a list of pads and their default
        functions.)
     */
-    gpio_pad_select_gpio(BLINK_GPIO);
+    gpio_reset_pin(BLINK_GPIO);
     /* Set the GPIO as a push/pull output */
     gpio_set_direction(BLINK_GPIO, GPIO_MODE_OUTPUT);   TEST_BREAK_LOC(gpio_set_direction);
     while(1) {
@@ -170,7 +170,7 @@ static void blink_task(void *pvParameter)
     }
 }
 
-/* This test calls functions recursively many times, exhausing the
+/* This test calls functions recursively many times, exhausting the
  * register space and triggering window overflow exceptions.
  * Upon returning, it triggers window underflow exceptions.
  * If the test passes, then OpenOCD and GDB can both handle
@@ -293,7 +293,7 @@ static void step_over_bp_task(void *pvParameter)
 }
 
 static void fibonacci_calc(void* arg)
-/* calculation of 3 fibonacci sequences: f0, f1 abd f2
+/* calculation of 3 Fibonacci sequences: f0, f1 and f2
  * f(n) = f(n-1) + f(n-2) -> f(n) : 0, 1, 1, 2, 3, 5, 8, 13, 21, 34, ...*/
 {
     volatile int f0_nm2, f1_nm2, f2_nm2; // n-2

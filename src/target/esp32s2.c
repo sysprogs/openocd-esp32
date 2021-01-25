@@ -75,6 +75,24 @@
 #define ESP32_S2_RTCWDT_PROTECT_OFF   0xAC
 #define ESP32_S2_RTCWDT_CFG           (ESP32_S2_RTCCNTL_BASE + ESP32_S2_RTCWDT_CFG_OFF)
 #define ESP32_S2_RTCWDT_PROTECT       (ESP32_S2_RTCCNTL_BASE + ESP32_S2_RTCWDT_PROTECT_OFF)
+#define ESP32_S2_OPTIONS0                       (ESP32_S2_RTCCNTL_BASE + 0x0000)
+#define ESP32_S2_SW_SYS_RST_M  0x80000000
+#define ESP32_S2_SW_SYS_RST_V  0x1
+#define ESP32_S2_SW_SYS_RST_S  31
+#define ESP32_S2_SW_STALL_PROCPU_C0_M  ((ESP32_S2_SW_STALL_PROCPU_C0_V)<< \
+		(ESP32_S2_SW_STALL_PROCPU_C0_S))
+#define ESP32_S2_SW_STALL_PROCPU_C0_V  0x3
+#define ESP32_S2_SW_STALL_PROCPU_C0_S  2
+#define ESP32_S2_SW_CPU_STALL          (ESP32_S2_RTCCNTL_BASE + 0x00B8)
+#define ESP32_S2_SW_STALL_PROCPU_C1_M  ((ESP32_S2_SW_STALL_PROCPU_C1_V)<< \
+		(ESP32_S2_SW_STALL_PROCPU_C1_S))
+#define ESP32_S2_SW_STALL_PROCPU_C1_V  0x3F
+#define ESP32_S2_SW_STALL_PROCPU_C1_S  26
+#define ESP32_S2_CLK_CONF                       (ESP32_S2_RTCCNTL_BASE + 0x0074)
+#define ESP32_S2_CLK_CONF_DEF                   0x1583218
+#define ESP32_S2_STORE4                         (ESP32_S2_RTCCNTL_BASE + 0x00BC)
+#define ESP32_S2_STORE5                         (ESP32_S2_RTCCNTL_BASE + 0x00C0)
+#define ESP32_S2_DPORT_PMS_OCCUPY_3             0x3F4C10E0
 
 #define ESP32_S2_TRACEMEM_BLOCK_SZ      0x4000
 
@@ -85,14 +103,79 @@
 #define ESP32_S2_CHIP_REV_VAL           0x19031400
 #define ESP32_S2BETA_CHIP_REV_VAL       0x18082800
 
+
+static const int esp32s2_gdb_regs_mapping[ESP32_S2_NUM_REGS] = {
+	XT_REG_IDX_PC,
+	XT_REG_IDX_AR0, XT_REG_IDX_AR1, XT_REG_IDX_AR2, XT_REG_IDX_AR3,
+	XT_REG_IDX_AR4, XT_REG_IDX_AR5, XT_REG_IDX_AR6, XT_REG_IDX_AR7,
+	XT_REG_IDX_AR8, XT_REG_IDX_AR9, XT_REG_IDX_AR10, XT_REG_IDX_AR11,
+	XT_REG_IDX_AR12, XT_REG_IDX_AR13, XT_REG_IDX_AR14, XT_REG_IDX_AR15,
+	XT_REG_IDX_AR16, XT_REG_IDX_AR17, XT_REG_IDX_AR18, XT_REG_IDX_AR19,
+	XT_REG_IDX_AR20, XT_REG_IDX_AR21, XT_REG_IDX_AR22, XT_REG_IDX_AR23,
+	XT_REG_IDX_AR24, XT_REG_IDX_AR25, XT_REG_IDX_AR26, XT_REG_IDX_AR27,
+	XT_REG_IDX_AR28, XT_REG_IDX_AR29, XT_REG_IDX_AR30, XT_REG_IDX_AR31,
+	XT_REG_IDX_AR32, XT_REG_IDX_AR33, XT_REG_IDX_AR34, XT_REG_IDX_AR35,
+	XT_REG_IDX_AR36, XT_REG_IDX_AR37, XT_REG_IDX_AR38, XT_REG_IDX_AR39,
+	XT_REG_IDX_AR40, XT_REG_IDX_AR41, XT_REG_IDX_AR42, XT_REG_IDX_AR43,
+	XT_REG_IDX_AR44, XT_REG_IDX_AR45, XT_REG_IDX_AR46, XT_REG_IDX_AR47,
+	XT_REG_IDX_AR48, XT_REG_IDX_AR49, XT_REG_IDX_AR50, XT_REG_IDX_AR51,
+	XT_REG_IDX_AR52, XT_REG_IDX_AR53, XT_REG_IDX_AR54, XT_REG_IDX_AR55,
+	XT_REG_IDX_AR56, XT_REG_IDX_AR57, XT_REG_IDX_AR58, XT_REG_IDX_AR59,
+	XT_REG_IDX_AR60, XT_REG_IDX_AR61, XT_REG_IDX_AR62, XT_REG_IDX_AR63,
+	XT_REG_IDX_SAR,
+	XT_REG_IDX_WINDOWBASE, XT_REG_IDX_WINDOWSTART, XT_REG_IDX_CONFIGID0, XT_REG_IDX_CONFIGID1,
+	XT_REG_IDX_PS, XT_REG_IDX_THREADPTR,
+	ESP32_S2_REG_IDX_GPIOOUT,
+	XT_REG_IDX_MMID, XT_REG_IDX_IBREAKENABLE, XT_REG_IDX_OCD_DDR,
+	XT_REG_IDX_IBREAKA0, XT_REG_IDX_IBREAKA1, XT_REG_IDX_DBREAKA0, XT_REG_IDX_DBREAKA1,
+	XT_REG_IDX_DBREAKC0, XT_REG_IDX_DBREAKC1,
+	XT_REG_IDX_EPC1, XT_REG_IDX_EPC2, XT_REG_IDX_EPC3, XT_REG_IDX_EPC4,
+	XT_REG_IDX_EPC5, XT_REG_IDX_EPC6, XT_REG_IDX_EPC7, XT_REG_IDX_DEPC,
+	XT_REG_IDX_EPS2, XT_REG_IDX_EPS3, XT_REG_IDX_EPS4, XT_REG_IDX_EPS5,
+	XT_REG_IDX_EPS6, XT_REG_IDX_EPS7,
+	XT_REG_IDX_EXCSAVE1, XT_REG_IDX_EXCSAVE2, XT_REG_IDX_EXCSAVE3, XT_REG_IDX_EXCSAVE4,
+	XT_REG_IDX_EXCSAVE5, XT_REG_IDX_EXCSAVE6, XT_REG_IDX_EXCSAVE7, XT_REG_IDX_CPENABLE,
+	XT_REG_IDX_INTERRUPT, XT_REG_IDX_INTSET, XT_REG_IDX_INTCLEAR, XT_REG_IDX_INTENABLE,
+	XT_REG_IDX_VECBASE, XT_REG_IDX_EXCCAUSE, XT_REG_IDX_DEBUGCAUSE, XT_REG_IDX_CCOUNT,
+	XT_REG_IDX_PRID, XT_REG_IDX_ICOUNT, XT_REG_IDX_ICOUNTLEVEL, XT_REG_IDX_EXCVADDR,
+	XT_REG_IDX_CCOMPARE0, XT_REG_IDX_CCOMPARE1, XT_REG_IDX_CCOMPARE2,
+	XT_REG_IDX_MISC0, XT_REG_IDX_MISC1, XT_REG_IDX_MISC2, XT_REG_IDX_MISC3,
+	XT_REG_IDX_A0, XT_REG_IDX_A1, XT_REG_IDX_A2, XT_REG_IDX_A3,
+	XT_REG_IDX_A4, XT_REG_IDX_A5, XT_REG_IDX_A6, XT_REG_IDX_A7,
+	XT_REG_IDX_A8, XT_REG_IDX_A9, XT_REG_IDX_A10, XT_REG_IDX_A11,
+	XT_REG_IDX_A12, XT_REG_IDX_A13, XT_REG_IDX_A14, XT_REG_IDX_A15,
+	XT_REG_IDX_PWRCTL, XT_REG_IDX_PWRSTAT, XT_REG_IDX_ERISTAT,
+	XT_REG_IDX_CS_ITCTRL, XT_REG_IDX_CS_CLAIMSET, XT_REG_IDX_CS_CLAIMCLR,
+	XT_REG_IDX_CS_LOCKACCESS, XT_REG_IDX_CS_LOCKSTATUS, XT_REG_IDX_CS_AUTHSTATUS,
+	XT_REG_IDX_FAULT_INFO,
+	XT_REG_IDX_TRAX_ID, XT_REG_IDX_TRAX_CTRL, XT_REG_IDX_TRAX_STAT,
+	XT_REG_IDX_TRAX_DATA, XT_REG_IDX_TRAX_ADDR, XT_REG_IDX_TRAX_PCTRIGGER,
+	XT_REG_IDX_TRAX_PCMATCH, XT_REG_IDX_TRAX_DELAY, XT_REG_IDX_TRAX_MEMSTART,
+	XT_REG_IDX_TRAX_MEMEND,
+	XT_REG_IDX_PMG, XT_REG_IDX_PMPC, XT_REG_IDX_PM0, XT_REG_IDX_PM1,
+	XT_REG_IDX_PMCTRL0, XT_REG_IDX_PMCTRL1, XT_REG_IDX_PMSTAT0, XT_REG_IDX_PMSTAT1,
+	XT_REG_IDX_OCD_ID, XT_REG_IDX_OCD_DCRCLR, XT_REG_IDX_OCD_DCRSET, XT_REG_IDX_OCD_DSR,
+};
+
+static const struct xtensa_user_reg_desc esp32s2_user_regs[ESP32_S2_NUM_REGS-XT_NUM_REGS] = {
+	{ "gpio_out",   0x00, 0, 32, &xtensa_user_reg_u32_type },
+};
+
 static const struct xtensa_config esp32s2_xtensa_cfg = {
 	.density        = true,
 	.aregs_num      = XT_AREGS_NUM_MAX,
 	.windowed       = true,
 	.coproc         = true,
 	.miscregs_num   = 4,
+	.reloc_vec      = true,
+	.proc_id        = true,
 	.threadptr      = true,
-	.gdb_regs_num   = ESP32_S2_NUM_REGS_G_COMMAND,
+	.user_regs_num  = sizeof(esp32s2_user_regs)/sizeof(esp32s2_user_regs[0]),
+	.user_regs      = esp32s2_user_regs,
+	.fetch_user_regs                = xtensa_fetch_user_regs_u32,
+	.queue_write_dirty_user_regs    = xtensa_queue_write_dirty_user_regs_u32,
+	.gdb_general_regs_num   = ESP32_S2_NUM_REGS_G_COMMAND,
+	.gdb_regs_mapping               = esp32s2_gdb_regs_mapping,
 	.irom           = {
 		.count = 2,
 		.regions = {
@@ -203,6 +286,7 @@ static const struct xtensa_config esp32s2_xtensa_cfg = {
 };
 
 static int esp32s2_soc_reset(struct target *target);
+static int esp32s2_disable_wdts(struct target *target);
 
 static int esp32s2_assert_reset(struct target *target)
 {
@@ -215,21 +299,76 @@ static int esp32s2_assert_reset(struct target *target)
 	return xtensa_assert_reset(target);
 }
 
+static int esp32s2_deassert_reset(struct target *target)
+{
+	struct xtensa *xtensa = target_to_xtensa(target);
+
+	LOG_DEBUG("%s: begin", target_name(target));
+
+	int res = xtensa_deassert_reset(target);
+	if (res != ERROR_OK)
+		return res;
+
+	/* restore configured value
+	   esp32s2_soc_reset() modified it, but can not restore just after SW reset for some reason (???) */
+	res = xtensa_smpbreak_write(xtensa, xtensa->smp_break);
+	if (res != ERROR_OK) {
+		LOG_ERROR("Failed to restore smpbreak (%d)!", res);
+		return res;
+	}
+	return ERROR_OK;
+}
+
+static int esp32s2_stall_set(struct target *target, bool stall)
+{
+	LOG_DEBUG("%s: begin", target_name(target));
+
+	int res = esp_xtensa_set_peri_reg_mask(target,
+		ESP32_S2_SW_CPU_STALL,
+		ESP32_S2_SW_STALL_PROCPU_C1_M,
+		stall ? 0x21 << ESP32_S2_SW_STALL_PROCPU_C1_S : 0);
+	if (res != ERROR_OK) {
+		LOG_ERROR("Failed to write ESP32_S2_SW_CPU_STALL (%d)!", res);
+		return res;
+	}
+	res = esp_xtensa_set_peri_reg_mask(target,
+		ESP32_S2_OPTIONS0,
+		ESP32_S2_SW_STALL_PROCPU_C0_M,
+		stall ? 0x2 << ESP32_S2_SW_STALL_PROCPU_C0_S : 0);
+	if (res != ERROR_OK) {
+		LOG_ERROR("Failed to write ESP32_S2_OPTIONS0 (%d)!", res);
+		return res;
+	}
+	return ERROR_OK;
+}
+
+static inline int esp32s2_stall(struct target *target)
+{
+	return esp32s2_stall_set(target, true);
+}
+
+static inline int esp32s2_unstall(struct target *target)
+{
+	return esp32s2_stall_set(target, false);
+}
+
 /* Reset ESP32-S2's peripherals.
 Postconditions: all peripherals except RTC_CNTL are reset, CPU's PC is undefined, PRO CPU is halted, APP CPU is in reset
 How this works:
 0. make sure target is halted; if not, try to halt it; if that fails, try to reset it (via OCD) and then halt
-1. set CPU initial PC to 0x50000000 (ESP32_S2_RTC_DATA_LOW) by clearing RTC_CNTL_{PRO,APP}CPU_STAT_VECTOR_SEL
-2. load stub code into ESP32_S2_RTC_DATA_LOW; once executed, stub code will disable watchdogs and make CPU spin in an idle loop.
+1. Resets clock related registers
+2. Stalls CPU
 3. trigger SoC reset using RTC_CNTL_SW_SYS_RST bit
-4. wait for the OCD to be reset
-5. halt the target and wait for it to be halted (at this point CPU is in the idle loop)
-6. restore initial PC and the contents of ESP32_S2_RTC_DATA_LOW
-TODO: some state of RTC_CNTL is not reset during SW_SYS_RST. Need to reset that manually.
+4. CPU is reset and stalled at the first reset vector instruction
+5. wait for the OCD to be reset
+6. halt the target
+7. Unstalls CPU
+8. Disables WDTs and trace memory mapping
 */
 static int esp32s2_soc_reset(struct target *target)
 {
 	int res;
+	struct xtensa *xtensa = target_to_xtensa(target);
 
 	LOG_DEBUG("start");
 	/* In order to write to peripheral registers, target must be halted first */
@@ -276,63 +415,49 @@ static int esp32s2_soc_reset(struct target *target)
 
 	assert(target->state == TARGET_HALTED);
 
-	/* This this the stub code compiled from esp32_cpu_reset_handler.S.
-	   To compile it, run:
-	       xtensa-esp32s2-elf-gcc -c -mtext-section-literals -o stub.o esp32s2_cpu_reset_handler.S
-	       xtensa-esp32s2-elf-objcopy -j .text -O binary stub.o stub.bin
-	   These steps are not included into OpenOCD build process so that a
-	   dependency on xtensa-esp32s2-elf toolchain is not introduced.
-	*/
-	const uint32_t esp32_reset_stub_code[] = {
-		0x00001B06,
-		0x00001106,0x3F408038, 0x3F4080C0,0x3F4080C4,
-		0x3F408074,0x01583218, 0x9C492000,0x3F408000,
-		0x50D83AA1,0x3F4080AC, 0x3F41F064,0x3F420064,
-		0x3F408094,0x3F41F048, 0x3F420048,0x3F4C10E0,
-		0x3F408038,0x00003000, 0x41305550,0x0459FFEE,
-		0x59FFEE41,0xFFED4104, 0xED410459,0xFFED31FF,
-		0xED310439,0xFFED41FF, 0x00000439,0x31305550,
-		0xEC41FFEC,0x410439FF, 0x0439FFEC,0x39FFEC41,
-		0xFFEB4104,0xEB410459, 0x410459FF,0x0459FFEB,
-		0x59FFEB41,0xFFEA4104, 0x39FFEB31,0x00700004,
-		0x00FFFE46
-	};
-
-	LOG_DEBUG("loading stub code into RTC RAM");
-	uint32_t slow_mem_save[sizeof(esp32_reset_stub_code) / sizeof(uint32_t)];
-
-	/* Save contents of ESP32_S2_RTC_DATA_LOW which we are about to overwrite */
-	res =
-		target_read_buffer(target,
-		ESP32_S2_RTC_DATA_LOW,
-		sizeof(slow_mem_save),
-		(uint8_t *)slow_mem_save);
+	/* Set some clock-related RTC registers to the default values */
+	res = target_write_u32(target,
+		ESP32_S2_STORE4,
+		0);
 	if (res != ERROR_OK) {
-		LOG_ERROR("%s %d err=%d", __func__, __LINE__, res);
+		LOG_ERROR("Failed to write ESP32_S2_STORE4 (%d)!", res);
 		return res;
 	}
-
-	/* Write stub code into ESP32_S2_RTC_DATA_LOW */
-	res =
-		target_write_buffer(target, ESP32_S2_RTC_DATA_LOW,
-		sizeof(esp32_reset_stub_code),
-		(const uint8_t *)esp32_reset_stub_code);
+	res = target_write_u32(target,
+		ESP32_S2_STORE5,
+		0);
 	if (res != ERROR_OK) {
-		LOG_ERROR("%s %d err=%d", __func__, __LINE__, res);
+		LOG_ERROR("Failed to write ESP32_S2_STORE5 (%d)!", res);
 		return res;
 	}
-
-	LOG_DEBUG("resuming the target");
-	struct xtensa *xtensa = target_to_xtensa(target);
+	res = target_write_u32(target,
+		ESP32_S2_CLK_CONF,
+		ESP32_S2_CLK_CONF_DEF);
+	if (res != ERROR_OK) {
+		LOG_ERROR("Failed to write ESP32_S2_CLK_CONF (%d)!", res);
+		return res;
+	}
+	/* Stall CPU */
+	res = esp32s2_stall(target);
+	if (res != ERROR_OK)
+		return res;
+	/* enable stall */
+	res = xtensa_smpbreak_write(xtensa, OCDDCR_RUNSTALLINEN);
+	if (res != ERROR_OK) {
+		LOG_ERROR("Failed to set smpbreak (%d)!", res);
+		return res;
+	}
+	/* Reset CPU */
 	xtensa->suppress_dsr_errors = true;
-	res = xtensa_resume(target, 0, ESP32_S2_RTC_DATA_LOW + 4, 0, 0);
+	res = esp_xtensa_set_peri_reg_mask(target,
+		ESP32_S2_OPTIONS0,
+		ESP32_S2_SW_SYS_RST_M,
+		1 << ESP32_S2_SW_SYS_RST_S);
+	xtensa->suppress_dsr_errors = false;
 	if (res != ERROR_OK) {
-		LOG_WARNING("%s xtensa_resume err=%d", __func__, res);
+		LOG_ERROR("Failed to write ESP32_S2_OPTIONS0 (%d)!", res);
 		return res;
 	}
-	xtensa->suppress_dsr_errors = false;
-	LOG_DEBUG("resume done, waiting for the target to come alive");
-
 	/* Wait for SoC to reset */
 	alive_sleep(100);
 	int timeout = 100;
@@ -342,31 +467,32 @@ static int esp32s2_soc_reset(struct target *target)
 		xtensa_poll(target);
 	}
 	if (timeout == 0) {
-		LOG_ERROR("%s: Timed out waiting for CPU to be reset, target->state=%d",
-			__func__,
+		LOG_ERROR("Timed out waiting for CPU to be reset, target->state=%d",
 			target->state);
 		return ERROR_TARGET_TIMEOUT;
 	}
-
-	/* Halt the CPU again */
-	LOG_DEBUG("halting the target");
 	xtensa_halt(target);
 	res = target_wait_state(target, TARGET_HALTED, 1000);
 	if (res != ERROR_OK) {
-		LOG_ERROR("%s: Timed out waiting for CPU to be halted after SoC reset", __func__);
+		LOG_ERROR("%s: Couldn't halt target before SoC reset", __func__);
 		return res;
 	}
-
-	/* Restore the original contents of ESP32_S2_RTC_DATA_LOW */
-	LOG_DEBUG("restoring ESP32_S2_RTC_DATA_LOW");
-	res =
-		target_write_buffer(target, ESP32_S2_RTC_DATA_LOW, sizeof(slow_mem_save),
-		(const uint8_t *)slow_mem_save);
+	/* Unstall CPU */
+	res = esp32s2_unstall(target);
+	if (res != ERROR_OK)
+		return res;
+	/* Disable WDTs */
+	res = esp32s2_disable_wdts(target);
+	if (res != ERROR_OK)
+		return res;
+	/* Disable trace memory mapping */
+	res = target_write_u32(target,
+		ESP32_S2_DPORT_PMS_OCCUPY_3,
+		0);
 	if (res != ERROR_OK) {
-		LOG_ERROR("%s %d err=%d", __func__, __LINE__, res);
+		LOG_ERROR("Failed to write ESP32_S2_DPORT_PMS_OCCUPY_3 (%d)!", res);
 		return res;
 	}
-
 	/* Clear memory which is used by RTOS layer to get the task count */
 	if (target->rtos && target->rtos->type->post_reset_cleanup) {
 		res = (*target->rtos->type->post_reset_cleanup)(target);
@@ -616,7 +742,7 @@ struct target_type esp32s2_target = {
 	.step = xtensa_step,
 
 	.assert_reset = esp32s2_assert_reset,
-	.deassert_reset = xtensa_deassert_reset,
+	.deassert_reset = esp32s2_deassert_reset,
 
 	.virt2phys = esp32s2_virt2phys,
 	.mmu = xtensa_mmu_is_enabled,

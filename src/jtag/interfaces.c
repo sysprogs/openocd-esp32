@@ -57,6 +57,9 @@ extern struct jtag_interface ftdi_interface;
 #if BUILD_USB_BLASTER == 1 || BUILD_USB_BLASTER_2 == 1
 extern struct jtag_interface usb_blaster_interface;
 #endif
+#if BUILD_ESP_USB_JTAG == 1
+extern struct jtag_interface esp_usb_jtag_interface;
+#endif
 #if BUILD_JTAG_VPI == 1
 extern struct jtag_interface jtag_vpi_interface;
 #endif
@@ -137,6 +140,10 @@ extern struct jtag_interface xds110_interface;
 #endif
 #endif /* standard drivers */
 
+#if BUILD_ESP_REMOTE
+extern struct jtag_interface jtag_esp_remote_interface;
+#endif //BUILD_ESP_REMOTE
+
 /**
  * The list of built-in JTAG interfaces, containing entries for those
  * drivers that were enabled by the @c configure script.
@@ -162,8 +169,14 @@ struct jtag_interface *jtag_interfaces[] = {
 #if BUILD_USB_BLASTER || BUILD_USB_BLASTER_2 == 1
 		&usb_blaster_interface,
 #endif
+#if BUILD_ESP_USB_JTAG == 1
+		&esp_usb_jtag_interface,
+#endif
 #if BUILD_JTAG_VPI == 1
 		&jtag_vpi_interface,
+#endif
+#if BUILD_ESP_USB_JTAG == 1
+		&esp_usb_jtag_interface,
 #endif
 #if BUILD_FT232R == 1
 		&ft232r_interface,
@@ -241,6 +254,9 @@ struct jtag_interface *jtag_interfaces[] = {
 		&xds110_interface,
 #endif
 #endif /* standard drivers */
+#if BUILD_ESP_REMOTE
+		&jtag_esp_remote_interface,
+#endif //BUILD_ESP_REMOTE
 		NULL,
 	};
 
