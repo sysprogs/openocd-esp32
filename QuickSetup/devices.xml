@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<ArrayOfTargetDeviceFamily xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+	<TargetDeviceFamily>
+		<ID>ESP32</ID>
+		<Name>ESP32</Name>
+		<MatchRegex>^ESP32$</MatchRegex>
+		<ScriptFile>target/esp32.cfg</ScriptFile>
+	</TargetDeviceFamily>
+	<TargetDeviceFamily>
+		<ID>ESP32-SOLO-1</ID>
+		<Name>ESP32-SOLO-1</Name>
+		<MatchRegex>^ESP32$</MatchRegex>
+		<ScriptFile>target/esp32-solo-1.cfg</ScriptFile>
+	</TargetDeviceFamily>
+	<TargetDeviceFamily>
+		<ID>ESP32S2</ID>
+		<Name>ESP32S2</Name>
+		<MatchRegex>^ESP32S2$</MatchRegex>
+		<ScriptFile>target/esp32s2.cfg</ScriptFile>
+	</TargetDeviceFamily>
+	<TargetDeviceFamily>
+		<ID>ESP32S3</ID>
+		<Name>ESP32S3</Name>
+		<MatchRegex>^ESP32S3$</MatchRegex>
+		<ScriptFile>target/esp32s3.cfg</ScriptFile>
+	</TargetDeviceFamily>
+	<TargetDeviceFamily>
+		<ID>ESP32C3</ID>
+		<Name>ESP32C3</Name>
+		<MatchRegex>^ESP32C3$</MatchRegex>
+		<ScriptFile>target/esp32c3.cfg</ScriptFile>
+	</TargetDeviceFamily>
+</ArrayOfTargetDeviceFamily>
