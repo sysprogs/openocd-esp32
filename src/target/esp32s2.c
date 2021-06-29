@@ -73,8 +73,14 @@
 #define ESP32_S2_RTCCNTL_BASE         0x3f408000
 #define ESP32_S2_RTCWDT_CFG_OFF       0x94
 #define ESP32_S2_RTCWDT_PROTECT_OFF   0xAC
+#define ESP32_S2_SWD_CONF_OFF         0xB0
+#define ESP32_S2_SWD_WPROTECT_OFF     0xB4
 #define ESP32_S2_RTCWDT_CFG           (ESP32_S2_RTCCNTL_BASE + ESP32_S2_RTCWDT_CFG_OFF)
 #define ESP32_S2_RTCWDT_PROTECT       (ESP32_S2_RTCCNTL_BASE + ESP32_S2_RTCWDT_PROTECT_OFF)
+#define ESP32_S2_SWD_CONF_REG         (ESP32_S2_RTCCNTL_BASE + ESP32_S2_SWD_CONF_OFF)
+#define ESP32_S2_SWD_WPROTECT_REG     (ESP32_S2_RTCCNTL_BASE + ESP32_S2_SWD_WPROTECT_OFF)
+#define ESP32_S2_SWD_AUTO_FEED_EN_M   (1U << 31)
+#define ESP32_S2_SWD_WKEY_VALUE       0x8F1D312AU
 #define ESP32_S2_OPTIONS0                       (ESP32_S2_RTCCNTL_BASE + 0x0000)
 #define ESP32_S2_SW_SYS_RST_M  0x80000000
 #define ESP32_S2_SW_SYS_RST_V  0x1
@@ -86,7 +92,7 @@
 #define ESP32_S2_SW_CPU_STALL          (ESP32_S2_RTCCNTL_BASE + 0x00B8)
 #define ESP32_S2_SW_STALL_PROCPU_C1_M  ((ESP32_S2_SW_STALL_PROCPU_C1_V)<< \
 		(ESP32_S2_SW_STALL_PROCPU_C1_S))
-#define ESP32_S2_SW_STALL_PROCPU_C1_V  0x3F
+#define ESP32_S2_SW_STALL_PROCPU_C1_V  0x3FU
 #define ESP32_S2_SW_STALL_PROCPU_C1_S  26
 #define ESP32_S2_CLK_CONF                       (ESP32_S2_RTCCNTL_BASE + 0x0074)
 #define ESP32_S2_CLK_CONF_DEF                   0x1583218
@@ -326,7 +332,7 @@ static int esp32s2_stall_set(struct target *target, bool stall)
 	int res = esp_xtensa_set_peri_reg_mask(target,
 		ESP32_S2_SW_CPU_STALL,
 		ESP32_S2_SW_STALL_PROCPU_C1_M,
-		stall ? 0x21 << ESP32_S2_SW_STALL_PROCPU_C1_S : 0);
+		stall ? 0x21U << ESP32_S2_SW_STALL_PROCPU_C1_S : 0);
 	if (res != ERROR_OK) {
 		LOG_ERROR("Failed to write ESP32_S2_SW_CPU_STALL (%d)!", res);
 		return res;
@@ -452,7 +458,7 @@ static int esp32s2_soc_reset(struct target *target)
 	res = esp_xtensa_set_peri_reg_mask(target,
 		ESP32_S2_OPTIONS0,
 		ESP32_S2_SW_SYS_RST_M,
-		1 << ESP32_S2_SW_SYS_RST_S);
+		1U << ESP32_S2_SW_SYS_RST_S);
 	xtensa->suppress_dsr_errors = false;
 	if (res != ERROR_OK) {
 		LOG_ERROR("Failed to write ESP32_S2_OPTIONS0 (%d)!", res);
@@ -535,6 +541,24 @@ static int esp32s2_disable_wdts(struct target *target)
 	res = target_write_u32(target, ESP32_S2_RTCWDT_CFG, 0);
 	if (res != ERROR_OK) {
 		LOG_ERROR("Failed to write ESP32_S2_RTCWDT_CFG (%d)!", res);
+		return res;
+	}
+	/* Enable SWD auto-feed */
+	res = target_write_u32(target, ESP32_S2_SWD_WPROTECT_REG, ESP32_S2_SWD_WKEY_VALUE);
+	if (res != ERROR_OK) {
+		LOG_ERROR("Failed to write ESP32_S2_SWD_WPROTECT_REG (%d)!", res);
+		return res;
+	}
+	uint32_t swd_conf_reg = 0;
+	res = target_read_u32(target, ESP32_S2_SWD_CONF_REG, &swd_conf_reg);
+	if (res != ERROR_OK) {
+		LOG_ERROR("Failed to read ESP32_S2_SWD_CONF_REG (%d)!", res);
+		return res;
+	}
+	swd_conf_reg |= ESP32_S2_SWD_AUTO_FEED_EN_M;
+	res = target_write_u32(target, ESP32_S2_SWD_CONF_REG, swd_conf_reg);
+	if (res != ERROR_OK) {
+		LOG_ERROR("Failed to write ESP32_S2_SWD_CONF_REG (%d)!", res);
 		return res;
 	}
 	return ERROR_OK;
@@ -663,8 +687,12 @@ static const struct xtensa_power_ops esp32s2_pwr_ops = {
 };
 
 static const struct esp_xtensa_flash_breakpoint_ops esp32s2_spec_brp_ops = {
-	.breakpoint_add = esp_xtensa_flash_breakpoint_add,
-	.breakpoint_remove = esp_xtensa_flash_breakpoint_remove
+	.breakpoint_add = esp_flash_breakpoint_add,
+	.breakpoint_remove = esp_flash_breakpoint_remove
+};
+
+static const struct esp_semihost_ops esp32s2_semihost_ops = {
+	.prepare = esp32s2_disable_wdts
 };
 
 static int esp32s2_target_create(struct target *target, Jim_Interp *interp)
@@ -684,7 +712,7 @@ static int esp32s2_target_create(struct target *target, Jim_Interp *interp)
 	}
 
 	int ret = esp_xtensa_init_arch_info(target, &esp32->esp_xtensa, &esp32s2_xtensa_cfg,
-		&esp32s2_dm_cfg, &esp32s2_spec_brp_ops);
+		&esp32s2_dm_cfg, &esp32s2_spec_brp_ops, &esp32s2_semihost_ops);
 	if (ret != ERROR_OK) {
 		LOG_ERROR("Failed to init arch info!");
 		free(esp32);

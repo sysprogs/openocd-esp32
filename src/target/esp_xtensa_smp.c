@@ -468,8 +468,7 @@ int esp_xtensa_smp_watchpoint_remove(struct target *target, struct watchpoint *w
 }
 
 int esp_xtensa_smp_run_func_image(struct target *target,
-	struct xtensa_algo_run_data *run,
-	struct xtensa_algo_image *image,
+	struct algorithm_run_data *run,
 	uint32_t num_args,
 	...)
 {
@@ -497,7 +496,48 @@ int esp_xtensa_smp_run_func_image(struct target *target,
 		run_target = target;
 
 	va_start(ap, num_args);
-	res = xtensa_run_func_image_va(run_target, run, image, num_args, ap);
+	res = algorithm_run_func_image_va(run_target, run, num_args, ap);
+	va_end(ap);
+
+	if (target->smp) {
+		res = esp_xtensa_smp_smpbreak_restore(run_target, smp_break);
+		if (res != ERROR_OK)
+			return res;
+	}
+	return ERROR_OK;
+}
+
+int esp_xtensa_smp_run_onboard_func(struct target *target,
+	struct algorithm_run_data *run,
+	uint32_t func_addr,
+	uint32_t num_args,
+	...)
+{
+	struct target *run_target;
+	struct target_list *head;
+	va_list ap;
+	uint32_t smp_break;
+	int res;
+
+	if (target->smp) {
+		/* find first HALTED and examined core */
+		foreach_smp_target(head, target->head) {
+			run_target = head->target;
+			if (target_was_examined(run_target) && run_target->state == TARGET_HALTED)
+				break;
+		}
+		if (head == NULL) {
+			LOG_ERROR("Failed to find HALTED core!");
+			return ERROR_FAIL;
+		}
+		res = esp_xtensa_smp_smpbreak_disable(run_target, &smp_break);
+		if (res != ERROR_OK)
+			return res;
+	} else
+		run_target = target;
+
+	va_start(ap, num_args);
+	res = algorithm_run_onboard_func_va(run_target, run, func_addr, num_args, ap);
 	va_end(ap);
 
 	if (target->smp) {
@@ -513,9 +553,10 @@ int esp_xtensa_smp_init_arch_info(struct target *target,
 	const struct xtensa_config *xtensa_cfg,
 	struct xtensa_debug_module_config *dm_cfg,
 	const struct esp_xtensa_flash_breakpoint_ops *flash_brps_ops,
-    const struct esp_xtensa_smp_chip_ops *chip_ops)
+    const struct esp_xtensa_smp_chip_ops *chip_ops,
+	const struct esp_semihost_ops *semihost_ops)
 {
-	int ret = esp_xtensa_init_arch_info(target, &esp_xtensa_smp->esp_xtensa, xtensa_cfg, dm_cfg, flash_brps_ops);
+	int ret = esp_xtensa_init_arch_info(target, &esp_xtensa_smp->esp_xtensa, xtensa_cfg, dm_cfg, flash_brps_ops, semihost_ops);
 	if (ret != ERROR_OK)
 		return ret;
     esp_xtensa_smp->chip_ops = chip_ops;

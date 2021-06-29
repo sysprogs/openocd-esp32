@@ -2,6 +2,7 @@ import logging
 import unittest
 import debug_backend as dbg
 from debug_backend_tests import *
+from time import sleep
 
 
 def get_logger():
@@ -157,11 +158,12 @@ class BreakpointTestsImpl:
             self.assertEqual(frames[0]['func'], cur_frame['func'])
             self.assertEqual(frames[0]['line'], cur_frame['line'])
             self.gdb.disconnect()
+            sleep(0.1) #sleep 100ms
             self.gdb.connect()
 
     def test_bp_in_isr(self):
         """
-            This test checks that the first several breakpoint's hits can be ignored:
+            This test checks that the breakpoint's are handled in ISR properly:
             1) Select appropriate sub-test number on target.
             2) Set several breakpoints in ISR code to cover all types of them (HW, SW).
             3) Resume target and wait for brekpoints to hit.
@@ -199,21 +201,25 @@ class WatchpointTestsImpl:
         for e in self.wps:
             self.add_wp(e, 'rw')
         cnt = 0
+        wp_stop_reason = [dbg.TARGET_STOP_REASON_SIGTRAP, dbg.TARGET_STOP_REASON_WP]
         for i in range(3):
             # 'count' read
-            self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_SIGTRAP, 'blink_task', ['s_count10'])
+            self.run_to_bp_and_check(wp_stop_reason, 'blink_task', ['s_count10'])
             var_val = int(self.gdb.data_eval_expr('s_count1'))
             self.assertEqual(var_val, cnt)
             # 'count' read
-            self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_SIGTRAP, 'blink_task', ['s_count11'])
+            self.run_to_bp_and_check(wp_stop_reason, 'blink_task', ['s_count11'])
             var_val = int(self.gdb.data_eval_expr('s_count1'))
             self.assertEqual(var_val, cnt)
             # 'count' write
-            self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_SIGTRAP, 'blink_task', ['s_count11'])
+            self.run_to_bp_and_check(wp_stop_reason, 'blink_task', ['s_count11'])
             var_val = int(self.gdb.data_eval_expr('s_count1'))
             self.assertEqual(var_val, cnt)
             cnt += 1
 
+    # OpenOCD resets eps32c3/esp32s2 on every GDB connect to ensure that memory protection is disabled
+    # TODO: add check to config file to reset chip only when memory protection is really enabled
+    @skip_for_chip(['esp32s2', 'esp32c3'])
     def test_wp_and_reconnect(self):
         """
             This test checks that watchpoints work after GDB re-connection.
@@ -245,12 +251,61 @@ class WatchpointTestsImpl:
                 self.assertEqual(var_val, cnt2)
                 cnt2 -= 1
             self.gdb.disconnect()
+            sleep(0.1) #sleep 100ms
             self.gdb.connect()
 
 
 ########################################################################
 #              TESTS DEFINITION WITH SPECIAL TESTS                     #
 ########################################################################
+def two_cores_concurrently_hit_bps(self):
+    """
+        This test checks that 2 cores can concurrently hit the same set of breakpoints.
+        1) Select appropriate sub-test number on target.
+        2) Set several breakpoints to cover all types of them (HW, SW).
+        3) Resume target and wait for any brekpoint to hit on any core.
+        4) Check that target has stopped in the right place.
+        5) Check backtrace at the stop point.
+        6) Repeat steps 3-5 several times.
+        7) Check that all set breakpoints hit one time at least.
+    """
+    hit_cnt = [0] * len(self.bps)
+    self.select_sub_test(101)
+    for f in self.bps:
+        self.add_bp(f)
+    for i in range(30):
+        self.resume_exec()
+        rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 10)
+        self.assertEqual(rsn, dbg.TARGET_STOP_REASON_BP)
+        cur_frame = self.gdb.get_current_frame()
+        self.assertTrue(cur_frame['func'] in self.bps)
+        f_idx = self.bps.index(cur_frame['func'])
+        hit_cnt[f_idx] += 1
+        frames = self.gdb.get_backtrace()
+        self.assertTrue(len(frames) > 0)
+        self.assertEqual(frames[0]['func'], cur_frame['func'])
+        self.assertEqual(frames[0]['line'], cur_frame['line'])
+    for cnt in hit_cnt[1:]:
+        self.assertTrue(cnt > 0)
+
+def two_cores_concurrently_hit_wps(self):
+    """
+        This test checks that 2 cores can concurrently hit the same set of watchpoints.
+        1) Select appropriate sub-test number on target.
+        2) Set several 'write' watchpoints.
+        3) Resume target and wait for any watchpoint to hit on any core.
+        4) Check that target has stopped in the right place.
+        5) Check backtrace at the stop point.
+        6) Repeat steps 3-5 several times.
+    """
+    self.select_sub_test(101)
+    self.wps = {'s_count1': None, 's_count2': None}
+    cnt = 0
+    cnt2 = 100
+    for e in self.wps:
+        self.add_wp(e, 'w')
+    for i in range(10):
+        self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_SIGTRAP, 'blink_task', ['s_count11', 's_count2'])
 
 class DebuggerBreakpointTestsDual(DebuggerGenericTestAppTestsDual, BreakpointTestsImpl):
     """ Test cases for breakpoints in dual core mode
@@ -261,35 +316,17 @@ class DebuggerBreakpointTestsDual(DebuggerGenericTestAppTestsDual, BreakpointTes
         BreakpointTestsImpl.setUp(self)
 
     def test_2cores_concurrently_hit_bps(self):
-        """
-            This test checks that 2 cores can concurrently hit the same set of breakpoints.
-            1) Select appropriate sub-test number on target.
-            2) Set several breakpoints to cover all types of them (HW, SW).
-            3) Resume target and wait for any brekpoint to hit on any core.
-            4) Check that target has stopped in the right place.
-            5) Check backtrace at the stop point.
-            6) Repeat steps 3-5 several times.
-            7) Check that all set breakpoints hit one time at least.
-        """
-        hit_cnt = [0] * len(self.bps)
-        self.select_sub_test(101)
-        for f in self.bps:
-            self.add_bp(f)
-        for i in range(30):
-            self.resume_exec()
-            rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 10)
-            self.assertEqual(rsn, dbg.TARGET_STOP_REASON_BP)
-            cur_frame = self.gdb.get_current_frame()
-            self.assertTrue(cur_frame['func'] in self.bps)
-            f_idx = self.bps.index(cur_frame['func'])
-            hit_cnt[f_idx] += 1
-            frames = self.gdb.get_backtrace()
-            self.assertTrue(len(frames) > 0)
-            self.assertEqual(frames[0]['func'], cur_frame['func'])
-            self.assertEqual(frames[0]['line'], cur_frame['line'])
-        for cnt in hit_cnt[1:]:
-            self.assertTrue(cnt > 0)
+        two_cores_concurrently_hit_bps(self)
 
+class DebuggerBreakpointTestsDualEncrypted(DebuggerGenericTestAppTestsDualEncrypted, BreakpointTestsImpl):
+    """ Breakpoint test cases on encrypted flash in dual core mode
+    """
+    def setUp(self):
+        DebuggerGenericTestAppTestsDual.setUp(self)
+        BreakpointTestsImpl.setUp(self)
+
+    def test_2cores_concurrently_hit_bps(self):
+        two_cores_concurrently_hit_bps(self)
 
 class DebuggerBreakpointTestsSingle(DebuggerGenericTestAppTestsSingle, BreakpointTestsImpl):
     """ Test cases for breakpoints in single core mode
@@ -299,32 +336,31 @@ class DebuggerBreakpointTestsSingle(DebuggerGenericTestAppTestsSingle, Breakpoin
         DebuggerGenericTestAppTestsSingle.setUp(self)
         BreakpointTestsImpl.setUp(self)
 
+class DebuggerBreakpointTestsSingleEncrypted(DebuggerGenericTestAppTestsSingleEncrypted, BreakpointTestsImpl):
+    """ Breakpoint test cases on encrypted flash in single core mode
+    """
+    def setUp(self):
+        DebuggerGenericTestAppTestsSingle.setUp(self)
+        BreakpointTestsImpl.setUp(self)
 
 class DebuggerWatchpointTestsDual(DebuggerGenericTestAppTestsDual, WatchpointTestsImpl):
     """ Test cases for watchpoints in dual core mode
     """
-
     def test_2cores_concurrently_hit_wps(self):
-        """
-            This test checks that 2 cores can concurrently hit the same set of watchpoints.
-            1) Select appropriate sub-test number on target.
-            2) Set several 'write' watchpoints.
-            3) Resume target and wait for any watchpoint to hit on any core.
-            4) Check that target has stopped in the right place.
-            5) Check backtrace at the stop point.
-            6) Repeat steps 3-5 several times.
-        """
-        self.select_sub_test(101)
-        self.wps = {'s_count1': None, 's_count2': None}
-        cnt = 0
-        cnt2 = 100
-        for e in self.wps:
-            self.add_wp(e, 'w')
-        for i in range(10):
-            self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_SIGTRAP, 'blink_task', ['s_count11', 's_count2'])
+        two_cores_concurrently_hit_wps(self)
 
+class DebuggerWatchpointTestsDualEncrypted(DebuggerGenericTestAppTestsDualEncrypted, WatchpointTestsImpl):
+    """ Watchpoint test cases on encrypted flash in dual core mode
+    """
+    def test_2cores_concurrently_hit_wps(self):
+        two_cores_concurrently_hit_wps(self)
 
 class DebuggerWatchpointTestsSingle(DebuggerGenericTestAppTestsSingle, WatchpointTestsImpl):
     """ Test cases for watchpoints in single core mode
+    """
+    pass
+
+class DebuggerWatchpointTestsSingleEncrypted(DebuggerGenericTestAppTestsSingleEncrypted, WatchpointTestsImpl):
+    """ Watchpoint test cases on encrypted flash in single core mode
     """
     pass

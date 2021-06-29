@@ -318,7 +318,7 @@ static int esp_usb_jtag_recv_buf(void)
 	priv->cur_in_buf_wr++;
 	if (priv->cur_in_buf_wr == IN_BUF_CT)
 		priv->cur_in_buf_wr= 0;
-	LOG_DEBUG("esp_usb_jtag: In ep: received %d bytes; %d bytes (%d bits) left.", (int)n,
+	LOG_DEBUG_IO("esp_usb_jtag: In ep: received %d bytes; %d bytes (%d bits) left.", (int)n,
 		(priv->pending_in_bits+7)/8, priv->pending_in_bits);
 	return ERROR_OK;
 }
@@ -333,7 +333,7 @@ static int esp_usb_jtag_send_buf(void)
 		((char *)priv->out_buf),
 		ct,
 		5000 /*ms*/);
-	LOG_DEBUG("esp_usb_jtag: sent %d bytes.", (int)n);
+	LOG_DEBUG_IO("esp_usb_jtag: sent %d bytes.", (int)n);
 	if (priv->logfile)
 		log_cmds(priv->out_buf, ct, n);
 	if (n != ct) {
@@ -426,7 +426,7 @@ static int esp_usb_jtag_flush(void)
 		/*If not, pad with an extra FLUSH */
 		esp_usb_jtag_command_add_raw(CMD_FLUSH);
 	}
-	LOG_DEBUG("esp_usb_jtag: Flush!");
+	LOG_DEBUG_IO("esp_usb_jtag: Flush!");
 	/*Send off the buffer. */
 	int r= esp_usb_jtag_send_buf();
 	if (r != ERROR_OK)
@@ -500,8 +500,8 @@ static int esp_usb_jtag_init(void)
 {
 	memset(priv, 0, sizeof(struct esp_usb_jtag));
 
-	const uint16_t vids[]= {USB_VID};
-	const uint16_t pids[]= {USB_PID};
+	const uint16_t vids[]= {USB_VID, 0};	/* must be null terminated */
+	const uint16_t pids[]= {USB_PID, 0};	/* must be null terminated */
 
 	bitq_interface= calloc(sizeof(struct bitq_interface), 1);
 	bitq_interface->out= esp_usb_jtag_out;

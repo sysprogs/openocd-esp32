@@ -1,5 +1,6 @@
 /*
 Linker file used to link unit test app with non-standard flash mappings.
+Compatible with IDF3.x
 */
 
 MEMORY

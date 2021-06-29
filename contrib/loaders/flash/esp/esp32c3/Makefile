@@ -22,7 +22,7 @@
 # Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
 # Prefix for ESP32-S2 cross compilers (can include a directory path)
-CROSS ?= xtensa-esp32s2-elf-
+CROSS ?= riscv32-esp-elf-
 
 # Path to the esp-idf root dir
 IDF_PATH ?= ../..
@@ -31,22 +31,27 @@ STUB_CHIP_PATH := $(shell pwd)
 STUB_COMMON_PATH := $(STUB_CHIP_PATH)/..
 STUB_OBJ_DEPS := sdkconfig.h
 STUB_LD_SCRIPT := stub.ld
-STUB_CHIP := ESP32_S2BETA
+STUB_CHIP := ESP32C3
 
-SRCS := $(IDF_PATH)/components/soc/esp32s2beta/rtc_clk.c \
-	$(IDF_PATH)/components/soc/esp32s2beta/rtc_time.c \
-	$(IDF_PATH)/components/xtensa/eri.c
+SRCS := $(IDF_PATH)/components/esp_hw_support/port/esp32c3/rtc_clk_init.c \
+		$(IDF_PATH)/components/esp_hw_support/port/esp32c3/rtc_clk.c \
+		$(IDF_PATH)/components/esp_hw_support/port/esp32c3/rtc_time.c \
+		$(IDF_PATH)/components/esp_hw_support/regi2c_ctrl.c \
+		$(IDF_PATH)/components/app_trace/port/riscv/port.c
 
-CFLAGS +=
+CFLAGS :=
 
-INCLUDES := -I$(IDF_PATH)/components/esp32s2beta/include -I$(IDF_PATH)/components/soc/esp32s2beta/include \
-	-I$(IDF_PATH)/components/esp_rom/include -I$(IDF_PATH)/components/esp_rom/include/esp32s2beta \
-	-I$(IDF_PATH)/components/esp_common/include -I$(IDF_PATH)/components/xtensa/include \
-	-I$(IDF_PATH)/components/xtensa/esp32s2beta/include
+INCLUDES := -I$(IDF_PATH)/components/soc/esp32c3/include -I$(IDF_PATH)/components/riscv/include \
+	-I$(IDF_PATH)/components/hal/esp32c3/include -I$(IDF_PATH)/components/esp32c3/include \
+	-I$(IDF_PATH)/components/esp_hw_support/port/esp32c3/private_include -I$(IDF_PATH)/components/esp_rom/include/esp32c3 \
+	-I$(IDF_PATH)/components/esp_hw_support/port/esp32c3 \
+	-I$(IDF_PATH)/components/freertos/include \
+	-I$(IDF_PATH)/components/freertos/port/riscv/include \
+	-I$(IDF_PATH)/components/spi_flash/include \
 
 DEFINES :=
 
-LDFLAGS += -L$(IDF_PATH)/components/esp32s2beta/ld -T$(IDF_PATH)/components/esp_rom/esp32s2beta/ld/esp32s2beta.rom.spiflash.ld \
-	-T$(IDF_PATH)/components/esp_rom/esp32s2beta/ld/esp32s2beta.rom.ld
+LDFLAGS += -T$(IDF_PATH)/components/esp_rom/esp32c3/ld/esp32c3.rom.ld -T$(IDF_PATH)/components/esp_rom/esp32c3/ld/esp32c3.rom.newlib.ld \
+		-T$(IDF_PATH)/components/esp_rom/esp32c3/ld/esp32c3.rom.api.ld
 
 include ../stub_common.mk

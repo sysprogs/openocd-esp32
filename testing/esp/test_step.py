@@ -18,6 +18,15 @@ def get_logger():
 class StepTestsImpl():
     """ Stepping test cases generic for dual and single core modes
     """
+    def compare_pc_diffs(self, new_pc, old_pc):
+        get_logger().info('new_pc ' + str(new_pc))
+        get_logger().info('old_pc ' + str(old_pc))
+        pc_diff = new_pc - old_pc
+        get_logger().info('pc_diff ' + str(pc_diff))
+        if testee_info.arch == "xtensa":
+            self.assertTrue(pc_diff == 2 or pc_diff == 3)
+        else: #riscv32
+            self.assertTrue(pc_diff == 2 or pc_diff == 4)
 
     def do_step_over_bp_check(self, funcs):
         self.resume_exec()
@@ -28,13 +37,13 @@ class StepTestsImpl():
         self.assertEqual(old_pc, faddr)
         self.step(insn=True) # step over movi
         new_pc = self.gdb.get_reg('pc')
-        self.assertTrue(((new_pc - old_pc) == 2) or ((new_pc - old_pc) == 3))
+        self.compare_pc_diffs(new_pc, old_pc)
         old_pc = new_pc
         self.step(insn=True, stop_rsn=dbg.TARGET_STOP_REASON_BP) # step over nop
         new_pc = self.gdb.get_reg('pc')
         faddr = self.gdb.extract_exec_addr(self.gdb.data_eval_expr('&%s' % funcs[1]))
         self.assertEqual(new_pc, faddr)
-        self.assertTrue(((new_pc - old_pc) == 2) or ((new_pc - old_pc) == 3))
+        self.compare_pc_diffs(new_pc, old_pc)
 
     def test_step_over_bp(self):
         """
@@ -64,13 +73,13 @@ class StepTestsImpl():
     def do_step_over_wp_check(self, func):
         self.resume_exec()
         rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 5)
-        self.assertEqual(rsn, dbg.TARGET_STOP_REASON_SIGTRAP)
+        self.assertTrue(rsn in [dbg.TARGET_STOP_REASON_SIGTRAP, dbg.TARGET_STOP_REASON_WP])
         cur_frame = self.gdb.get_current_frame()
         self.assertEqual(cur_frame['func'], func)
         old_pc = self.gdb.get_reg('pc')
         self.step(insn=True)
         new_pc = self.gdb.get_reg('pc')
-        self.assertTrue(((new_pc - old_pc) == 2) or ((new_pc - old_pc) == 3))
+        self.compare_pc_diffs(new_pc, old_pc)
 
     def test_step_over_wp(self):
         """
@@ -95,17 +104,18 @@ class StepTestsImpl():
             # 'count' write
             self.do_step_over_wp_check('blink_task')
 
+    @only_for_arch(['xtensa'])
     def test_step_window_exception(self):
         # start the test, stopping at the window_exception_test function
         self.select_sub_test(200)
-        bp = self.gdb.add_bp('window_exception_test')
+        bp = self.gdb.add_bp('_recursive_func')
         self.resume_exec()
         rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 5)
         self.assertEqual(rsn, dbg.TARGET_STOP_REASON_BP)
         self.gdb.delete_bp(bp)
 
         # do "step in", 3 steps per recursion level
-        for i in range(0, 59):
+        for i in range(0, 57):
             get_logger().info('Step in {}'.format(i))
             self.step_in()
 
@@ -120,6 +130,7 @@ class StepTestsImpl():
         cur_frame = self.gdb.get_current_frame()
         self.assertEqual(cur_frame['func'], 'window_exception_test')
 
+    @only_for_arch(['xtensa'])
     def test_step_over_insn_using_scratch_reg(self):
         """
             This test checks that scratch register (A3) used by OpenOCD for its internal purposes
@@ -154,7 +165,7 @@ class StepTestsImpl():
 
     def test_step_multimode(self):
         """
-        1) Step over lines multiple times. Checks: correct line numer change.
+        1) Step over lines multiple times. Checks: correct line number change.
         2) Step over instructions multiple times. Checks: correct insn addr change.
         3) Combine stepping over lines and instructions.
         4) Resume target (continue).
@@ -191,11 +202,7 @@ class StepTestsImpl():
                 pc_a = self.gdb.get_reg('pc')
                 self.step(insn=True)
                 pc_b = self.gdb.get_reg('pc')
-                get_logger().info('pc_a' + str(pc_a))
-                get_logger().info('pc_b' + str(pc_b))
-                pc_dif = int(pc_b)-int(pc_a)
-                get_logger().info('pc_dif' + str(pc_dif))
-                self.assertTrue((pc_dif == 2) or (pc_dif == 3))
+                self.compare_pc_diffs(pc_b, pc_a)
                 get_logger().info('done')
 
             # catching of bp
@@ -213,15 +220,12 @@ class StepTestsImpl():
                 pc_a = self.gdb.get_reg('pc')
                 self.step(insn=True)
                 pc_b = self.gdb.get_reg('pc')
-                get_logger().info('pc_a' + str(pc_a))
-                get_logger().info('pc_b' + str(pc_b))
                 line_b = (self.gdb.get_current_frame())['line']
                 get_logger().info('line_a' + str(line_a))
                 get_logger().info('line_b' + str(line_b))
                 line_dif = int(line_b)-int(line_a)
-                pc_dif = int(pc_b)-int(pc_a)
                 self.assertTrue(line_dif == 1)
-                self.assertTrue((pc_dif == 2) or (pc_dif == 3))
+                self.compare_pc_diffs(pc_b, pc_a)
                 get_logger().info("done")
 
             get_logger().info("interrupt test")
@@ -262,6 +266,7 @@ class StepTestsImpl():
             cur_frame = self.gdb.get_current_frame()
             self.assertEqual(cur_frame['func'], 'step_out_of_function_test')
 
+    @only_for_arch(['xtensa'])
     def test_step_level5_int(self):
         """
             1) Set a breakpoint inside a level 5 interrupt vector
@@ -287,6 +292,51 @@ class StepTestsImpl():
                 self.step(insn=True)
             self.assertNotEqual(self.gdb.get_current_frame()['func'], 'xt_highint5')
 
+    def isr_masking(self, on=True):
+        if on:
+            self.gdb.monitor_run("xtensa maskisr on", 5)
+        else:
+            self.gdb.monitor_run("xtensa maskisr off", 5)
+
+    def get_isr_masking(self):
+        _, s = self.gdb.monitor_run("xtensa maskisr", 5, output_type='stdout')
+        return s.strip('\\n\\n').split("mode: ", 1)[1]
+
+    @only_for_arch(['xtensa'])
+    def test_step_over_intlevel_disabled_isr(self):
+        """
+            This test checks ps.intlevel value after step instruction while ISRs are masked
+            1) Select appropriate sub-test number on target.
+            2) Set breakpoint in step_over_inst_changing_intlevel function to read write ps.intlevel
+            3) Resume target and wait for brekpoint to hit.
+            4) Check that target has stopped in the right place.
+            5) Disable ISRs
+            6) Step over instruction which changes ps value
+            7) Enable ISRs
+            8) Check PS and PC has correct value
+            9) Repeat steps 3 several times
+        """
+        self.select_sub_test(120)
+        self.add_bp('_step_over_intlevel_ch')
+        for i in range(3):
+            get_logger().info('test_step_over_intlevel_disabled_isr loop ' + str(i))
+            self.resume_exec()
+            rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 5)
+            self.assertEqual(rsn, dbg.TARGET_STOP_REASON_BP)
+            cur_frame = self.gdb.get_current_frame()
+            self.assertEqual(cur_frame['func'], 'step_over_inst_changing_intlevel')
+            old_pc = self.gdb.get_reg('pc')
+            old_ps = self.gdb.get_reg('ps')
+            old_masking = self.get_isr_masking();
+            self.isr_masking(on=True)
+            self.step(insn=True)
+            self.isr_masking(on=(old_masking == 'ON'))
+            new_ps = self.gdb.get_reg('ps')
+            new_pc = self.gdb.get_reg('pc')
+            self.assertTrue(((new_pc - old_pc) == 2) or ((new_pc - old_pc) == 3))
+            get_logger().info('PS_old 0x%X', old_ps)
+            get_logger().info('PS_new 0x%X', new_ps)
+            self.assertEqual(old_ps & 0xF, new_ps & 0xF)
 
 ########################################################################
 #              TESTS DEFINITION WITH SPECIAL TESTS                     #
@@ -297,8 +347,19 @@ class DebuggerStepTestsDual(DebuggerGenericTestAppTestsDual, StepTestsImpl):
     """
     pass
 
+class DebuggerStepTestsDualEncrypted(DebuggerGenericTestAppTestsDualEncrypted, StepTestsImpl):
+    """ Test cases for encrypted dual core mode
+    """
+    pass
 
 class DebuggerStepTestsSingle(DebuggerGenericTestAppTestsSingle, StepTestsImpl):
     """ Test cases for single core mode
     """
     pass
+
+class DebuggerStepTestsSingleEncrypted(DebuggerGenericTestAppTestsSingleEncrypted, StepTestsImpl):
+    """ Test cases for encrypted single core mode
+    """
+    pass
+
+

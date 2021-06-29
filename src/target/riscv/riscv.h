@@ -36,6 +36,13 @@ enum riscv_halt_reason {
 	RISCV_HALT_ERROR
 };
 
+enum riscv_isrmasking_mode {
+	RISCV_ISRMASK_AUTO,
+	RISCV_ISRMASK_OFF,
+	RISCV_ISRMASK_ON,
+	RISCV_ISRMASK_STEPONLY,
+};
+
 typedef struct {
 	struct target *target;
 	unsigned custom_number;
@@ -60,6 +67,8 @@ typedef struct {
 	/* FIXME: This should probably be a bunch of register caches. */
 	uint64_t saved_registers[RISCV_MAX_HARTS][RISCV_MAX_REGISTERS];
 	bool valid_saved_registers[RISCV_MAX_HARTS][RISCV_MAX_REGISTERS];
+	/* hart which algo is running on */
+	int algo_hartid;
 
 	/* OpenOCD's register cache points into here. This is not per-hart because
 	 * we just invalidate the entire cache when we change which hart is
@@ -105,6 +114,8 @@ typedef struct {
 	bool prepped;
 	/* This target was selected using hasel. */
 	bool selected;
+
+	enum riscv_isrmasking_mode isrmask_mode;
 
 	/* Helper functions that target the various RISC-V debug spec
 	 * implementations. */
@@ -221,6 +232,8 @@ int riscv_openocd_deassert_reset(struct target *target);
 
 /* Initializes the shared RISC-V structure. */
 void riscv_info_init(struct target *target, riscv_info_t *r);
+int riscv_init_target_info(struct command_context *cmd_ctx,
+		struct target *target, riscv_info_t *info);
 
 /* Steps the hart that's currently selected in the RTOS, or if there is no RTOS
  * then the only hart. */

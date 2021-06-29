@@ -174,7 +174,7 @@ static inline int esp_xtensa_semihosting_v0(
 				syscall_errno);
 			break;
 		case SEMIHOSTING_SYS_WRITE: {
-			LOG_DEBUG("Req write file %d. %d bytes.", a3, a5);
+			LOG_DEBUG("Req write file %d. %" PRIu32 " bytes.", a3, a5);
 			if (a3 <= ESP_FD_MIN) {
 				LOG_ERROR("Invalid file desc %d!", a3);
 				syscall_ret = -1;
@@ -206,7 +206,7 @@ static inline int esp_xtensa_semihosting_v0(
 			break;
 		}
 		case SEMIHOSTING_SYS_READ: {
-			LOG_DEBUG("Req read file %d. %d bytes.", a3, a5);
+			LOG_DEBUG("Req read file %d. %" PRIu32 " bytes.", a3, a5);
 			if (a3 <= ESP_FD_MIN) {
 				LOG_ERROR("Invalid file desc %d!", a3);
 				syscall_ret = -1;
@@ -226,7 +226,7 @@ static inline int esp_xtensa_semihosting_v0(
 			}
 			syscall_ret = read(a3, buf, a5);
 			syscall_errno = errno;
-			LOG_DEBUG("Read file %d. %d bytes.", a3, a5);
+			LOG_DEBUG("Read file %d. %" PRIu32 " bytes.", a3, a5);
 			if (syscall_ret >= 0) {
 				retval = target_write_buffer(target, a4, syscall_ret, buf);
 				if (retval != ERROR_OK) {
@@ -299,6 +299,9 @@ int esp_xtensa_semihosting(struct target *target, int *retval)
 	if (buf_get_u32(brk_insn_buf, 0, 32) != ESP_XTENSA_SYSCALL) {
 		return 0;
 	}
+
+	if (esp_xtensa->semihost.ops && esp_xtensa->semihost.ops->prepare)
+		esp_xtensa->semihost.ops->prepare(target);
 
 	xtensa_reg_val_t a2 = xtensa_reg_get(target, XT_REG_IDX_A2);
 	xtensa_reg_val_t a3 = xtensa_reg_get(target, XT_REG_IDX_A3);

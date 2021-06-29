@@ -587,12 +587,16 @@ static const struct xtensa_power_ops esp32_pwr_ops = {
 };
 
 static const struct esp_xtensa_flash_breakpoint_ops esp32_flash_brp_ops = {
-	.breakpoint_add = esp_xtensa_flash_breakpoint_add,
-	.breakpoint_remove = esp_xtensa_flash_breakpoint_remove
+	.breakpoint_add = esp_flash_breakpoint_add,
+	.breakpoint_remove = esp_flash_breakpoint_remove
 };
 
 static const struct esp_xtensa_smp_chip_ops esp32_chip_ops = {
 	.reset = esp32_soc_reset
+};
+
+static const struct esp_semihost_ops esp32_semihost_ops = {
+	.prepare = esp32_disable_wdts
 };
 
 static int esp32_target_create(struct target *target, Jim_Interp *interp)
@@ -612,7 +616,7 @@ static int esp32_target_create(struct target *target, Jim_Interp *interp)
 	}
 
 	int ret = esp_xtensa_smp_init_arch_info(target, &esp32->esp_xtensa_smp, &esp32_xtensa_cfg,
-		&esp32_dm_cfg, &esp32_flash_brp_ops, &esp32_chip_ops);
+		&esp32_dm_cfg, &esp32_flash_brp_ops, &esp32_chip_ops, &esp32_semihost_ops);
 	if (ret != ERROR_OK) {
 		LOG_ERROR("Failed to init arch info!");
 		free(esp32);

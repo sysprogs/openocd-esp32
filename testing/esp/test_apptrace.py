@@ -9,6 +9,7 @@ import time
 import tempfile
 import sys
 import traceback
+from time import sleep
 
 idf_path = os.getenv('IDF_PATH')
 if idf_path:
@@ -24,7 +25,7 @@ def get_logger():
 ########################################################################
 #                         TESTS IMPLEMENTATION                         #
 ########################################################################
-
+@skip_for_chip(['esp32c3'])
 class ApptraceTestsImpl:
     """
     Tests for "raw" apptrace.
@@ -41,7 +42,7 @@ class ApptraceTestsImpl:
         self.add_bp('raw_trace_log_done')
         trace_src = 'tcp://localhost:53535'
         reader = reader_create(trace_src, 1.0)
-            
+
         self.gdb.apptrace_start("%s" % trace_src)
         self.resume_exec()
         rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 5)
@@ -79,6 +80,53 @@ class ApptraceTestsImpl:
         for i, line in enumerate(lines):
             self.assertEqual(line, "[%d %s]\n" % (i, " " * (i * 20)))
         os.remove(trace_file_name)
+
+    def test_apptrace_reset(self):
+        """
+            This test checks that apptracing continue to work if target resets between start and stop 
+        """
+        self.select_sub_test(505)
+        trace_file = tempfile.NamedTemporaryFile(delete=False)
+        trace_file_name = trace_file.name
+        trace_file.close()
+        trace_src = 'file://%s' % trace_file_name
+        reader = reader_create(trace_src, 1.0)
+        # 0 ms poll period, stop when 400 bytes are received or due to 3 s timeout
+        self.oocd.apptrace_start("%s 0 400 3" % trace_src)
+        self.resume_exec()
+        sleep(1) #  let it works some time
+        self.stop_exec()
+        self.gdb.target_reset()
+
+        lines_before_reset = []
+        while True:
+            try:
+                line = reader.readline()
+                if (len(line)):
+                    lines_before_reset.append(line)
+            except ReaderTimeoutError:
+                break
+
+        self.gdb.add_bp('app_main')
+        self.run_to_bp(dbg.TARGET_STOP_REASON_BP, 'app_main')
+        self.select_sub_test(505)
+        self.resume_exec()
+        self.oocd.apptrace_wait_stop(tmo=30)
+
+        lines_after_reset = []
+        while True:
+            try:
+                line = reader.readline()
+                if (len(line)):
+                    lines_after_reset.append(line)
+            except ReaderTimeoutError:
+                break
+        reader.cleanup()
+        os.remove(trace_file_name)
+
+        # compare first 5 lines. But before that make sure first line includes number zero
+        self.assertEqual(lines_before_reset[0].rstrip().split('#')[1], '0')
+        self.assertEqual(lines_before_reset[:5], lines_after_reset[:5])
 
 ########################################################################
 #              TESTS DEFINITION WITH SPECIAL TESTS                     #
