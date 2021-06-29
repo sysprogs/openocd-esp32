@@ -9,6 +9,7 @@ include(config.cmake)
 
 add_subdirectory(external/hidapi/scripts)
 add_subdirectory(external/libusb1/scripts)
+add_subdirectory(external/zlib)
 add_subdirectory(external/prebuilt)
 	
 add_definitions(-DHAVE_CONFIG_H -DPKGDATADIR="." -DBINDIR="../../bin")

@@ -1,6 +1,6 @@
 include_directories(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/helper ${CMAKE_CURRENT_SOURCE_DIR}/../jimtcl ${CMAKE_CURRENT_BINARY_DIR}/../jimtcl-cmake ${CMAKE_CURRENT_BINARY_DIR})
 
-add_library(helper helper/binarybuffer.c helper/options.c helper/time_support_common.c helper/configuration.c helper/log.c helper/command.c helper/time_support.c helper/replacements.c helper/fileio.c helper/util.c helper/jim-nvp.c helper/ioutil_stubs.c helper/jep106.c	)
+add_library(helper helper/binarybuffer.c helper/options.c helper/time_support_common.c helper/configuration.c helper/log.c helper/command.c helper/time_support.c helper/replacements.c helper/fileio.c helper/util.c helper/jim-nvp.c helper/ioutil_stubs.c helper/jep106.c helper/sha256.c)
 
 add_library(transport transport/transport.c)
 add_library(svf svf/svf.c)
@@ -41,6 +41,7 @@ target_link_libraries(openocd
 	ocdusbblaster
 	openrisc
 	target
+	zlibstatic
 	-Wl,-static ws2_32 hidapi setupapi helper)
 	
 SET_TARGET_PROPERTIES(openocd PROPERTIES COMPILE_FLAGS "-DPKGBLDDATE=\\\"${BUILD_TIMESTAMP}\\\" -DRELSTR=\\\"\\\" -DGITVERSION=\\\"\\\" -DLIBUSB1_COMMIT=\\\"${LIBUSB1_COMMIT_HASH}\\\"")

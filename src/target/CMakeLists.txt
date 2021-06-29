@@ -106,7 +106,11 @@ add_library(target
 	xtensa_semihosting.c
 	esp_xtensa_semihosting.c
 	esp_xtensa_smp.c
-	esp32s3.c)
+	esp32s3.c
+	esp_riscv_apptrace.c
+	esp32_sysview.c
+	esp32c3.c
+	riscv/riscv_algorithm.c)
 target_include_directories(target PRIVATE ../..)
 	
 SET_TARGET_PROPERTIES(target PROPERTIES COMPILE_FLAGS -I${CMAKE_CURRENT_BINARY_DIR})

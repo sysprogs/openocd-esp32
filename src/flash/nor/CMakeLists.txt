@@ -67,6 +67,9 @@ add_library(ocdflashnor
 	esp_xtensa.c
 	esp32s2.c
 	atsame5.c
-	swm050.c)
+	swm050.c
+	esp_flash.c
+	esp_riscv.c
+	esp32c3.c)
 
 target_include_directories(ocdflashnor PRIVATE ../../..)
