@@ -56,8 +56,14 @@ BOARD_TCL_CONFIG = {
     },
     'esp32c3-ftdi' :  {
         'files' : [
-            os.path.join('interface', 'ftdi', 'esp32_devkitj_v1.cfg'),
-            os.path.join('target', 'esp32c3.cfg')
+            os.path.join('board', 'esp32c3-ftdi.cfg')
+        ],
+        'commands' : [],
+        'chip_name' : 'esp32c3'
+    },
+    'esp32c3-builtin' :  {
+        'files' : [
+            os.path.join('board', 'esp32c3-builtin.cfg')
         ],
         'commands' : [],
         'chip_name' : 'esp32c3'
@@ -119,6 +125,9 @@ def dbg_start(toolchain, oocd, oocd_tcl, oocd_cfg_files, oocd_cfg_cmds, debug_oo
     try:
         # reset the board if it is stuck from the previous test run
         _oocd_inst.cmd_exec('reset halt')
+        # Enable GDB fix
+        # TODO: Remove
+        os.environ["ESP_XTENSA_GDB_PRIV_REGS_FIX"] = "1"
         # Start GDB
         _gdb_inst = dbg.create_gdb(chip_name=chip_name,
                             gdb_path='%sgdb' % toolchain,
