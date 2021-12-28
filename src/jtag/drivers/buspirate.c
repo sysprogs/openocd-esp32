@@ -34,6 +34,7 @@
 static int buspirate_execute_queue(void);
 static int buspirate_init(void);
 static int buspirate_quit(void);
+static int buspirate_reset(int trst, int srst);
 
 static void buspirate_end_state(tap_state_t state);
 static void buspirate_state_move(void);
@@ -133,7 +134,6 @@ static void buspirate_tap_append_scan(int length, uint8_t *buffer,
 		struct scan_command *command);
 static void buspirate_tap_make_space(int scan, int bits);
 
-static void buspirate_reset(int trst, int srst);
 static void buspirate_set_feature(int, char, char);
 static void buspirate_set_mode(int, char);
 static void buspirate_set_speed(int, char);
@@ -213,20 +213,8 @@ static int buspirate_execute_queue(void)
 				buffer, scan_size, cmd->cmd.scan);
 
 			break;
-		case JTAG_RESET:
-			LOG_DEBUG_IO("reset trst: %i srst %i",
-				cmd->cmd.reset->trst, cmd->cmd.reset->srst);
-
-			/* flush buffers, so we can reset */
-			buspirate_tap_execute();
-
-			if (cmd->cmd.reset->trst == 1)
-				tap_set_state(TAP_RESET);
-			buspirate_reset(cmd->cmd.reset->trst,
-					cmd->cmd.reset->srst);
-			break;
 		case JTAG_SLEEP:
-			LOG_DEBUG_IO("sleep %i", cmd->cmd.sleep->us);
+			LOG_DEBUG_IO("sleep %" PRIu32, cmd->cmd.sleep->us);
 			buspirate_tap_execute();
 			jtag_sleep(cmd->cmd.sleep->us);
 				break;
@@ -364,10 +352,8 @@ static int buspirate_quit(void)
 
 	buspirate_serial_close(buspirate_fd);
 
-	if (buspirate_port) {
-		free(buspirate_port);
-		buspirate_port = NULL;
-	}
+	free(buspirate_port);
+	buspirate_port = NULL;
 	return ERROR_OK;
 }
 
@@ -548,14 +534,21 @@ static const struct swd_driver buspirate_swd = {
 
 static const char * const buspirate_transports[] = { "jtag", "swd", NULL };
 
-struct jtag_interface buspirate_interface = {
-	.name = "buspirate",
+static struct jtag_interface buspirate_interface = {
 	.execute_queue = buspirate_execute_queue,
-	.commands = buspirate_command_handlers,
+};
+
+struct adapter_driver buspirate_adapter_driver = {
+	.name = "buspirate",
 	.transports = buspirate_transports,
-	.swd = &buspirate_swd,
+	.commands = buspirate_command_handlers,
+
 	.init = buspirate_init,
-	.quit = buspirate_quit
+	.quit = buspirate_quit,
+	.reset = buspirate_reset,
+
+	.jtag_ops = &buspirate_interface,
+	.swd_ops = &buspirate_swd,
 };
 
 /*************** jtag execute commands **********************/
@@ -860,7 +853,7 @@ static void buspirate_tap_append_scan(int length, uint8_t *buffer,
 /*************** wrapper functions *********************/
 
 /* (1) assert or (0) deassert reset lines */
-static void buspirate_reset(int trst, int srst)
+static int buspirate_reset(int trst, int srst)
 {
 	LOG_DEBUG("trst: %i, srst: %i", trst, srst);
 
@@ -873,6 +866,8 @@ static void buspirate_reset(int trst, int srst)
 		buspirate_set_feature(buspirate_fd, FEATURE_SRST, ACTION_DISABLE);
 	else
 		buspirate_set_feature(buspirate_fd, FEATURE_SRST, ACTION_ENABLE);
+
+	return ERROR_OK;
 }
 
 static void buspirate_set_feature(int fd, char feat, char action)
@@ -1052,7 +1047,7 @@ static void buspirate_jtag_reset(int fd)
 	tmp[0] = 0x00; /* exit OCD1 mode */
 	buspirate_serial_write(fd, tmp, 1);
 	usleep(10000);
-	/* We ignore the return value here purposly, nothing we can do */
+	/* We ignore the return value here on purpose, nothing we can do */
 	buspirate_serial_read(fd, tmp, 5);
 	if (strncmp((char *)tmp, "BBIO1", 5) == 0) {
 		tmp[0] = 0x0F; /*  reset BP */
@@ -1541,5 +1536,3 @@ static int buspirate_swd_run_queue(void)
 	LOG_DEBUG("SWD queue return value: %02x", retval);
 	return retval;
 }
-
-

@@ -370,11 +370,10 @@ static int amt_jtagaccel_execute_queue(void)
 				amt_jtagaccel_scan(cmd->cmd.scan->ir_scan, type, buffer, scan_size);
 				if (jtag_read_buffer(buffer, cmd->cmd.scan) != ERROR_OK)
 					retval = ERROR_JTAG_QUEUE_FAILED;
-				if (buffer)
-					free(buffer);
+				free(buffer);
 				break;
 			case JTAG_SLEEP:
-				LOG_DEBUG_IO("sleep %" PRIi32, cmd->cmd.sleep->us);
+				LOG_DEBUG_IO("sleep %" PRIu32, cmd->cmd.sleep->us);
 				jtag_sleep(cmd->cmd.sleep->us);
 				break;
 			default:
@@ -393,7 +392,7 @@ int amt_jtagaccel_get_giveio_access(void)
 	HANDLE h;
 	OSVERSIONINFO version;
 
-	version.dwOSVersionInfoSize = sizeof version;
+	version.dwOSVersionInfoSize = sizeof(version);
 	if (!GetVersionEx(&version)) {
 		errno = EINVAL;
 		return -1;
@@ -584,7 +583,11 @@ static const struct command_registration amtjtagaccel_command_handlers[] = {
 	COMMAND_REGISTRATION_DONE
 };
 
-struct jtag_interface amt_jtagaccel_interface = {
+static struct jtag_interface amt_jtagaccel_interface = {
+	.execute_queue = amt_jtagaccel_execute_queue,
+};
+
+struct adapter_driver amt_jtagaccel_adapter_driver = {
 	.name = "amt_jtagaccel",
 	.transports = jtag_only,
 	.commands = amtjtagaccel_command_handlers,
@@ -592,5 +595,6 @@ struct jtag_interface amt_jtagaccel_interface = {
 	.init = amt_jtagaccel_init,
 	.quit = amt_jtagaccel_quit,
 	.speed = amt_jtagaccel_speed,
-	.execute_queue = amt_jtagaccel_execute_queue,
+
+	.jtag_ops = &amt_jtagaccel_interface,
 };

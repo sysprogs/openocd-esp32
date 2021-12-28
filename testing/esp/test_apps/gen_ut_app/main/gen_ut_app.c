@@ -23,12 +23,10 @@
 #include "esp_log.h"
 const static char *TAG = "ut_app";
 
-#if CONFIG_IDF_TARGET_ESP32
+#if UT_IDF_VER <= MAKE_UT_IDF_VER(4,1,0,0)
 #define TIM_CLR(_tg_, _tn_) do{ TIMERG ## _tg_.int_clr_timers.t ## _tn_ = 1;}while(0)
-#define TIM_UPD(_tg_, _tn_) do{ TIMERG ## _tg_.hw_timer[(_tn_)].update = 1;}while(0)
 #else
-#define TIM_CLR(_tg_, _tn_) do{ TIMERG ## _tg_.int_clr.t ## _tn_ = 1;}while(0)
-#define TIM_UPD(_tg_, _tn_) do{ TIMERG ## _tg_.hw_timer[(_tn_)].update.update = 1;}while(0)
+#define TIM_CLR(_tg_, _tn_) do{  timer_group_clr_intr_status_in_isr(_tg_, _tn_); }while(0)
 #endif
 
 #define SPIRAM_TEST_ARRAY_SZ    5
@@ -75,6 +73,11 @@ void test_timer_init(int timer_group, int timer_idx, uint32_t period)
     config.divider = 2;     //Range is 2 to 65536
     config.intr_type = TIMER_INTR_LEVEL;
     config.counter_en = TIMER_PAUSE;
+#if UT_IDF_VER >= MAKE_UT_IDF_VER(4,1,0,0)
+#if SOC_TIMER_GROUP_SUPPORT_XTAL
+    config.clk_src = TIMER_SRC_CLK_APB;
+#endif
+#endif
     /*Configure timer*/
     timer_init(timer_group, timer_idx, &config);
     /*Stop timer counter*/
@@ -92,25 +95,21 @@ void test_timer_rearm(int timer_group, int timer_idx)
     if (timer_group == 0) {
         if (timer_idx == 0) {
             TIM_CLR(0, 0);
-            TIM_UPD(0, 0);
-            TIMERG0.hw_timer[0].config.alarm_en = 1;
+            timer_set_alarm(0, 0, TIMER_ALARM_EN);
         } else {
 #if !CONFIG_IDF_TARGET_ESP32C3
             TIM_CLR(0, 1);
-            TIM_UPD(0, 1);
-            TIMERG0.hw_timer[1].config.alarm_en = 1;
+            timer_set_alarm(0, 1, TIMER_ALARM_EN);
 #endif
         }
     } else if (timer_group == 1) {
         if (timer_idx == 0) {
             TIM_CLR(1, 0);
-            TIM_UPD(1, 0);
-            TIMERG1.hw_timer[0].config.alarm_en = 1;
+            timer_set_alarm(1, 0, TIMER_ALARM_EN);
         } else {
 #if !CONFIG_IDF_TARGET_ESP32C3
             TIM_CLR(1, 1);
-            TIM_UPD(1, 1);
-            TIMERG1.hw_timer[1].config.alarm_en = 1;
+            timer_set_alarm(1, 1, TIMER_ALARM_EN);
 #endif
         }
     }
@@ -174,6 +173,31 @@ static void blink_task(void *pvParameter)
         s_count2--;                                     TEST_BREAK_LOC(s_count2);
         s_count3++;                                     TEST_BREAK_LOC(s_count3);
     }
+}
+
+void unused_func0(void)
+{
+    s_tmp_ln++;
+}
+void unused_func1(void)
+{
+    s_tmp_ln++;
+}
+void unused_func2(void)
+{
+    s_tmp_ln++;
+}
+void unused_func3(void)
+{
+    s_tmp_ln++;
+}
+void unused_func4(void)
+{
+    s_tmp_ln++;
+}
+void unused_func5(void)
+{
+    s_tmp_ln++;
 }
 
 /* This test calls functions recursively many times, exhausting the
@@ -398,10 +422,10 @@ void app_main()
     ESP_LOGI(TAG, "Run test %d\n", s_run_test);
     if (s_run_test == 100){
         static struct blink_task_arg task_arg = { .tim_grp = TIMER_GROUP_1, .tim_id = TIMER_0, .tim_period = 500000UL};
-        xTaskCreate(&blink_task, "blink_task", 2048, &task_arg, 5, NULL);
+        xTaskCreate(&blink_task, "blink_task", 4096, &task_arg, 5, NULL);
     } else if (s_run_test == 101){
-        xTaskCreatePinnedToCore(&blink_task, "blink_task0", 2048, NULL, 5, NULL, 0);
-        xTaskCreatePinnedToCore(&blink_task, "blink_task1", 2048, NULL, 5, NULL, 1);
+        xTaskCreatePinnedToCore(&blink_task, "blink_task0", 4096, NULL, 5, NULL, 0);
+        xTaskCreatePinnedToCore(&blink_task, "blink_task1", 4096, NULL, 5, NULL, 1);
 #if CONFIG_IDF_TARGET_ARCH_XTENSA
     } else if (s_run_test == 102){
         xTaskCreatePinnedToCore(&scratch_reg_using_task, "sreg_task", 2048, NULL, 5, NULL, portNUM_PROCESSORS-1);

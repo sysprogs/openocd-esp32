@@ -588,7 +588,7 @@ static const struct xtensa_power_ops esp32_pwr_ops = {
 	.queue_reg_write = xtensa_dm_queue_pwr_reg_write
 };
 
-static const struct esp_xtensa_flash_breakpoint_ops esp32_flash_brp_ops = {
+static const struct esp_flash_breakpoint_ops esp32_flash_brp_ops = {
 	.breakpoint_add = esp_flash_breakpoint_add,
 	.breakpoint_remove = esp_flash_breakpoint_remove
 };
@@ -786,6 +786,7 @@ struct target_type esp32_target = {
 
 	.checksum_memory = xtensa_checksum_memory,
 
+	.get_gdb_arch = xtensa_get_gdb_arch,
 	.get_gdb_reg_list = xtensa_get_gdb_reg_list,
 
 	.run_algorithm = xtensa_run_algorithm,

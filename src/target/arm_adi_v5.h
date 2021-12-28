@@ -158,6 +158,15 @@
 #define DP_APSEL_MAX        (255)
 #define DP_APSEL_INVALID    (-1)
 
+/* FIXME: not SWD specific; should be renamed, e.g. adiv5_special_seq */
+enum swd_special_seq {
+	LINE_RESET,
+	JTAG_TO_SWD,
+	SWD_TO_JTAG,
+	SWD_TO_DORMANT,
+	DORMANT_TO_SWD,
+};
+
 /**
  * This represents an ARM Debug Interface (v5) Access Port (AP).
  * Most common is a MEM-AP, for memory access.
@@ -244,7 +253,7 @@ struct adiv5_dap {
 	/* Control config */
 	uint32_t dp_ctrl_stat;
 
-	struct adiv5_ap ap[256];
+	struct adiv5_ap ap[DP_APSEL_MAX + 1];
 
 	/* The current manually selected AP by the "dap apsel" command */
 	uint32_t apsel;
@@ -271,6 +280,12 @@ struct adiv5_dap {
 	bool ti_be_32_quirks;
 
 	/**
+	 * STLINK adapter need to know if last AP operation was read or write, and
+	 * in case of write has to flush it with a dummy read from DP_RDBUFF
+	 */
+	bool stlink_flush_ap_write;
+
+	/**
 	 * Signals that an attempt to reestablish communication afresh
 	 * should be performed before the next access.
 	 */
@@ -291,6 +306,10 @@ struct adiv5_dap {
 struct dap_ops {
 	/** connect operation for SWD */
 	int (*connect)(struct adiv5_dap *dap);
+
+	/** send a sequence to the DAP */
+	int (*send_sequence)(struct adiv5_dap *dap, enum swd_special_seq seq);
+
 	/** DP register read. */
 	int (*queue_dp_read)(struct adiv5_dap *dap, unsigned reg,
 			uint32_t *data);
@@ -337,6 +356,21 @@ enum ap_type {
 	AP_TYPE_AXI_AP  = 0x4,  /* AXI Memory-AP */
 	AP_TYPE_AHB5_AP = 0x5,  /* AHB5 Memory-AP. */
 };
+
+/**
+ * Send an adi-v5 sequence to the DAP.
+ *
+ * @param dap The DAP used for reading.
+ * @param seq The sequence to send.
+ *
+ * @return ERROR_OK for success, else a fault code.
+ */
+static inline int dap_send_sequence(struct adiv5_dap *dap,
+		enum swd_special_seq seq)
+{
+	assert(dap->ops != NULL);
+	return dap->ops->send_sequence(dap, seq);
+}
 
 /**
  * Queue a DP register read.
@@ -516,6 +550,7 @@ int mem_ap_write_buf_noincr(struct adiv5_ap *ap,
 
 /* Initialisation of the debug system, power domains and registers */
 int dap_dp_init(struct adiv5_dap *dap);
+int dap_dp_init_or_reconnect(struct adiv5_dap *dap);
 int mem_ap_init(struct adiv5_ap *ap);
 
 /* Invalidate cached DP select and cached TAR and CSW of all APs */
@@ -566,5 +601,15 @@ struct adiv5_private_config {
 
 extern int adiv5_verify_config(struct adiv5_private_config *pc);
 extern int adiv5_jim_configure(struct target *target, Jim_GetOptInfo *goi);
+
+struct adiv5_mem_ap_spot {
+	struct adiv5_dap *dap;
+	int ap_num;
+	uint32_t base;
+};
+
+extern int adiv5_mem_ap_spot_init(struct adiv5_mem_ap_spot *p);
+extern int adiv5_jim_mem_ap_spot_configure(struct adiv5_mem_ap_spot *cfg,
+		Jim_GetOptInfo *goi);
 
 #endif /* OPENOCD_TARGET_ARM_ADI_V5_H */

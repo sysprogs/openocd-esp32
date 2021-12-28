@@ -70,6 +70,11 @@ add_library(ocdflashnor
 	swm050.c
 	esp_flash.c
 	esp_riscv.c
-	esp32c3.c)
+	esp32c3.c
+	esp32s3.c
+	renesas_rpchf.c
+	sfdp.c
+	sh_qspi.c
+	stmqspi.c)
 
 target_include_directories(ocdflashnor PRIVATE ../../..)

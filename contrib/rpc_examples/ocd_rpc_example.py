@@ -49,10 +49,16 @@ class OpenOcd:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
     def __enter__(self):
-        self.sock.connect((self.tclRpcIp, self.tclRpcPort))
+        self.connect()
         return self
 
     def __exit__(self, type, value, traceback):
+        self.disconnect()
+
+    def connect(self):
+        self.sock.connect((self.tclRpcIp, self.tclRpcPort))
+
+    def disconnect(self):
         try:
             self.send("exit")
         finally:
@@ -119,7 +125,7 @@ if __name__ == "__main__":
         show(ocd.send("capture { echo \"echo says hi!\" }")[:-1])
         show(ocd.send("capture \"halt\"")[:-1])
 
-        # Read the first few words at the RAM region (put starting adress of RAM
+        # Read the first few words at the RAM region (put starting address of RAM
         # region into 'addr')
         addr = 0x10000000
 

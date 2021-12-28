@@ -57,7 +57,6 @@ struct rtos {
 	struct thread_detail *thread_details;
 	int thread_count;
 	int (*gdb_thread_packet)(struct connection *connection, char const *packet, int packet_size);
-	int (*gdb_v_packet)(struct connection *connection, char const *packet, int packet_size);
 	int (*gdb_target_for_threadid)(struct connection *connection, int64_t thread_id, struct target **p_target);
 	void *rtos_specific_params;
 };
@@ -84,13 +83,6 @@ struct rtos_type {
 	char * (*ps_command)(struct target *target);
 	int (*set_reg)(struct rtos *rtos, uint32_t reg_num, uint8_t *reg_value);
 	int (*post_reset_cleanup)(struct target *target);
-	/**
-	 * Possibly work around an annoying gdb behaviour: when the current thread
-	 * is changed in gdb, it assumes that the target can follow and also make
-	 * the thread current. This is an assumption that cannot hold for a real
-	 * target running a multi-threading OS. If an RTOS can do this, override
-	 * needs_fake_step(). */
-	bool (*needs_fake_step)(struct target *target, int64_t thread_id);
 };
 
 struct stack_register_offset {
@@ -125,6 +117,7 @@ struct rtos_register_stacking {
 #define GDB_THREAD_PACKET_NOT_CONSUMED (-40)
 
 int rtos_create(Jim_GetOptInfo *goi, struct target *target);
+void rtos_destroy(struct target *target);
 int rtos_set_reg(struct connection *connection, int reg_num,
 		uint8_t *reg_value);
 int rtos_generic_stack_read(struct target *target,
@@ -132,7 +125,6 @@ int rtos_generic_stack_read(struct target *target,
 		int64_t stack_ptr,
 		struct rtos_reg **reg_list,
 		int *num_regs);
-int rtos_try_next(struct target *target);
 int gdb_thread_packet(struct connection *connection, char const *packet, int packet_size);
 int rtos_get_gdb_reg(struct connection *connection, int reg_num);
 int rtos_get_gdb_reg_list(struct connection *connection);

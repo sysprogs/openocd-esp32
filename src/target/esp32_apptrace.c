@@ -139,7 +139,6 @@ static int esp32_apptrace_handle_trace_block(struct esp32_apptrace_cmd_ctx *ctx,
 static int esp32_sysview_start(struct esp32_apptrace_cmd_ctx *ctx);
 static int esp32_sysview_stop(struct esp32_apptrace_cmd_ctx *ctx);
 
-
 /*********************************************************************
 *                       Trace destination API
 **********************************************************************/
@@ -556,13 +555,21 @@ int esp32_apptrace_cmd_ctx_init(struct target *target,
 	 * TODO: remove that dependency */
 	assert(cmd_ctx->cores_num <= ESP32_APPTRACE_MAX_CORES_NUM && "Too many cores number!");
 
-	/* TODO: find better way to detect chip arch */
-	if (strncmp(target_type_name(target), "esp32c3", 7) == 0) {
-		cmd_ctx->hw = target_to_esp_riscv(target)->apptrace.hw;
-		cmd_ctx->algo_hw = target_to_esp_riscv(target)->algo_hw;
+	const char *arch = target_get_gdb_arch(target);
+	if (arch != NULL) {
+		if (strncmp(arch, "riscv", 5) == 0) {
+			cmd_ctx->hw = target_to_esp_riscv(target)->apptrace.hw;
+			cmd_ctx->algo_hw = target_to_esp_riscv(target)->esp.algo_hw;
+		} else if (strncmp(arch, "xtensa", 6) == 0) {
+			cmd_ctx->hw = target_to_esp_xtensa(target)->apptrace.hw;
+			cmd_ctx->algo_hw = target_to_esp_xtensa(target)->esp.algo_hw;
+		} else {
+			LOG_ERROR("Unsupported target arch '%s'!", arch);
+			return ERROR_FAIL;
+		}
 	} else {
-		cmd_ctx->hw = target_to_esp_xtensa(target)->apptrace.hw;
-		cmd_ctx->algo_hw = target_to_esp_xtensa(target)->algo_hw;
+		LOG_ERROR("Unknown target arch!");
+		return ERROR_FAIL;
 	}
 
 	cmd_ctx->max_trace_block_sz = cmd_ctx->hw->max_block_size_get(cmd_ctx->cpus[0]);
@@ -1183,6 +1190,13 @@ static int esp32_apptrace_check_connection(struct esp32_apptrace_cmd_ctx *ctx)
 					i,
 					res);
 				return res;
+			}
+			if (ctx->stop_tmo != -1.0) {
+				/* re-start idle time measurement */
+				if (duration_start(&ctx->idle_time) != 0) {
+					LOG_ERROR("Failed to re-start idle time measure!");
+					return ERROR_FAIL;
+				}
 			}
 		}
 	}
@@ -2307,13 +2321,30 @@ int esp_gcov_poll(struct target *target, void *priv)
 static struct esp_dbg_stubs *get_stubs_from_target(struct target **target)
 {
 	struct esp_dbg_stubs *dbg_stubs = NULL;
+	bool xtensa_arch = false;
+
+	const char *arch = target_get_gdb_arch(*target);
+	if (arch != NULL) {
+		if (strncmp(arch, "riscv", 5) == 0)
+			xtensa_arch = false;
+		else if (strncmp(arch, "xtensa", 6) == 0)
+			xtensa_arch = true;
+		else {
+			LOG_ERROR("Unsupported target arch '%s'!", arch);
+			return NULL;
+		}
+	} else {
+		LOG_ERROR("Unknown target arch!");
+		return NULL;
+	}
 
 	if ((*target)->smp) {
 		struct target_list *head;
 		struct target *curr;
 		foreach_smp_target(head, (*target)->head) {
 			curr = head->target;
-			dbg_stubs = &(target_to_esp_xtensa(curr)->dbg_stubs);
+			dbg_stubs = xtensa_arch ? &(target_to_esp_xtensa(curr)->esp.dbg_stubs) :
+				&(target_to_esp_riscv(curr)->esp.dbg_stubs);
 			if (target_was_examined(curr) && dbg_stubs->base &&
 				dbg_stubs->entries_count > 0) {
 				*target = curr;
@@ -2321,7 +2352,8 @@ static struct esp_dbg_stubs *get_stubs_from_target(struct target **target)
 			}
 		}
 	} else
-		dbg_stubs = &(target_to_esp_xtensa(*target)->dbg_stubs);
+		dbg_stubs = xtensa_arch ? &(target_to_esp_xtensa(*target)->esp.dbg_stubs) :
+			&(target_to_esp_riscv(*target)->esp.dbg_stubs);
 	return dbg_stubs;
 }
 
@@ -2334,6 +2366,8 @@ COMMAND_HANDLER(esp32_cmd_gcov)
 	struct algorithm_run_data run;
 	uint32_t func_addr;
 	bool dump = false;
+	uint32_t stub_capabilites = 0;
+	bool gcov_idf_has_thread = false;
 
 	if (CMD_ARGC > 0) {
 		if (strcmp(CMD_ARGV[0], "dump") == 0)
@@ -2396,11 +2430,6 @@ COMMAND_HANDLER(esp32_cmd_gcov)
 			esp_gcov_cmd_cleanup(&s_at_cmd_ctx);
 			return ERROR_FAIL;
 		}
-		if (dbg_stubs->entries_count < ESP_DBG_STUB_ENTRY_GCOV+1) {
-			LOG_ERROR("No GCOV stubs found!");
-			esp_gcov_cmd_cleanup(&s_at_cmd_ctx);
-			return ERROR_FAIL;
-		}
 		func_addr = dbg_stubs->entries[ESP_DBG_STUB_ENTRY_GCOV];
 		LOG_DEBUG("GCOV_FUNC = 0x%x", func_addr);
 		if (func_addr == 0) {
@@ -2408,17 +2437,32 @@ COMMAND_HANDLER(esp32_cmd_gcov)
 			esp_gcov_cmd_cleanup(&s_at_cmd_ctx);
 			return ERROR_FAIL;
 		}
+		stub_capabilites = dbg_stubs->entries[ESP_DBG_STUB_CAPABILITIES];
+		gcov_idf_has_thread = stub_capabilites & ESP_DBG_STUB_CAP_GCOV_THREAD;
+		LOG_DEBUG("STUB_CAP = 0x%x", stub_capabilites);
 		memset(&run, 0, sizeof(run));
 		run.hw = s_at_cmd_ctx.algo_hw;
 		run.stack_size      = 1024;
-		run.usr_func_arg    = &s_at_cmd_ctx;
-		run.usr_func        = esp_gcov_poll;
+		if (!gcov_idf_has_thread) {
+			run.usr_func_arg    = &s_at_cmd_ctx;
+			run.usr_func        = esp_gcov_poll;
+		}
 		run.on_board.min_stack_addr = dbg_stubs->desc.min_stack_addr;
 		run.on_board.min_stack_size = ESP_DBG_STUBS_STACK_MIN_SIZE;
 		run.on_board.code_buf_addr = dbg_stubs->desc.tramp_addr;
 		run.on_board.code_buf_size = ESP_DBG_STUBS_CODE_BUF_SIZE;
-		algorithm_run_onboard_func(target, &run, func_addr, 0);
+		/* this function works for SMP and non-SMP targets
+		 * set num_args to 1 in order to read return code coming with "a2" reg */
+		esp_xtensa_smp_run_onboard_func(run_target, &run, func_addr, 1);
 		LOG_DEBUG("FUNC RET = 0x%" PRIx64, run.ret_code);
+		if (run.ret_code == ERROR_OK && gcov_idf_has_thread) {
+			res = target_resume(target, 1, 0, 1, 0);
+			if (res != ERROR_OK) {
+				LOG_ERROR("Failed to resume target (%d)!", res);
+				return res;
+			}
+			esp_gcov_poll(target, &s_at_cmd_ctx);
+		}
 	}
 	/* disconnect */
 	res = esp32_apptrace_connect_targets(&s_at_cmd_ctx,

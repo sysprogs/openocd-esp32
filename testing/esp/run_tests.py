@@ -29,7 +29,8 @@ BOARD_TCL_CONFIG = {
             os.path.join('board', 'esp32-wrover-kit-3.3v.cfg')
         ],
         'commands' : [],
-        'chip_name' : 'esp32'
+        'chip_name' : 'esp32',
+        'target_triple' : 'xtensa-esp32-elf'
     },
     'esp32-solo-devkitj' :  {
         'files' : [
@@ -37,7 +38,8 @@ BOARD_TCL_CONFIG = {
             os.path.join('target', 'esp32-solo-1.cfg')
         ],
         'commands' : [],
-        'chip_name' : 'esp32-solo'
+        'chip_name' : 'esp32-solo',
+        'target_triple' : 'xtensa-esp32-elf'
     },
     'esp32s2-devkitj' :  {
         'files' : [
@@ -45,34 +47,56 @@ BOARD_TCL_CONFIG = {
             os.path.join('target', 'esp32s2.cfg')
         ],
         'commands' : [],
-        'chip_name' : 'esp32s2'
+        'chip_name' : 'esp32s2',
+        'target_triple' : 'xtensa-esp32s2-elf'
     },
     'esp32s2-kaluga-1' :  {
         'files' : [
             os.path.join('board', 'esp32s2-kaluga-1.cfg')
         ],
         'commands' : [],
-        'chip_name' : 'esp32s2'
+        'chip_name' : 'esp32s2',
+        'target_triple' : 'xtensa-esp32s2-elf'
     },
     'esp32c3-ftdi' :  {
         'files' : [
             os.path.join('board', 'esp32c3-ftdi.cfg')
         ],
         'commands' : [],
-        'chip_name' : 'esp32c3'
+        'chip_name' : 'esp32c3',
+        'target_triple' : 'riscv32-esp-elf'
     },
     'esp32c3-builtin' :  {
         'files' : [
             os.path.join('board', 'esp32c3-builtin.cfg')
         ],
         'commands' : [],
-        'chip_name' : 'esp32c3'
+        'chip_name' : 'esp32c3',
+        'target_triple' : 'riscv32-esp-elf'
+    },
+    'esp32s3-ftdi' :  {
+        'files' : [
+            os.path.join('board', 'esp32s3-ftdi.cfg')
+        ],
+        'commands' : [],
+        'chip_name' : 'esp32s3',
+        'target_triple' : 'xtensa-esp32s3-elf'
+    },
+    'esp32s3-builtin' :  {
+        'files' : [
+            os.path.join('board', 'esp32s3-builtin.cfg')
+        ],
+        'commands' : [],
+        'chip_name' : 'esp32s3',
+        'target_triple' : 'xtensa-esp32s3-elf'
     },
 }
 
 class SerialPortReader(threading.Thread):
     def __init__(self, port_name):
+        self._logger = logging.getLogger('BOARD_UART')
         threading.Thread.__init__(self, name='serial_reader')
+        self.port_name = port_name
         # connect to serial port
         self.ser = serial.serial_for_url(port_name, do_not_open=True)
         self.ser.baudrate = 115200
@@ -82,12 +106,17 @@ class SerialPortReader(threading.Thread):
         # self.ser.rtscts = False
         # self.ser.xonxoff = False
         self.ser.timeout = 0
-        self.ser.open()
-        self.do_work = True
-        self._logger = logging.getLogger('BOARD_UART')
 
     def get_logger(self):
         return self._logger
+
+    def is_connected(self):
+        self.ser.is_open()
+
+    def start(self):
+        self.ser.open()
+        self.do_work = True
+        threading.Thread.start(self)
 
     def stop(self):
         self.do_work = False
@@ -107,12 +136,13 @@ class SerialPortReader(threading.Thread):
 
 
 def dbg_start(toolchain, oocd, oocd_tcl, oocd_cfg_files, oocd_cfg_cmds, debug_oocd,
-              chip_name, log_level, log_stream, log_file, gdb_log):
+              chip_name, target_triple, log_level, log_stream, log_file, gdb_log):
     global _oocd_inst, _gdb_inst
     connect_tmo = 15
     remote_tmo = 10
     # Start OpenOCD
     _oocd_inst = dbg.create_oocd(chip_name=chip_name,
+                        target_triple=target_triple,
                         oocd_exec=oocd,
                         oocd_scripts=oocd_tcl,
                         oocd_cfg_files=oocd_cfg_files,
@@ -130,6 +160,7 @@ def dbg_start(toolchain, oocd, oocd_tcl, oocd_cfg_files, oocd_cfg_cmds, debug_oo
         os.environ["ESP_XTENSA_GDB_PRIV_REGS_FIX"] = "1"
         # Start GDB
         _gdb_inst = dbg.create_gdb(chip_name=chip_name,
+                            target_triple=target_triple,
                             gdb_path='%sgdb' % toolchain,
                             remote_target='127.0.0.1:%d' % dbg.Oocd.GDB_PORT,
                             log_level=log_level,
@@ -211,13 +242,15 @@ def exclude_tests_by_patterns(suite, patterns):
                 pattern = '%s.%s.*' % (parts[0], parts[1])
             re_pattern = '^%s$' % pattern.replace('.', '\.').replace('*', '.*')
             if re.match(re_pattern, test.id()):
-                setattr(test, 'setUp', lambda: test.skipTest('Excluded by pattern'))
+                # '__esp_unittest_skip_reason__' flag is used by test suite to check if app binaries need to be flashed,
+                # so we can skip individual tests w/o need for having binaries for them. See DebuggerTestsBunch.run() for details
+                setattr(test, '__esp_unittest_skip_reason__', 'Excluded by pattern')
                 break
     return suite
 
 def main():
     board_uart_reader = None
-    if args.serial_port:
+    if args.log_uart:
         try:
             board_uart_reader = SerialPortReader(args.serial_port)
         except serial.SerialException as e:
@@ -270,7 +303,8 @@ def main():
 
     # start debugger, ideally we should run all tests w/o restarting it
     dbg_start(args.toolchain, args.oocd, args.oocd_tcl, board_tcl['files'], board_tcl['commands'],
-                        args.debug_oocd, board_tcl['chip_name'], log_lev, ch, fh, args.gdb_log_file)
+                        args.debug_oocd, board_tcl['chip_name'], board_tcl['target_triple'],
+                        log_lev, ch, fh, args.gdb_log_file)
     res = None
     try:
         # run tests from the same directory this file is
@@ -299,7 +333,7 @@ def main():
             setup_logger(suite.modules[m].get_logger(), ch, fh, log_lev)
         suite.load_app_bins = not args.no_load
         global _oocd_inst, _gdb_inst
-        suite.config_tests(_oocd_inst, _gdb_inst, args.toolchain)
+        suite.config_tests(_oocd_inst, _gdb_inst, args.toolchain, board_uart_reader, args.serial_port)
         # RUN TESTS
         res = test_runner.run(suite)
         if not res.wasSuccessful() and args.retry:
@@ -378,6 +412,9 @@ if __name__ == '__main__':
                         help='Path to GDB log file.', default='')
     parser.add_argument('--serial-port', '-u',
                         help='Name of serial port to grab board\'s UART output.')
+    parser.add_argument('--log-uart', '-lu',
+                        help='Connect to UART and log data from it.',
+                        action='store_true', default=False)
     parser.add_argument('--idf-ver-min', '-i',
                         help='Minimal IDF version to run tests for. Format: x[.y[.z]]. Use "latest" to run all tests. Use "auto" to read version from target.',
                         type=str, default='auto')

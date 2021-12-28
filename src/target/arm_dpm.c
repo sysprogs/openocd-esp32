@@ -145,6 +145,9 @@ static int dpm_read_reg_u64(struct arm_dpm *dpm, struct reg *r, unsigned regnum)
 			retval = dpm->instr_read_data_r0(dpm,
 				ARMV4_5_VMOV(1, 1, 0, ((regnum - ARM_VFP_V3_D0) >> 4),
 				((regnum - ARM_VFP_V3_D0) & 0xf)), &value_r0);
+			if (retval != ERROR_OK)
+				break;
+
 			/* read r1 via dcc */
 			retval = dpm->instr_read_data_dcc(dpm,
 				ARMV4_5_MCR(14, 0, 1, 0, 5, 0),
@@ -203,13 +206,12 @@ int arm_dpm_read_reg(struct arm_dpm *dpm, struct reg *r, unsigned regnum)
 					LOG_WARNING("Jazelle PC adjustment unknown");
 					break;
 				default:
-					LOG_WARNING("unknow core state");
+					LOG_WARNING("unknown core state");
 					break;
 			}
 			break;
 		case ARM_VFP_V3_D0 ... ARM_VFP_V3_D31:
 			return dpm_read_reg_u64(dpm, r, regnum);
-			break;
 		case ARM_VFP_V3_FPSCR:
 			/* "VMRS r0, FPSCR"; then return via DCC */
 			retval = dpm->instr_read_data_r0(dpm,
@@ -248,6 +250,9 @@ static int dpm_write_reg_u64(struct arm_dpm *dpm, struct reg *r, unsigned regnum
 			retval = dpm->instr_write_data_dcc(dpm,
 				ARMV4_5_MRC(14, 0, 1, 0, 5, 0),
 				value_r1);
+			if (retval != ERROR_OK)
+				break;
+
 			/* write value_r0 to r0 via dcc then,
 			 * move to double word register from r0:r1: "vmov vm, r0, r1"
 			 */
@@ -288,7 +293,6 @@ static int dpm_write_reg(struct arm_dpm *dpm, struct reg *r, unsigned regnum)
 			break;
 		case ARM_VFP_V3_D0 ... ARM_VFP_V3_D31:
 			return dpm_write_reg_u64(dpm, r, regnum);
-			break;
 		case ARM_VFP_V3_FPSCR:
 			/* move to r0 from DCC, then "VMSR FPSCR, r0" */
 			retval = dpm->instr_write_data_r0(dpm,
@@ -331,7 +335,7 @@ static int dpm_write_pc_core_state(struct arm_dpm *dpm, struct reg *r)
 }
 
 /**
- * Read basic registers of the the current context:  R0 to R15, and CPSR;
+ * Read basic registers of the current context:  R0 to R15, and CPSR;
  * sets the core mode (such as USR or IRQ) and state (such as ARM or Thumb).
  * In normal operation this is called on entry to halting debug state,
  * possibly after some other operations supporting restore of debug state
@@ -1092,10 +1096,11 @@ int arm_dpm_setup(struct arm_dpm *dpm)
 
 	dpm->nbp = 1 + ((dpm->didr >> 24) & 0xf);
 	dpm->nwp = 1 + ((dpm->didr >> 28) & 0xf);
-	dpm->dbp = calloc(dpm->nbp, sizeof *dpm->dbp);
-	dpm->dwp = calloc(dpm->nwp, sizeof *dpm->dwp);
+	dpm->dbp = calloc(dpm->nbp, sizeof(*dpm->dbp));
+	dpm->dwp = calloc(dpm->nwp, sizeof(*dpm->dwp));
 
 	if (!dpm->dbp || !dpm->dwp) {
+		arm_free_reg_cache(arm);
 		free(dpm->dbp);
 		free(dpm->dwp);
 		return ERROR_FAIL;

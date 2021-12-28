@@ -128,7 +128,7 @@ struct stm32lx_part_info {
 };
 
 struct stm32lx_flash_bank {
-	int probed;
+	bool probed;
 	uint32_t idcode;
 	uint32_t user_bank_size;
 	uint32_t flash_base;
@@ -297,7 +297,7 @@ FLASH_BANK_COMMAND_HANDLER(stm32lx_flash_bank_command)
 
 	bank->driver_priv = stm32lx_info;
 
-	stm32lx_info->probed = 0;
+	stm32lx_info->probed = false;
 	stm32lx_info->user_bank_size = bank->size;
 
 	/* the stm32l erased value is 0x00 */
@@ -308,8 +308,6 @@ FLASH_BANK_COMMAND_HANDLER(stm32lx_flash_bank_command)
 
 COMMAND_HANDLER(stm32lx_handle_mass_erase_command)
 {
-	int i;
-
 	if (CMD_ARGC < 1)
 		return ERROR_COMMAND_SYNTAX_ERROR;
 
@@ -321,7 +319,7 @@ COMMAND_HANDLER(stm32lx_handle_mass_erase_command)
 	retval = stm32lx_mass_erase(bank);
 	if (retval == ERROR_OK) {
 		/* set all sectors as erased */
-		for (i = 0; i < bank->num_sectors; i++)
+		for (unsigned int i = 0; i < bank->num_sectors; i++)
 			bank->sectors[i].is_erased = 1;
 
 		command_print(CMD, "stm32lx mass erase complete");
@@ -389,7 +387,7 @@ static int stm32lx_protect_check(struct flash_bank *bank)
 	if (retval != ERROR_OK)
 		return retval;
 
-	for (int i = 0; i < bank->num_sectors; i++) {
+	for (unsigned int i = 0; i < bank->num_sectors; i++) {
 		if (wrpr & (1 << i))
 			bank->sectors[i].is_protected = 1;
 		else
@@ -398,7 +396,8 @@ static int stm32lx_protect_check(struct flash_bank *bank)
 	return ERROR_OK;
 }
 
-static int stm32lx_erase(struct flash_bank *bank, int first, int last)
+static int stm32lx_erase(struct flash_bank *bank, unsigned int first,
+		unsigned int last)
 {
 	int retval;
 
@@ -415,7 +414,7 @@ static int stm32lx_erase(struct flash_bank *bank, int first, int last)
 	/*
 	 * Loop over the selected sectors and erase them
 	 */
-	for (int i = first; i <= last; i++) {
+	for (unsigned int i = first; i <= last; i++) {
 		retval = stm32lx_erase_sector(bank, i);
 		if (retval != ERROR_OK)
 			return retval;
@@ -447,7 +446,7 @@ static int stm32lx_write_half_pages(struct flash_bank *bank, const uint8_t *buff
 
 	/* Make sure we're performing a half-page aligned write. */
 	if (count % hp_nb) {
-		LOG_ERROR("The byte count must be %" PRIu32 "B-aligned but count is %" PRIi32 "B)", hp_nb, count);
+		LOG_ERROR("The byte count must be %" PRIu32 "B-aligned but count is %" PRIu32 "B)", hp_nb, count);
 		return ERROR_FAIL;
 	}
 
@@ -630,7 +629,7 @@ static int stm32lx_write(struct flash_bank *bank, const uint8_t *buffer,
 	if (retval != ERROR_OK)
 		return retval;
 
-	/* first we need to write any unaligned head bytes upto
+	/* first we need to write any unaligned head bytes up to
 	 * the next 128 byte page */
 
 	if (offset % hp_nb)
@@ -731,14 +730,13 @@ static int stm32lx_probe(struct flash_bank *bank)
 {
 	struct target *target = bank->target;
 	struct stm32lx_flash_bank *stm32lx_info = bank->driver_priv;
-	int i;
 	uint16_t flash_size_in_kb;
 	uint32_t device_id;
 	uint32_t base_address = FLASH_BANK0_ADDRESS;
 	uint32_t second_bank_base;
 	unsigned int n;
 
-	stm32lx_info->probed = 0;
+	stm32lx_info->probed = false;
 
 	int retval = stm32lx_read_id_code(bank->target, &device_id);
 	if (retval != ERROR_OK)
@@ -756,7 +754,7 @@ static int stm32lx_probe(struct flash_bank *bank)
 	}
 
 	if (n == ARRAY_SIZE(stm32lx_parts)) {
-		LOG_WARNING("Cannot identify target as a STM32L family.");
+		LOG_ERROR("Cannot identify target as an STM32 L0 or L1 family device.");
 		return ERROR_FAIL;
 	} else {
 		LOG_INFO("Device: %s", stm32lx_info->part_info.device_str);
@@ -822,7 +820,7 @@ static int stm32lx_probe(struct flash_bank *bank)
 						bank->base, base_address, second_bank_base);
 			return ERROR_FAIL;
 		}
-		LOG_INFO("STM32L flash has dual banks. Bank (%d) size is %dkb, base address is 0x%" PRIx32,
+		LOG_INFO("STM32L flash has dual banks. Bank (%u) size is %dkb, base address is 0x%" PRIx32,
 				bank->bank_number, flash_size_in_kb, base_address);
 	} else {
 		LOG_INFO("STM32L flash size is %dkb, base address is 0x%" PRIx32, flash_size_in_kb, base_address);
@@ -836,12 +834,9 @@ static int stm32lx_probe(struct flash_bank *bank)
 	}
 
 	/* calculate numbers of sectors (4kB per sector) */
-	int num_sectors = (flash_size_in_kb * 1024) / FLASH_SECTOR_SIZE;
+	unsigned int num_sectors = (flash_size_in_kb * 1024) / FLASH_SECTOR_SIZE;
 
-	if (bank->sectors) {
-		free(bank->sectors);
-		bank->sectors = NULL;
-	}
+	free(bank->sectors);
 
 	bank->size = flash_size_in_kb * 1024;
 	bank->base = base_address;
@@ -852,14 +847,14 @@ static int stm32lx_probe(struct flash_bank *bank)
 		return ERROR_FAIL;
 	}
 
-	for (i = 0; i < num_sectors; i++) {
+	for (unsigned int i = 0; i < num_sectors; i++) {
 		bank->sectors[i].offset = i * FLASH_SECTOR_SIZE;
 		bank->sectors[i].size = FLASH_SECTOR_SIZE;
 		bank->sectors[i].is_erased = -1;
 		bank->sectors[i].is_protected = -1;
 	}
 
-	stm32lx_info->probed = 1;
+	stm32lx_info->probed = true;
 
 	return ERROR_OK;
 }

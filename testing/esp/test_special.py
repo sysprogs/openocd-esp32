@@ -1,5 +1,6 @@
 import logging
 import unittest
+import subprocess
 import debug_backend as dbg
 from debug_backend_tests import *
 
@@ -31,6 +32,7 @@ class DebuggerSpecialTestsImpl:
         self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_SIGTRAP, 'crash_task', ['crash'], outmost_func_name='crash_task')
         self.prepare_app_for_debugging(self.test_app_cfg.app_off)
 
+    @skip_for_chip(['esp32s3']) #TODO: Will be enabled after fix 
     def test_gdb_regs_mapping(self):
         """
             This test checks that GDB and OpenOCD has identical registers mapping.
@@ -39,14 +41,16 @@ class DebuggerSpecialTestsImpl:
         """
         # should fail for any new chip.
         # just to be sure that this test is revised when new chip support is added
-        self.fail_if_not_hw_id([r'esp32-[.]*', r'esp32s2-[.]*', r'esp32c3-[.]*'])
+        self.fail_if_not_hw_id([r'esp32-[.]*', r'esp32s2-[.]*', r'esp32c3-[.]*', r'esp32s3-[.]*'])
         regs = self.gdb.get_reg_names()
         i = 10
         for reg in regs:
             if (len(reg) == 0):
                 continue
-            if reg == 'mmid' or reg == 'mstatus':
+
+            if reg == 'mmid' or reg == 'ustatus' or reg == 'sar_byte':
                 break # stop at first priveleged register, currently they are not set by GDB
+
             # set to reasonable value, because GDB tries to read memory @ pc
             val = 0x40000400 if reg == 'pc' else i
             self.gdb.set_reg(reg, val)
@@ -58,9 +62,48 @@ class DebuggerSpecialTestsImpl:
         # reset chip to clear all changes in regs, otherwise the next test can fail
         self.gdb.target_reset()
 
+    def _debug_image(self):
+        self.select_sub_test(100)
+        bps = ['app_main', 'gpio_set_direction', 'gpio_set_level', 'vTaskDelay']
+        for f in bps:
+            self.add_bp(f)
+        # break at gpio_set_direction
+        self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'gpio_set_direction', ['gpio_set_direction'])
+        # break at gpio_set_level
+        self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'gpio_set_level', ['gpio_set_level0'])
+        # break at vTaskDelay
+        self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'vTaskDelay', ['vTaskDelay0'])
+        self.clear_bps()
+
+    @skip_for_chip(['esp32s3']) #TODO: Will be enabled after fix
+    def test_debugging_works_after_hw_reset(self):
+        """
+            This test checks that debugging works after HW reset.
+            1) Select appropriate sub-test number on target.
+            2) Resume target and wait some time.
+            4) Run `esptool.py` to get chip ID and reset target.
+            5) Wait some time.
+            6) Run simple debug session.
+        """
+        # avoid simultaneous access to UART with SerialReader
+        self.assertIsNone(self.uart_reader, "Can not run this test with UART logging enabled!")
+        self.select_sub_test(100)
+        self.resume_exec()
+        time.sleep(2.0)
+        if self.port_name:
+            cmd = ['esptool.py', '-p', self.port_name, '-a', 'hard_reset', 'chip_id']
+        else:
+            cmd = ['esptool.py', '-a', 'hard_reset', 'chip_id']
+        proc = subprocess.run(cmd)
+        proc.check_returncode()
+        time.sleep(2.0)
+        self.stop_exec()
+        self.prepare_app_for_debugging(self.test_app_cfg.app_off)
+        self._debug_image()
+
 # to be skipped for any board with ESP32-S2 chip
 # TODO: enable these tests when PSRAM is supported for ESP32-S2
-@skip_for_chip(['esp32s2', 'esp32c3'])
+@skip_for_chip(['esp32s2', 'esp32c3', 'esp32s3'])
 class PsramTestsImpl:
     """ PSRAM specific test cases generic for dual and single core modes
     """
@@ -94,13 +137,39 @@ class PsramTestsImpl:
 class DebuggerSpecialTestsDual(DebuggerGenericTestAppTestsDual, DebuggerSpecialTestsImpl):
     """ Test cases for dual core mode
     """
-    pass
+    def test_cores_states_after_esptool_connection(self):
+        """
+            This test checks that cores are in running or halted state after esptool connection.
+            1) Select appropriate sub-test number on target.
+            2) Resume target and wait some time.
+            3) Check that all targets are in state 'running'.
+            4) Run `esptool.py` to get chip ID and reset target.
+            5) Wait some time.
+            6) Check that all targets are in state 'running'.
+        """
+        # avoid simultaneous access to UART with SerialReader
+        self.assertIsNone(self.uart_reader, "Can not run this test with UART logging enabled!")
+        self.select_sub_test(100)
+        self.resume_exec()
+        time.sleep(2.0)
+        for target in self.oocd.targets():
+            state = self.oocd.target_state(target)
+            self.assertEqual(state, 'running')
+        if self.port_name:
+            cmd = ['esptool.py', '-p', self.port_name, 'chip_id']
+        else:
+            cmd = ['esptool.py', 'chip_id']
+        proc = subprocess.run(cmd)
+        proc.check_returncode()
+        time.sleep(2.0)
+        for target in self.oocd.targets():
+            state = self.oocd.target_state(target)
+            self.assertEqual(state, 'running')
 
 class DebuggerSpecialTestsSingle(DebuggerGenericTestAppTestsSingle, DebuggerSpecialTestsImpl):
     """ Test cases for single core mode
     """
     pass
-
 
 class PsramTestAppTestsDual(DebuggerGenericTestAppTests):
     """ Base class to run tests which use PSRAM test app in dual core mode

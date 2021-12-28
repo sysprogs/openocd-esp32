@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+
 #ifndef RISCV_H
 #define RISCV_H
 
@@ -7,15 +9,22 @@ struct riscv_program;
 #include "opcodes.h"
 #include "gdb_regs.h"
 #include "jtag/jtag.h"
+#include "target/register.h"
 
 /* The register cache is statically allocated. */
-#define RISCV_MAX_HARTS 32
+#define RISCV_MAX_HARTS 1024
 #define RISCV_MAX_REGISTERS 5000
 #define RISCV_MAX_TRIGGERS 32
 #define RISCV_MAX_HWBPS 16
 
 #define DEFAULT_COMMAND_TIMEOUT_SEC		2
 #define DEFAULT_RESET_TIMEOUT_SEC		30
+
+#define RISCV_SATP_MODE(xlen)  ((xlen) == 32 ? SATP32_MODE : SATP64_MODE)
+#define RISCV_SATP_PPN(xlen)  ((xlen) == 32 ? SATP32_PPN : SATP64_PPN)
+#define RISCV_PGSHIFT 12
+
+# define PG_MAX_LEVEL 4
 
 extern struct target_type riscv011_target;
 extern struct target_type riscv013_target;
@@ -33,6 +42,7 @@ enum riscv_halt_reason {
 	RISCV_HALT_SINGLESTEP,
 	RISCV_HALT_TRIGGER,
 	RISCV_HALT_UNKNOWN,
+	RISCV_HALT_GROUP,
 	RISCV_HALT_ERROR
 };
 
@@ -67,13 +77,11 @@ typedef struct {
 	/* FIXME: This should probably be a bunch of register caches. */
 	uint64_t saved_registers[RISCV_MAX_HARTS][RISCV_MAX_REGISTERS];
 	bool valid_saved_registers[RISCV_MAX_HARTS][RISCV_MAX_REGISTERS];
+
 	/* hart which algo is running on */
 	int algo_hartid;
 
-	/* OpenOCD's register cache points into here. This is not per-hart because
-	 * we just invalidate the entire cache when we change which hart is
-	 * selected. */
-	uint64_t reg_cache_values[RISCV_MAX_REGISTERS];
+	uint8_t reg_cache_values[RISCV_MAX_REGISTERS][8];
 
 	/* Single buffer that contains all register names, instead of calling
 	 * malloc for each register. Needs to be freed when reg_list is freed. */
@@ -82,6 +90,8 @@ typedef struct {
 	/* It's possible that each core has a different supported ISA set. */
 	int xlen[RISCV_MAX_HARTS];
 	riscv_reg_t misa[RISCV_MAX_HARTS];
+	/* Cached value of vlenb. 0 if vlenb is not readable for some reason. */
+	unsigned vlenb[RISCV_MAX_HARTS];
 
 	/* If the target doesn't implement MISA register, use this value */
 	riscv_reg_t default_misa;
@@ -115,15 +125,21 @@ typedef struct {
 	/* This target was selected using hasel. */
 	bool selected;
 
+	/* Indicates that target was reset. Currently used by ESP32-C3 to enable ebreaks upon target reset */
+	int (*on_reset)(struct target *target);
+
 	enum riscv_isrmasking_mode isrmask_mode;
 
 	/* Helper functions that target the various RISC-V debug spec
 	 * implementations. */
 	int (*get_register)(struct target *target,
 		riscv_reg_t *value, int hid, int rid);
-	int (*set_register)(struct target *, int hartid, int regid,
+	int (*set_register)(struct target *target, int hartid, int regid,
 			uint64_t value);
-	int (*select_current_hart)(struct target *);
+	int (*get_register_buf)(struct target *target, uint8_t *buf, int regno);
+	int (*set_register_buf)(struct target *target, int regno,
+			const uint8_t *buf);
+	int (*select_current_hart)(struct target *target);
 	bool (*is_halted)(struct target *target);
 	/* Resume this target, as well as every other prepped target that can be
 	 * resumed near-simultaneously. Clear the prepped flag on any target that
@@ -158,9 +174,31 @@ typedef struct {
 
 	int (*test_compliance)(struct target *target);
 
+	int (*read_memory)(struct target *target, target_addr_t address,
+			uint32_t size, uint32_t count, uint8_t *buffer, uint32_t increment);
+
 	/* How many harts are attached to the DM that this target is attached to? */
 	int (*hart_count)(struct target *target);
 	unsigned (*data_bits)(struct target *target);
+
+	/* Storage for vector register types. */
+	struct reg_data_type_vector vector_uint8;
+	struct reg_data_type_vector vector_uint16;
+	struct reg_data_type_vector vector_uint32;
+	struct reg_data_type_vector vector_uint64;
+	struct reg_data_type_vector vector_uint128;
+	struct reg_data_type type_uint8_vector;
+	struct reg_data_type type_uint16_vector;
+	struct reg_data_type type_uint32_vector;
+	struct reg_data_type type_uint64_vector;
+	struct reg_data_type type_uint128_vector;
+	struct reg_data_type_union_field vector_fields[5];
+	struct reg_data_type_union vector_union;
+	struct reg_data_type type_vector;
+
+	/* Set when trigger registers are changed by the user. This indicates we eed
+	 * to beware that we may hit a trigger that we didn't realize had been set. */
+	bool manual_hwbp_set;
 } riscv_info_t;
 
 typedef struct {
@@ -168,6 +206,18 @@ typedef struct {
 	struct scan_field tunneled_dr[4];
 } riscv_bscan_tunneled_scan_context_t;
 
+typedef struct {
+	const char *name;
+	int level;
+	unsigned va_bits;
+	unsigned pte_shift;
+	unsigned vpn_shift[PG_MAX_LEVEL];
+	unsigned vpn_mask[PG_MAX_LEVEL];
+	unsigned pte_ppn_shift[PG_MAX_LEVEL];
+	unsigned pte_ppn_mask[PG_MAX_LEVEL];
+	unsigned pa_ppn_shift[PG_MAX_LEVEL];
+	unsigned pa_ppn_mask[PG_MAX_LEVEL];
+} virt2phys_info_t;
 
 /* Wall-clock timeout for a command/access. Settable via RISC-V Target commands.*/
 extern int riscv_command_timeout_sec;
@@ -178,6 +228,9 @@ extern int riscv_reset_timeout_sec;
 extern bool riscv_prefer_sba;
 
 extern bool riscv_enable_virtual;
+extern bool riscv_ebreakm;
+extern bool riscv_ebreaks;
+extern bool riscv_ebreaku;
 
 /* Everything needs the RISC-V specific info structure, so here's a nice macro
  * that provides that. */
@@ -196,8 +249,6 @@ extern struct scan_field select_idcode;
 extern struct scan_field select_user4;
 extern struct scan_field *bscan_tunneled_select_dmi;
 extern uint32_t bscan_tunneled_select_dmi_num_fields;
-extern uint8_t bscan_zero[4];
-extern uint8_t bscan_one[4];
 typedef enum { BSCAN_TUNNEL_NESTED_TAP, BSCAN_TUNNEL_DATA_REGISTER } bscan_tunnel_type_t;
 extern int bscan_tunnel_ir_width;
 extern bscan_tunnel_type_t bscan_tunnel_type;
@@ -215,7 +266,8 @@ int riscv_resume(
 	int current,
 	target_addr_t address,
 	int handle_breakpoints,
-	int debug_execution
+	int debug_execution,
+	bool single_hart
 );
 
 int riscv_openocd_step(
@@ -256,23 +308,25 @@ int riscv_current_hartid(const struct target *target);
  * without requiring multiple targets.  */
 
 /* When using the RTOS to debug, this selects the hart that is currently being
- * debugged.  This doesn't propogate to the hardware. */
+ * debugged.  This doesn't propagate to the hardware. */
 void riscv_set_all_rtos_harts(struct target *target);
 void riscv_set_rtos_hartid(struct target *target, int hartid);
 
 /* Lists the number of harts in the system, which are assumed to be
- * concecutive and start with mhartid=0. */
+ * consecutive and start with mhartid=0. */
 int riscv_count_harts(struct target *target);
 
 /* Returns TRUE if the target has the given register on the given hart.  */
 bool riscv_has_register(struct target *target, int hartid, int regid);
 
-/* Returns the value of the given register on the given hart.  32-bit registers
- * are zero extended to 64 bits.  */
+/** Set register, updating the cache. */
 int riscv_set_register(struct target *target, enum gdb_regno i, riscv_reg_t v);
+/** Set register, updating the cache. */
 int riscv_set_register_on_hart(struct target *target, int hid, enum gdb_regno rid, uint64_t v);
+/** Get register, from the cache if it's in there. */
 int riscv_get_register(struct target *target, riscv_reg_t *value,
 		enum gdb_regno r);
+/** Get register, from the cache if it's in there. */
 int riscv_get_register_on_hart(struct target *target, riscv_reg_t *value,
 		int hartid, enum gdb_regno regid);
 
@@ -313,7 +367,13 @@ int riscv_hit_watchpoint(struct target *target, struct watchpoint **hit_wp_addre
 int riscv_init_registers(struct target *target);
 
 void riscv_semihosting_init(struct target *target);
-int riscv_semihosting(struct target *target, int *retval);
+typedef enum {
+	SEMI_NONE,		/* Not halted for a semihosting call. */
+	SEMI_HANDLED,	/* Call handled, and target was resumed. */
+	SEMI_WAITING,	/* Call handled, target is halted waiting until we can resume. */
+	SEMI_ERROR		/* Something went wrong. */
+} semihosting_result_t;
+semihosting_result_t riscv_semihosting(struct target *target, int *retval);
 
 void riscv_add_bscan_tunneled_scan(struct target *target, struct scan_field *field,
 		riscv_bscan_tunneled_scan_context_t *ctxt);

@@ -30,7 +30,7 @@
 struct jtagspi_flash_bank {
 	struct jtag_tap *tap;
 	const struct flash_device *dev;
-	int probed;
+	bool probed;
 	uint32_t ir;
 };
 
@@ -49,7 +49,7 @@ FLASH_BANK_COMMAND_HANDLER(jtagspi_flash_bank_command)
 	bank->driver_priv = info;
 
 	info->tap = NULL;
-	info->probed = 0;
+	info->probed = false;
 	COMMAND_PARSE_NUMBER(u32, CMD_ARGV[6], info->ir);
 
 	return ERROR_OK;
@@ -59,7 +59,7 @@ static void jtagspi_set_ir(struct flash_bank *bank)
 {
 	struct jtagspi_flash_bank *info = bank->driver_priv;
 	struct scan_field field;
-	uint8_t buf[4];
+	uint8_t buf[4] = { 0 };
 
 	LOG_DEBUG("loading jtagspi ir");
 	buf_set_u32(buf, 0, info->tap->ir_length, info->ir);
@@ -153,12 +153,12 @@ static int jtagspi_cmd(struct flash_bank *bank, uint8_t cmd,
 	jtagspi_set_ir(bank);
 	/* passing from an IR scan to SHIFT-DR clears BYPASS registers */
 	jtag_add_dr_scan(info->tap, n, fields, TAP_IDLE);
-	jtag_execute_queue();
+	int retval = jtag_execute_queue();
 
 	if (is_read)
 		flip_u8(data_buf, data, lenb);
 	free(data_buf);
-	return ERROR_OK;
+	return retval;
 }
 
 static int jtagspi_probe(struct flash_bank *bank)
@@ -170,7 +170,7 @@ static int jtagspi_probe(struct flash_bank *bank)
 
 	if (info->probed)
 		free(bank->sectors);
-	info->probed = 0;
+	info->probed = false;
 
 	if (bank->target->tap == NULL) {
 		LOG_ERROR("Target has no JTAG tap");
@@ -216,7 +216,7 @@ static int jtagspi_probe(struct flash_bank *bank)
 		return ERROR_FAIL;
 	}
 
-	for (int sector = 0; sector < bank->num_sectors; sector++) {
+	for (unsigned int sector = 0; sector < bank->num_sectors; sector++) {
 		sectors[sector].offset = sector * sectorsize;
 		sectors[sector].size = sectorsize;
 		sectors[sector].is_erased = -1;
@@ -224,17 +224,20 @@ static int jtagspi_probe(struct flash_bank *bank)
 	}
 
 	bank->sectors = sectors;
-	info->probed = 1;
+	info->probed = true;
 	return ERROR_OK;
 }
 
-static void jtagspi_read_status(struct flash_bank *bank, uint32_t *status)
+static int jtagspi_read_status(struct flash_bank *bank, uint32_t *status)
 {
 	uint8_t buf;
-	if (jtagspi_cmd(bank, SPIFLASH_READ_STATUS, NULL, &buf, -8) == ERROR_OK) {
+	int err = jtagspi_cmd(bank, SPIFLASH_READ_STATUS, NULL, &buf, -8);
+	if (err == ERROR_OK) {
 		*status = buf;
 		/* LOG_DEBUG("status=0x%08" PRIx32, *status); */
 	}
+
+	return err;
 }
 
 static int jtagspi_wait(struct flash_bank *bank, int timeout_ms)
@@ -245,7 +248,11 @@ static int jtagspi_wait(struct flash_bank *bank, int timeout_ms)
 
 	do {
 		dt = timeval_ms() - t0;
-		jtagspi_read_status(bank, &status);
+
+		int retval = jtagspi_read_status(bank, &status);
+		if (retval != ERROR_OK)
+			return retval;
+
 		if ((status & SPIFLASH_BSY_BIT) == 0) {
 			LOG_DEBUG("waited %" PRId64 " ms", dt);
 			return ERROR_OK;
@@ -262,7 +269,11 @@ static int jtagspi_write_enable(struct flash_bank *bank)
 	uint32_t status;
 
 	jtagspi_cmd(bank, SPIFLASH_WRITE_ENABLE, NULL, NULL, 0);
-	jtagspi_read_status(bank, &status);
+
+	int retval = jtagspi_read_status(bank, &status);
+	if (retval != ERROR_OK)
+		return retval;
+
 	if ((status & SPIFLASH_WE_BIT) == 0) {
 		LOG_ERROR("Cannot enable write to flash. Status=0x%08" PRIx32, status);
 		return ERROR_FAIL;
@@ -288,7 +299,7 @@ static int jtagspi_bulk_erase(struct flash_bank *bank)
 	return retval;
 }
 
-static int jtagspi_sector_erase(struct flash_bank *bank, int sector)
+static int jtagspi_sector_erase(struct flash_bank *bank, unsigned int sector)
 {
 	struct jtagspi_flash_bank *info = bank->driver_priv;
 	int retval;
@@ -299,19 +310,19 @@ static int jtagspi_sector_erase(struct flash_bank *bank, int sector)
 		return retval;
 	jtagspi_cmd(bank, info->dev->erase_cmd, &bank->sectors[sector].offset, NULL, 0);
 	retval = jtagspi_wait(bank, JTAGSPI_MAX_TIMEOUT);
-	LOG_INFO("sector %d took %" PRId64 " ms", sector, timeval_ms() - t0);
+	LOG_INFO("sector %u took %" PRId64 " ms", sector, timeval_ms() - t0);
 	return retval;
 }
 
-static int jtagspi_erase(struct flash_bank *bank, int first, int last)
+static int jtagspi_erase(struct flash_bank *bank, unsigned int first,
+		unsigned int last)
 {
-	int sector;
 	struct jtagspi_flash_bank *info = bank->driver_priv;
 	int retval = ERROR_OK;
 
-	LOG_DEBUG("erase from sector %d to sector %d", first, last);
+	LOG_DEBUG("erase from sector %u to sector %u", first, last);
 
-	if ((first < 0) || (last < first) || (last >= bank->num_sectors)) {
+	if ((last < first) || (last >= bank->num_sectors)) {
 		LOG_ERROR("Flash sector invalid");
 		return ERROR_FLASH_SECTOR_INVALID;
 	}
@@ -321,9 +332,9 @@ static int jtagspi_erase(struct flash_bank *bank, int first, int last)
 		return ERROR_FLASH_BANK_NOT_PROBED;
 	}
 
-	for (sector = first; sector <= last; sector++) {
+	for (unsigned int sector = first; sector <= last; sector++) {
 		if (bank->sectors[sector].is_protected) {
-			LOG_ERROR("Flash sector %d protected", sector);
+			LOG_ERROR("Flash sector %u protected", sector);
 			return ERROR_FAIL;
 		}
 	}
@@ -341,7 +352,7 @@ static int jtagspi_erase(struct flash_bank *bank, int first, int last)
 	if (info->dev->erase_cmd == 0x00)
 		return ERROR_FLASH_OPER_UNSUPPORTED;
 
-	for (sector = first; sector <= last; sector++) {
+	for (unsigned int sector = first; sector <= last; sector++) {
 		retval = jtagspi_sector_erase(bank, sector);
 		if (retval != ERROR_OK) {
 			LOG_ERROR("Sector erase failed.");
@@ -352,11 +363,10 @@ static int jtagspi_erase(struct flash_bank *bank, int first, int last)
 	return retval;
 }
 
-static int jtagspi_protect(struct flash_bank *bank, int set, int first, int last)
+static int jtagspi_protect(struct flash_bank *bank, int set, unsigned int first,
+		unsigned int last)
 {
-	int sector;
-
-	for (sector = first; sector <= last; sector++)
+	for (unsigned int sector = first; sector <= last; sector++)
 		bank->sectors[sector].is_protected = set;
 	return ERROR_OK;
 }

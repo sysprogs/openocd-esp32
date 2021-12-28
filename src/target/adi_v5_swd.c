@@ -96,7 +96,7 @@ static int swd_run_inner(struct adiv5_dap *dap)
 static int swd_connect(struct adiv5_dap *dap)
 {
 	const struct swd_driver *swd = adiv5_dap_swd_driver(dap);
-	uint32_t dpidr;
+	uint32_t dpidr = 0xdeadbeef;
 	int status;
 
 	/* FIXME validate transport config ... is the
@@ -112,34 +112,85 @@ static int swd_connect(struct adiv5_dap *dap)
 
 		if (jtag_reset_config & RESET_CNCT_UNDER_SRST) {
 			if (jtag_reset_config & RESET_SRST_NO_GATING)
-				swd_add_reset(1);
+				adapter_assert_reset();
 			else
 				LOG_WARNING("\'srst_nogate\' reset_config option is required");
 		}
 	}
 
-	/* Note, debugport_init() does setup too */
-	swd->switch_seq(JTAG_TO_SWD);
 
-	/* Clear link state, including the SELECT cache. */
-	dap->do_reconnect = false;
-	dap_invalidate_cache(dap);
+	int64_t timeout = timeval_ms() + 500;
 
-	swd_queue_dp_read(dap, DP_DPIDR, &dpidr);
+	do {
+		/* Note, debugport_init() does setup too */
+		swd->switch_seq(JTAG_TO_SWD);
 
-	/* force clear all sticky faults */
-	swd_clear_sticky_errors(dap);
-
-	status = swd_run_inner(dap);
-
-	if (status == ERROR_OK) {
-		LOG_INFO("SWD DPIDR %#8.8" PRIx32, dpidr);
+		/* Clear link state, including the SELECT cache. */
 		dap->do_reconnect = false;
+		dap_invalidate_cache(dap);
+
+		status = swd_queue_dp_read(dap, DP_DPIDR, &dpidr);
+		if (status == ERROR_OK) {
+			status = swd_run_inner(dap);
+			if (status == ERROR_OK)
+				break;
+		}
+
+		alive_sleep(1);
+
+	} while (timeval_ms() < timeout);
+
+	if (status != ERROR_OK) {
+		LOG_ERROR("Error connecting DP: cannot read IDR");
+		return status;
+	}
+
+	LOG_INFO("SWD DPIDR %#8.8" PRIx32, dpidr);
+
+	do {
+		dap->do_reconnect = false;
+
+		/* force clear all sticky faults */
+		swd_clear_sticky_errors(dap);
+
+		status = swd_run_inner(dap);
+		if (status != ERROR_WAIT)
+			break;
+
+		alive_sleep(10);
+
+	} while (timeval_ms() < timeout);
+
+	/* IHI 0031E B4.3.2:
+	 * "A WAIT response must not be issued to the ...
+	 * ... writes to the ABORT register"
+	 * swd_clear_sticky_errors() writes to the ABORT register only.
+	 *
+	 * Unfortunately at least Microchip SAMD51/E53/E54 returns WAIT
+	 * in a corner case. Just try if ABORT resolves the problem.
+	 */
+	if (status == ERROR_WAIT) {
+		LOG_WARNING("Connecting DP: stalled AP operation, issuing ABORT");
+
+		dap->do_reconnect = false;
+
+		swd->write_reg(swd_cmd(false,  false, DP_ABORT),
+			DAPABORT | STKCMPCLR | STKERRCLR | WDERRCLR | ORUNERRCLR, 0);
+		status = swd_run_inner(dap);
+	}
+
+	if (status == ERROR_OK)
 		status = dap_dp_init(dap);
-	} else
-		dap->do_reconnect = true;
 
 	return status;
+}
+
+static int swd_send_sequence(struct adiv5_dap *dap, enum swd_special_seq seq)
+{
+	const struct swd_driver *swd = adiv5_dap_swd_driver(dap);
+	assert(swd);
+
+	return swd->switch_seq(seq);
 }
 
 static inline int check_sync(struct adiv5_dap *dap)
@@ -320,6 +371,7 @@ static void swd_quit(struct adiv5_dap *dap)
 
 const struct dap_ops swd_dap_ops = {
 	.connect = swd_connect,
+	.send_sequence = swd_send_sequence,
 	.queue_dp_read = swd_queue_dp_read,
 	.queue_dp_write = swd_queue_dp_write,
 	.queue_ap_read = swd_queue_ap_read,
@@ -359,9 +411,9 @@ static const struct command_registration swd_handlers[] = {
 
 static int swd_select(struct command_context *ctx)
 {
-	/* FIXME: only place where global 'jtag_interface' is still needed */
-	extern struct jtag_interface *jtag_interface;
-	const struct swd_driver *swd = jtag_interface->swd;
+	/* FIXME: only place where global 'adapter_driver' is still needed */
+	extern struct adapter_driver *adapter_driver;
+	const struct swd_driver *swd = adapter_driver->swd_ops;
 	int retval;
 
 	retval = register_commands(ctx, NULL, swd_handlers);

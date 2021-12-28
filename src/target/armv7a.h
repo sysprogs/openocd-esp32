@@ -48,7 +48,7 @@ struct armv7a_l2x_cache {
 };
 
 struct armv7a_cachesize {
-	/*  cache dimensionning */
+	/*  cache dimensioning */
 	uint32_t linelen;
 	uint32_t associativity;
 	uint32_t nsets;
@@ -177,6 +177,9 @@ static inline bool is_armv7a(struct armv7a_common *armv7a)
 
 /* See ARMv7a arch spec section C10.8 */
 #define CPUDBG_AUTHSTATUS	0xFB8
+
+/* See ARMv7a arch spec DDI 0406C C11.10 */
+#define CPUDBG_ID_PFR1		0xD24
 
 /* Masks for Vector Catch register */
 #define DBG_VCR_FIQ_MASK	((1 << 31) | (1 << 7))

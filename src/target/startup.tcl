@@ -66,7 +66,9 @@ proc ocd_process_reset_inner { MODE } {
 		if {![using_jtag] || [jtag tapisenabled [$t cget -chain-position]]} {
 			$t invoke-event examine-start
 			set err [catch "$t arp_examine allow-defer"]
-			if { $err == 0 } {
+			if { $err } {
+				$t invoke-event examine-fail
+			} else {
 				$t invoke-event examine-end
 			}
 		}
@@ -117,7 +119,7 @@ proc ocd_process_reset_inner { MODE } {
 				continue
 			}
 
-			# Wait upto 1 second for target to halt.  Why 1sec? Cause
+			# Wait up to 1 second for target to halt. Why 1sec? Cause
 			# the JTAG tap reset signal might be hooked to a slow
 			# resistor/capacitor circuit - and it might take a while
 			# to charge
@@ -203,7 +205,7 @@ proc init_target_events {} {
 	foreach t $targets {
 		set_default_target_event $t gdb-flash-erase-start "reset init"
 		set_default_target_event $t gdb-flash-write-end "reset halt"
-		set_default_target_event $t gdb-attach "halt"
+		set_default_target_event $t gdb-attach "halt 1000"
 	}
 }
 
@@ -220,10 +222,4 @@ proc cortex_m3 args {
 proc cortex_a8 args {
 	echo "DEPRECATED! use 'cortex_a' not 'cortex_a8'"
 	eval cortex_a $args
-}
-
-# deprecated ftdi cmds
-proc ftdi_location args {
-	echo "DEPRECATED! use 'adapter usb location' not 'ftdi_location'"
-	eval adapter usb location $args
 }

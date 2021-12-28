@@ -22,7 +22,7 @@ add_library(ocdusbblaster STATIC drivers/usb_blaster/usb_blaster.c drivers/usb_b
 
 add_library(ocdjtagdrivers STATIC
 	drivers/driver.c
-	drivers/libusb1_common.c
+	drivers/libusb_helper.c
 	drivers/usb_common.c
 	drivers/ftdi.c
 	drivers/mpsse.c
@@ -43,9 +43,13 @@ add_library(ocdjtagdrivers STATIC
 	drivers/osbdm.c
 	drivers/kitprog.c
 	drivers/opendous.c
-	drivers/cmsis_dap_usb.c
+	drivers/cmsis_dap.c
+	drivers/cmsis_dap_usb_bulk.c
+	drivers/cmsis_dap_usb_hid.c
 	drivers/xds110.c
-	drivers/jtag_usb_common.c)
+	drivers/jtag_usb_common.c
+	drivers/esp_usb_jtag.c
+	drivers/bitq.c)
 
 	
 add_library(ocdjlink STATIC
@@ -75,7 +79,7 @@ add_library(ocdjlink STATIC
 
 target_compile_definitions(ocdjlink PRIVATE HAVE_LIBUSB)
 	
-add_library(jtag STATIC adapter.c core.c interface.c interfaces.c tcl.c commands.c)
+add_library(jtag STATIC adapter.c core.c interface.c interfaces.c tcl.c commands.c swim.c)
 
 SET_TARGET_PROPERTIES(ocdjlink PROPERTIES COMPILE_FLAGS -I${CMAKE_CURRENT_BINARY_DIR}/jlink)
 

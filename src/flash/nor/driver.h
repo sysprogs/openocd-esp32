@@ -104,7 +104,8 @@ struct flash_driver {
 	 * @param last The number of the last sector to erase, typically N-1.
 	 * @returns ERROR_OK if successful; otherwise, an error code.
 	 */
-	int (*erase)(struct flash_bank *bank, int first, int last);
+	int (*erase)(struct flash_bank *bank, unsigned int first,
+		unsigned int last);
 
 	/**
 	 * Bank/sector protection routine (target-specific).
@@ -119,11 +120,12 @@ struct flash_driver {
 	 *
 	 * @param bank The bank to protect or unprotect.
 	 * @param set If non-zero, enable protection; if 0, disable it.
-	 * @param first The first sector to (un)protect, typicaly 0.
+	 * @param first The first sector to (un)protect, typically 0.
 	 * @param last The last sector to (un)project, typically N-1.
 	 * @returns ERROR_OK if successful; otherwise, an error code.
 	 */
-	int (*protect)(struct flash_bank *bank, int set, int first, int last);
+	int (*protect)(struct flash_bank *bank, int set, unsigned int first,
+		unsigned int last);
 
 	/**
 	 * Program data into the flash.  Note CPU address will be
@@ -152,6 +154,20 @@ struct flash_driver {
 	 */
 	 int (*read)(struct flash_bank *bank,
 			uint8_t *buffer, uint32_t offset, uint32_t count);
+
+	/**
+	 * Verify data in flash.  Note CPU address will be
+	 * "bank->base + offset", while the physical address is
+	 * dependent upon current target MMU mappings.
+	 *
+	 * @param bank The bank to verify
+	 * @param buffer The data bytes to verify against.
+	 * @param offset The offset into the chip to verify.
+	 * @param count The number of bytes to verify.
+	 * @returns ERROR_OK if successful; otherwise, an error code.
+	 */
+	int (*verify)(struct flash_bank *bank,
+			const uint8_t *buffer, uint32_t offset, uint32_t count);
 
 	/**
 	 * Probe to determine what kind of flash is present.
@@ -200,14 +216,14 @@ struct flash_driver {
 	int (*info)(struct flash_bank *bank, char *buf, int buf_size);
 
 	/**
-	 * A more gentle flavor of filash_driver_s::probe, performing
+	 * A more gentle flavor of flash_driver_s::probe, performing
 	 * setup with less noise.  Generally, driver routines should test
 	 * to see if the bank has already been probed; if it has, the
 	 * driver probably should not perform its probe a second time.
 	 *
 	 * This callback is often called from the inside of other
 	 * routines (e.g. GDB flash downloads) to autoprobe the flash as
-	 * it is programing the flash.
+	 * it is programming the flash.
 	 *
 	 * @param bank - the bank to probe
 	 * @returns ERROR_OK if successful; otherwise, an error code.

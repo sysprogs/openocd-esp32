@@ -564,7 +564,7 @@ static struct {
 } dtc_queue;
 
 /*
- * The tap state queue is for accumulating TAP state changes wiithout needlessly
+ * The tap state queue is for accumulating TAP state changes without needlessly
  * flushing the dtc_queue.  When it fills or is run, it adds the accumulated bytes to
  * the dtc_queue.
  */
@@ -1340,7 +1340,7 @@ static int rlink_execute_queue(void)
 					retval = ERROR_FAIL;
 				break;
 			case JTAG_SLEEP:
-				LOG_DEBUG_IO("sleep %i", cmd->cmd.sleep->us);
+				LOG_DEBUG_IO("sleep %" PRIu32, cmd->cmd.sleep->us);
 				jtag_sleep(cmd->cmd.sleep->us);
 				break;
 			default:
@@ -1358,7 +1358,7 @@ static int rlink_execute_queue(void)
 		retval = tmp_retval;
 
 #ifndef AUTOMATIC_BUSY_LED
-	/* turn LED onff */
+	/* turn LED off */
 	ep1_generic_commandl(pHDev, 2,
 		EP1_CMD_SET_PORTD_LEDS,
 		~0
@@ -1660,13 +1660,19 @@ static int rlink_quit(void)
 	return ERROR_OK;
 }
 
-struct jtag_interface rlink_interface = {
+static struct jtag_interface rlink_interface = {
+	.execute_queue = rlink_execute_queue,
+};
+
+struct adapter_driver rlink_adapter_driver = {
 	.name = "rlink",
 	.transports = jtag_only,
+
 	.init = rlink_init,
 	.quit = rlink_quit,
 	.speed = rlink_speed,
-	.speed_div = rlink_speed_div,
 	.khz = rlink_khz,
-	.execute_queue = rlink_execute_queue,
+	.speed_div = rlink_speed_div,
+
+	.jtag_ops = &rlink_interface,
 };

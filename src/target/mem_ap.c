@@ -65,6 +65,15 @@ static int mem_ap_init_target(struct command_context *cmd_ctx, struct target *ta
 	return ERROR_OK;
 }
 
+static void mem_ap_deinit_target(struct target *target)
+{
+	LOG_DEBUG("%s", __func__);
+
+	free(target->private_config);
+	free(target->arch_info);
+	return;
+}
+
 static int mem_ap_arch_state(struct target *target)
 {
 	LOG_DEBUG("%s", __func__);
@@ -141,7 +150,7 @@ static int mem_ap_read_memory(struct target *target, target_addr_t address,
 	struct mem_ap *mem_ap = target->arch_info;
 
 	LOG_DEBUG("Reading memory at physical address " TARGET_ADDR_FMT
-		  "; size %" PRId32 "; count %" PRId32, address, size, count);
+		  "; size %" PRIu32 "; count %" PRIu32, address, size, count);
 
 	if (count == 0 || buffer == NULL)
 		return ERROR_COMMAND_SYNTAX_ERROR;
@@ -156,7 +165,7 @@ static int mem_ap_write_memory(struct target *target, target_addr_t address,
 	struct mem_ap *mem_ap = target->arch_info;
 
 	LOG_DEBUG("Writing memory at physical address " TARGET_ADDR_FMT
-		  "; size %" PRId32 "; count %" PRId32, address, size, count);
+		  "; size %" PRIu32 "; count %" PRIu32, address, size, count);
 
 	if (count == 0 || buffer == NULL)
 		return ERROR_COMMAND_SYNTAX_ERROR;
@@ -169,6 +178,7 @@ struct target_type mem_ap_target = {
 
 	.target_create = mem_ap_target_create,
 	.init_target = mem_ap_init_target,
+	.deinit_target = mem_ap_deinit_target,
 	.examine = mem_ap_examine,
 	.target_jim_configure = adiv5_jim_configure,
 

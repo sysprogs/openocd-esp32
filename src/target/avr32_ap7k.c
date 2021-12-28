@@ -63,7 +63,7 @@ static const struct avr32_core_reg
 static int avr32_read_core_reg(struct target *target, int num);
 static int avr32_write_core_reg(struct target *target, int num);
 
-int avr32_ap7k_save_context(struct target *target)
+static int avr32_ap7k_save_context(struct target *target)
 {
 	int retval, i;
 	struct avr32_ap7k_common *ap7k = target_to_ap7k(target);
@@ -80,7 +80,7 @@ int avr32_ap7k_save_context(struct target *target)
 	return ERROR_OK;
 }
 
-int avr32_ap7k_restore_context(struct target *target)
+static int avr32_ap7k_restore_context(struct target *target)
 {
 	int i;
 
@@ -464,7 +464,6 @@ static int avr32_ap7k_read_memory(struct target *target, target_addr_t address,
 			break;
 		case 1:
 			return avr32_jtag_read_memory8(&ap7k->jtag, address, count, buffer);
-			break;
 		default:
 			break;
 	}
@@ -505,7 +504,6 @@ static int avr32_ap7k_write_memory(struct target *target, target_addr_t address,
 			break;
 		case 1:
 			return avr32_jtag_write_memory8(&ap7k->jtag, address, count, buffer);
-			break;
 		default:
 			break;
 	}
@@ -557,7 +555,7 @@ static int avr32_ap7k_examine(struct target *target)
 	return ERROR_OK;
 }
 
-int avr32_ap7k_arch_state(struct target *target)
+static int avr32_ap7k_arch_state(struct target *target)
 {
 	struct avr32_ap7k_common *ap7k = target_to_ap7k(target);
 
@@ -567,7 +565,7 @@ int avr32_ap7k_arch_state(struct target *target)
 	return ERROR_OK;
 }
 
-int avr32_ap7k_get_gdb_reg_list(struct target *target, struct reg **reg_list[],
+static int avr32_ap7k_get_gdb_reg_list(struct target *target, struct reg **reg_list[],
 		int *reg_list_size, enum target_register_class reg_class)
 {
 #if 0

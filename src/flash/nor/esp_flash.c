@@ -80,6 +80,7 @@
 
 #define ESP_FLASH_RW_TMO                20000	/* ms */
 #define ESP_FLASH_ERASE_TMO             60000	/* ms */
+#define ESP_FLASH_MAPS_MAX              2
 
 struct esp_flash_rw_args {
 	int (*xfer)(struct target *target, uint32_t block_id, uint32_t len, void *priv);
@@ -267,7 +268,7 @@ int esp_flash_init(struct esp_flash_bank *esp_info, uint32_t sec_sz,
 	return ERROR_OK;
 }
 
-int esp_flash_protect(struct flash_bank *bank, int set, int first, int last)
+int esp_flash_protect(struct flash_bank *bank, int set, unsigned first, unsigned last)
 {
 	return ERROR_FAIL;
 }
@@ -313,7 +314,7 @@ int esp_flash_blank_check(struct flash_bank *bank)
 		LOG_ERROR("Failed to check erase flash (%" PRId64 ")!", run.ret_code);
 		ret = ERROR_FAIL;
 	} else {
-		for (int i = 0; i < bank->num_sectors; i++)
+		for (unsigned i = 0; i < bank->num_sectors; i++)
 			bank->sectors[i].is_erased = mp.value[i];
 	}
 	destroy_mem_param(&mp);
@@ -386,20 +387,27 @@ static int esp_flash_get_mappings(struct flash_bank *bank,
 		ret = ERROR_FAIL;
 	} else {
 		memcpy(flash_map, mp.value, sizeof(struct esp_flash_mapping));
-		if (flash_map->maps_num == 0)
+		if (flash_map->maps_num > ESP_FLASH_MAPS_MAX) {
+			LOG_ERROR("Too many flash mappings %d! Must be %d.",
+				flash_map->maps_num,
+				ESP_FLASH_MAPS_MAX);
+			ret = ERROR_FAIL;
+		} else if (flash_map->maps_num == 0)
 			LOG_WARNING("Empty flash mapping!");
-		for (uint32_t i = 0; i < flash_map->maps_num; i++)
-			LOG_INFO("Flash mapping %d: 0x%x -> 0x%x, %d KB",
-				i,
-				flash_map->maps[i].phy_addr,
-				flash_map->maps[i].load_addr,
-				flash_map->maps[i].size/1024);
+		else {
+			for (uint32_t i = 0; i < flash_map->maps_num; i++)
+				LOG_INFO("Flash mapping %d: 0x%x -> 0x%x, %d KB",
+					i,
+					flash_map->maps[i].phy_addr,
+					flash_map->maps[i].load_addr,
+					flash_map->maps[i].size/1024);
+		}
 	}
 	destroy_mem_param(&mp);
 	return ret;
 }
 
-int esp_flash_erase(struct flash_bank *bank, int first, int last)
+int esp_flash_erase(struct flash_bank *bank, unsigned first, unsigned last)
 {
 	struct esp_flash_bank *esp_info = bank->driver_priv;
 	struct algorithm_run_data run;
@@ -408,7 +416,7 @@ int esp_flash_erase(struct flash_bank *bank, int first, int last)
 		LOG_ERROR("Target not halted");
 		return ERROR_TARGET_NOT_HALTED;
 	}
-	assert((0 <= first) && (first <= last) && (last < bank->num_sectors));
+	assert((first <= last) && (last < bank->num_sectors));
 	if (esp_info->hw_flash_base + first*esp_info->sec_sz <
 		esp_info->flash_min_offset) {
 		LOG_ERROR("Invalid offset!");
@@ -484,11 +492,17 @@ static int esp_flash_rw_do(struct target *target, void *priv)
 			return retval;
 		} else
 			busy_num = 0;
-		alive_sleep(10);
-		if (target->state != TARGET_DEBUG_RUNNING) {
-			LOG_ERROR("Algorithm accidentally stopped (%d)!", target->state);
+		if (rw->total_count < rw->count && target->state != TARGET_DEBUG_RUNNING) {
+			LOG_ERROR(
+				"Algorithm accidentally stopped (%d)! Transferred %" PRIu32 " of %"
+				PRIu32,
+				target->state,
+				rw->total_count,
+				rw->count);
 			return ERROR_FAIL;
 		}
+		alive_sleep(10);
+		target_poll(target);
 	}
 	if (duration_measure(&algo_time) != 0) {
 		LOG_ERROR("Failed to stop data write measurement!");
@@ -979,7 +993,7 @@ int esp_flash_probe(struct flash_bank *bank)
 			LOG_ERROR("Failed to alloc mem for sectors!");
 			return ERROR_FAIL;
 		}
-		for (int i = 0; i < bank->num_sectors; i++) {
+		for (unsigned i = 0; i < bank->num_sectors; i++) {
 			bank->sectors[i].offset = i*esp_info->sec_sz;
 			bank->sectors[i].size = esp_info->sec_sz;
 			bank->sectors[i].is_erased = -1;
@@ -1071,7 +1085,7 @@ int esp_flash_breakpoint_add(struct target *target,
 	sw_bp->oocd_bp = breakpoint;
 	sw_bp->bank = bank;
 
-	init_mem_param(&mp, 2 /*2nd usr arg*/, 3 /*size in bytes*/, PARAM_IN);
+	init_mem_param(&mp, 2 /*2nd usr arg*/, 4 /*size in bytes*/, PARAM_IN);
 	run.mem_args.params = &mp;
 	run.mem_args.count = 1;
 	uint32_t bp_flash_addr = esp_info->hw_flash_base +

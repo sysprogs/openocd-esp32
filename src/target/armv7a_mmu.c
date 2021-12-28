@@ -62,12 +62,6 @@ int armv7a_mmu_translate_va_pa(struct target *target, uint32_t va,
 
 	/* decode memory attribute */
 	SS = (value >> 1) & 1;
-#if !BUILD_TARGET64
-	if (SS) {
-		LOG_ERROR("Super section found with no-64 bit address support");
-		return ERROR_FAIL;
-	}
-#endif
 	NOS = (value >> 10) & 1;	/*  Not Outer shareable */
 	NS = (value >> 9) & 1;	/* Non secure */
 	INNER = (value >> 4) &  0x7;
@@ -272,7 +266,7 @@ COMMAND_HANDLER(armv7a_mmu_dump_table)
 		uint32_t first_lvl_descriptor = target_buffer_get_u32(target,
 						(uint8_t *)&first_lvl_ptbl[pt_idx]);
 
-		LOG_DEBUG("L1 desc[%8.8"PRIx32"]: %8.8"PRIx32, pt_idx << 20, first_lvl_descriptor);
+		LOG_DEBUG("L1 desc[%8.8x]: %8.8"PRIx32, pt_idx << 20, first_lvl_descriptor);
 
 		/* skip empty entries in the first level table */
 		if ((first_lvl_descriptor & 3) == 0) {

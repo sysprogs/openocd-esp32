@@ -111,7 +111,6 @@ static uint32_t *pio_base;
  */
 static bb_value_t at91rm9200_read(void);
 static int at91rm9200_write(int tck, int tms, int tdi);
-static int at91rm9200_reset(int trst, int srst);
 
 static int at91rm9200_init(void);
 static int at91rm9200_quit(void);
@@ -119,7 +118,6 @@ static int at91rm9200_quit(void);
 static struct bitbang_interface at91rm9200_bitbang = {
 	.read = at91rm9200_read,
 	.write = at91rm9200_write,
-	.reset = at91rm9200_reset,
 	.blink = 0
 };
 
@@ -189,13 +187,20 @@ static const struct command_registration at91rm9200_command_handlers[] = {
 	COMMAND_REGISTRATION_DONE
 };
 
-struct jtag_interface at91rm9200_interface = {
-	.name = "at91rm9200",
+static struct jtag_interface at91rm9200_interface = {
 	.execute_queue = bitbang_execute_queue,
+};
+
+struct adapter_driver at91rm9200_adapter_driver = {
+	.name = "at91rm9200",
 	.transports = jtag_only,
 	.commands = at91rm9200_command_handlers,
+
 	.init = at91rm9200_init,
 	.quit = at91rm9200_quit,
+	.reset = at91rm9200_reset,
+
+	.jtag_ops = &at91rm9200_interface,
 };
 
 static int at91rm9200_init(void)
@@ -226,14 +231,14 @@ static int at91rm9200_init(void)
 
 	dev_mem_fd = open("/dev/mem", O_RDWR | O_SYNC);
 	if (dev_mem_fd < 0) {
-		perror("open");
+		LOG_ERROR("open: %s", strerror(errno));
 		return ERROR_JTAG_INIT_FAILED;
 	}
 
 	sys_controller = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
 				MAP_SHARED, dev_mem_fd, AT91C_BASE_SYS);
 	if (sys_controller == MAP_FAILED) {
-		perror("mmap");
+		LOG_ERROR("mmap: %s", strerror(errno));
 		close(dev_mem_fd);
 		return ERROR_JTAG_INIT_FAILED;
 	}

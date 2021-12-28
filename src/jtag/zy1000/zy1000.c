@@ -486,7 +486,7 @@ int interface_jtag_add_plain_dr_scan(int num_bits,
 	return ERROR_OK;
 }
 
-int interface_jtag_add_tlr()
+int interface_jtag_add_tlr(void)
 {
 	setCurrentState(TAP_RESET);
 	return ERROR_OK;
@@ -674,7 +674,7 @@ void embeddedice_write_dcc(struct jtag_tap *tap,
 
 int arm11_run_instr_data_to_core_noack_inner(struct jtag_tap *tap,
 	uint32_t opcode,
-	const uint32_t *data,
+	uint32_t *data,
 	size_t count)
 {
 	/* bypass bits before and after */
@@ -684,8 +684,8 @@ int arm11_run_instr_data_to_core_noack_inner(struct jtag_tap *tap,
 	post_bits += 2;
 
 	if ((pre_bits > 32) || (post_bits > 32)) {
-		int arm11_run_instr_data_to_core_noack_inner_default(struct jtag_tap *,
-				uint32_t, const uint32_t *, size_t);
+		int arm11_run_instr_data_to_core_noack_inner_default(struct jtag_tap *tap,
+				uint32_t opcode, uint32_t *data, size_t count);
 		return arm11_run_instr_data_to_core_noack_inner_default(tap, opcode, data, count);
 	} else {
 		static const uint8_t zero;
@@ -1237,17 +1237,23 @@ int zy1000_init(void)
 	return ERROR_OK;
 }
 
-struct jtag_interface zy1000_interface = {
-	.name = "ZY1000",
+static struct jtag_interface zy1000_interface = {
 	.supported = DEBUG_CAP_TMS_SEQ,
 	.execute_queue = NULL,
-	.speed = zy1000_speed,
+};
+
+struct adapter_driver zy1000_adapter_driver = {
+	.name = "ZY1000",
 	.transports = jtag_only,
 	.commands = zy1000_commands,
+
 	.init = zy1000_init,
 	.quit = zy1000_quit,
+	.speed = zy1000_speed,
 	.khz = zy1000_khz,
 	.speed_div = zy1000_speed_div,
 	.power_dropout = zy1000_power_dropout,
 	.srst_asserted = zy1000_srst_asserted,
+
+	.jtag_ops = &zy1000_interface,
 };

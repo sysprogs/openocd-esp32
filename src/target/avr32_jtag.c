@@ -35,7 +35,7 @@ static int avr32_jtag_set_instr(struct avr32_jtag *jtag_info, int new_instr)
 	if (buf_get_u32(tap->cur_instr, 0, tap->ir_length) != (uint32_t)new_instr) {
 		do {
 			struct scan_field field;
-			uint8_t t[4];
+			uint8_t t[4] = { 0 };
 			uint8_t ret[4];
 
 			field.num_bits = tap->ir_length;
@@ -55,7 +55,7 @@ static int avr32_jtag_set_instr(struct avr32_jtag *jtag_info, int new_instr)
 	return ERROR_OK;
 }
 
-int avr32_jtag_nexus_set_address(struct avr32_jtag *jtag_info,
+static int avr32_jtag_nexus_set_address(struct avr32_jtag *jtag_info,
 		uint32_t addr, int mode)
 {
 	struct scan_field fields[2];
@@ -92,7 +92,7 @@ int avr32_jtag_nexus_set_address(struct avr32_jtag *jtag_info,
 }
 
 
-int avr32_jtag_nexus_read_data(struct avr32_jtag *jtag_info,
+static int avr32_jtag_nexus_read_data(struct avr32_jtag *jtag_info,
 	uint32_t *pdata)
 {
 
@@ -129,7 +129,7 @@ int avr32_jtag_nexus_read_data(struct avr32_jtag *jtag_info,
 	return ERROR_OK;
 }
 
-int avr32_jtag_nexus_write_data(struct avr32_jtag *jtag_info,
+static int avr32_jtag_nexus_write_data(struct avr32_jtag *jtag_info,
 		uint32_t data)
 {
 
@@ -173,22 +173,18 @@ int avr32_jtag_nexus_read(struct avr32_jtag *jtag_info,
 {
 	avr32_jtag_set_instr(jtag_info, AVR32_INST_NEXUS_ACCESS);
 	avr32_jtag_nexus_set_address(jtag_info, addr, MODE_READ);
-	avr32_jtag_nexus_read_data(jtag_info, value);
-
-	return ERROR_OK;
-
+	return avr32_jtag_nexus_read_data(jtag_info, value);
 }
+
 int avr32_jtag_nexus_write(struct avr32_jtag *jtag_info,
 		uint32_t addr, uint32_t value)
 {
 	avr32_jtag_set_instr(jtag_info, AVR32_INST_NEXUS_ACCESS);
 	avr32_jtag_nexus_set_address(jtag_info, addr, MODE_WRITE);
-	avr32_jtag_nexus_write_data(jtag_info, value);
-
-	return ERROR_OK;
+	return avr32_jtag_nexus_write_data(jtag_info, value);
 }
 
-int avr32_jtag_mwa_set_address(struct avr32_jtag *jtag_info, int slave,
+static int avr32_jtag_mwa_set_address(struct avr32_jtag *jtag_info, int slave,
 		uint32_t addr, int mode)
 {
 	struct scan_field fields[2];
@@ -227,7 +223,7 @@ int avr32_jtag_mwa_set_address(struct avr32_jtag *jtag_info, int slave,
 	return ERROR_OK;
 }
 
-int avr32_jtag_mwa_read_data(struct avr32_jtag *jtag_info,
+static int avr32_jtag_mwa_read_data(struct avr32_jtag *jtag_info,
 	uint32_t *pdata)
 {
 
@@ -264,7 +260,7 @@ int avr32_jtag_mwa_read_data(struct avr32_jtag *jtag_info,
 	return ERROR_OK;
 }
 
-int avr32_jtag_mwa_write_data(struct avr32_jtag *jtag_info,
+static int avr32_jtag_mwa_write_data(struct avr32_jtag *jtag_info,
 	uint32_t data)
 {
 
@@ -373,4 +369,3 @@ int avr32_ocd_clearbits(struct avr32_jtag *jtag, int reg, uint32_t bits)
 
 	return ERROR_OK;
 }
-

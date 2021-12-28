@@ -38,9 +38,11 @@
 #include <pld/pld.h>
 #include <target/arm_cti.h>
 #include <target/arm_adi_v5.h>
+#include <rtt/rtt.h>
 
 #include <server/server.h>
 #include <server/gdb_server.h>
+#include <server/rtt_server.h>
 
 #ifdef HAVE_STRINGS_H
 #include <strings.h>
@@ -230,10 +232,7 @@ static int openocd_register_commands(struct command_context *cmd_ctx)
 
 struct command_context *global_cmd_ctx;
 
-/* NB! this fn can be invoked outside this file for non PC hosted builds
- * NB! do not change to 'static'!!!!
- */
-struct command_context *setup_command_handler(Jim_Interp *interp)
+static struct command_context *setup_command_handler(Jim_Interp *interp)
 {
 	log_init();
 	LOG_DEBUG("log_init: complete");
@@ -247,6 +246,7 @@ struct command_context *setup_command_handler(Jim_Interp *interp)
 		&server_register_commands,
 		&gdb_register_commands,
 		&log_register_commands,
+		&rtt_server_register_commands,
 		&transport_register_commands,
 		&interface_register_commands,
 		&target_register_commands,
@@ -339,12 +339,17 @@ int openocd_main(int argc, char *argv[])
 	if (ioutil_init(cmd_ctx) != ERROR_OK)
 		return EXIT_FAILURE;
 
+	if (rtt_init() != ERROR_OK)
+		return EXIT_FAILURE;
+
 	LOG_OUTPUT("For bug reports, read\n\t"
 		"http://openocd.org/doc/doxygen/bugs.html"
 		"\n");
 
 	command_context_mode(cmd_ctx, COMMAND_CONFIG);
 	command_set_output_handler(cmd_ctx, configuration_output_handler, NULL);
+
+	server_host_os_entry();
 
 	/* Start the executable meat that can evolve into thread in future. */
 	ret = openocd_thread(argc, argv, cmd_ctx);
@@ -361,9 +366,12 @@ int openocd_main(int argc, char *argv[])
 
 	adapter_quit();
 
+	server_host_os_close();
+
 	/* Shutdown commandline interface */
 	command_exit(cmd_ctx);
 
+	rtt_exit();
 	free_config();
 
 	if (ERROR_FAIL == ret)

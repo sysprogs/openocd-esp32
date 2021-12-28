@@ -25,7 +25,7 @@ def get_logger():
 ########################################################################
 #                         TESTS IMPLEMENTATION                         #
 ########################################################################
-@skip_for_chip(['esp32c3'])
+@skip_for_chip(['esp32s3'])
 class ApptraceTestsImpl:
     """
     Tests for "raw" apptrace.
@@ -83,7 +83,7 @@ class ApptraceTestsImpl:
 
     def test_apptrace_reset(self):
         """
-            This test checks that apptracing continue to work if target resets between start and stop 
+            This test checks that apptracing continue to work if target resets between start and stop
         """
         self.select_sub_test(505)
         trace_file = tempfile.NamedTemporaryFile(delete=False)
@@ -98,12 +98,15 @@ class ApptraceTestsImpl:
         self.stop_exec()
         self.gdb.target_reset()
 
+        print("lines before reset")
+
         lines_before_reset = []
         while True:
             try:
                 line = reader.readline()
                 if (len(line)):
                     lines_before_reset.append(line)
+                    print(line)
             except ReaderTimeoutError:
                 break
 
@@ -113,12 +116,15 @@ class ApptraceTestsImpl:
         self.resume_exec()
         self.oocd.apptrace_wait_stop(tmo=30)
 
+        print("lines after reset")
+
         lines_after_reset = []
         while True:
             try:
                 line = reader.readline()
                 if (len(line)):
                     lines_after_reset.append(line)
+                    print(line)
             except ReaderTimeoutError:
                 break
         reader.cleanup()

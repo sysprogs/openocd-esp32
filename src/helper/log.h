@@ -40,7 +40,7 @@
  * LOG_LVL_SILENT - turn off all output. In lieu of try + catch this can be used as a
  *                  feeble ersatz.
  * LOG_LVL_USER - user messages. Could be anything from information
- *                to progress messags. These messages do not represent
+ *                to progress messages. These messages do not represent
  *                incorrect or unexpected behaviour, just normal execution.
  * LOG_LVL_ERROR - fatal errors, that are likely to cause program abort
  * LOG_LVL_WARNING - non-fatal errors, that may be resolved later
@@ -82,6 +82,8 @@ void kept_alive(void);
 void alive_sleep(uint64_t ms);
 void busy_sleep(uint64_t ms);
 
+void log_socket_error(const char *socket_desc);
+
 typedef void (*log_callback_fn)(void *priv, const char *file, unsigned line,
 		const char *function, const char *string);
 
@@ -95,7 +97,8 @@ int log_add_callback(log_callback_fn fn, void *priv);
 int log_remove_callback(log_callback_fn fn, void *priv);
 
 char *alloc_vprintf(const char *fmt, va_list ap);
-char *alloc_printf(const char *fmt, ...);
+char *alloc_printf(const char *fmt, ...)
+	__attribute__ ((format (PRINTF_ATTRIBUTE_FORMAT, 1, 2)));
 
 extern int debug_level;
 
@@ -151,6 +154,7 @@ extern int debug_level;
 #define ERROR_WAIT						(-5)
 /* ERROR_TIMEOUT is already taken by winerror.h. */
 #define ERROR_TIMEOUT_REACHED			(-6)
+#define ERROR_NOT_IMPLEMENTED			(-7)
 
 
 #endif /* OPENOCD_HELPER_LOG_H */

@@ -55,8 +55,8 @@
  * shadowed registers, and support for the Thumb instruction set.
  *
  * Processor differences include things like presence or absence of MMU
- * and cache, pipeline sizes, use of a modified Harvard Architecure
- * (with separate instruction and data busses from the CPU), support
+ * and cache, pipeline sizes, use of a modified Harvard Architecture
+ * (with separate instruction and data buses from the CPU), support
  * for cpu clock gating during idle, and more.
  */
 
@@ -102,7 +102,7 @@ static void arm7_9_assign_wp(struct arm7_9_common *arm7_9, struct breakpoint *br
 	} else
 		LOG_ERROR("BUG: no hardware comparator available");
 
-	LOG_DEBUG("BPID: %" PRId32 " (0x%08" TARGET_PRIxADDR ") using hw wp: %d",
+	LOG_DEBUG("BPID: %" PRIu32 " (0x%08" TARGET_PRIxADDR ") using hw wp: %d",
 			breakpoint->unique_id,
 			breakpoint->address,
 			breakpoint->set);
@@ -188,7 +188,7 @@ static int arm7_9_set_breakpoint(struct target *target, struct breakpoint *break
 	struct arm7_9_common *arm7_9 = target_to_arm7_9(target);
 	int retval = ERROR_OK;
 
-	LOG_DEBUG("BPID: %" PRId32 ", Address: 0x%08" TARGET_PRIxADDR ", Type: %d",
+	LOG_DEBUG("BPID: %" PRIu32 ", Address: 0x%08" TARGET_PRIxADDR ", Type: %d",
 		breakpoint->unique_id,
 		breakpoint->address,
 		breakpoint->type);
@@ -300,7 +300,7 @@ static int arm7_9_unset_breakpoint(struct target *target, struct breakpoint *bre
 	int retval = ERROR_OK;
 	struct arm7_9_common *arm7_9 = target_to_arm7_9(target);
 
-	LOG_DEBUG("BPID: %" PRId32 ", Address: 0x%08" TARGET_PRIxADDR,
+	LOG_DEBUG("BPID: %" PRIu32 ", Address: 0x%08" TARGET_PRIxADDR,
 		breakpoint->unique_id,
 		breakpoint->address);
 
@@ -310,7 +310,7 @@ static int arm7_9_unset_breakpoint(struct target *target, struct breakpoint *bre
 	}
 
 	if (breakpoint->type == BKPT_HARD) {
-		LOG_DEBUG("BPID: %" PRId32 " Releasing hw wp: %d",
+		LOG_DEBUG("BPID: %" PRIu32 " Releasing hw wp: %d",
 			breakpoint->unique_id,
 			breakpoint->set);
 		if (breakpoint->set == 1) {
@@ -1009,7 +1009,7 @@ int arm7_9_deassert_reset(struct target *target)
 
 /**
  * Clears the halt condition for an ARM7/9 target.  If it isn't coming out of
- * reset and if DBGRQ is used, it is progammed to be deasserted.  If the reset
+ * reset and if DBGRQ is used, it is programmed to be deasserted.  If the reset
  * vector catch was used, it is restored.  Otherwise, the control value is
  * restored and the watchpoint unit is restored if it was in use.
  *
@@ -1391,6 +1391,11 @@ static int arm7_9_full_context(struct target *target)
 	int retval;
 	struct arm7_9_common *arm7_9 = target_to_arm7_9(target);
 	struct arm *arm = &arm7_9->arm;
+	struct {
+		uint32_t value;
+		uint8_t *reg_p;
+	} read_cache[6 * (16 + 1)];
+	int read_cache_idx = 0;
 
 	LOG_DEBUG("-");
 
@@ -1433,10 +1438,12 @@ static int arm7_9_full_context(struct target *target)
 			for (j = 0; j < 15; j++) {
 				if (!ARMV4_5_CORE_REG_MODE(arm->core_cache,
 						armv4_5_number_to_mode(i), j).valid) {
-					reg_p[j] = (uint32_t *)ARMV4_5_CORE_REG_MODE(
+					read_cache[read_cache_idx].reg_p = ARMV4_5_CORE_REG_MODE(
 							arm->core_cache,
 							armv4_5_number_to_mode(i),
 							j).value;
+					reg_p[j] = &read_cache[read_cache_idx].value;
+					read_cache_idx++;
 					mask |= 1 << j;
 					ARMV4_5_CORE_REG_MODE(arm->core_cache,
 						armv4_5_number_to_mode(i),
@@ -1454,9 +1461,10 @@ static int arm7_9_full_context(struct target *target)
 			/* check if the PSR has to be read */
 			if (!ARMV4_5_CORE_REG_MODE(arm->core_cache, armv4_5_number_to_mode(i),
 					16).valid) {
-				arm7_9->read_xpsr(target,
-					(uint32_t *)ARMV4_5_CORE_REG_MODE(arm->core_cache,
-						armv4_5_number_to_mode(i), 16).value, 1);
+				read_cache[read_cache_idx].reg_p = ARMV4_5_CORE_REG_MODE(arm->core_cache,
+					armv4_5_number_to_mode(i), 16).value;
+				arm7_9->read_xpsr(target, &read_cache[read_cache_idx].value, 1);
+				read_cache_idx++;
 				ARMV4_5_CORE_REG_MODE(arm->core_cache, armv4_5_number_to_mode(i),
 					16).valid = true;
 				ARMV4_5_CORE_REG_MODE(arm->core_cache, armv4_5_number_to_mode(i),
@@ -1472,6 +1480,14 @@ static int arm7_9_full_context(struct target *target)
 	retval = jtag_execute_queue();
 	if (retval != ERROR_OK)
 		return retval;
+	/*
+	 * FIXME: regs in cache should be tagged as 'valid' only now,
+	 * not before the jtag_execute_queue()
+	 */
+	while (read_cache_idx) {
+		read_cache_idx--;
+		buf_set_u32(read_cache[read_cache_idx].reg_p, 0, 32, read_cache[read_cache_idx].value);
+	}
 	return ERROR_OK;
 }
 
@@ -1725,7 +1741,7 @@ int arm7_9_resume(struct target *target,
 		breakpoint = breakpoint_find(target,
 				buf_get_u32(arm->pc->value, 0, 32));
 		if (breakpoint != NULL) {
-			LOG_DEBUG("unset breakpoint at 0x%8.8" TARGET_PRIxADDR " (id: %" PRId32,
+			LOG_DEBUG("unset breakpoint at 0x%8.8" TARGET_PRIxADDR " (id: %" PRIu32,
 				breakpoint->address,
 				breakpoint->unique_id);
 			retval = arm7_9_unset_breakpoint(target, breakpoint);
@@ -2682,6 +2698,15 @@ int arm7_9_examine(struct target *target)
 	return retval;
 }
 
+void arm7_9_deinit(struct target *target)
+{
+	struct arm7_9_common *arm7_9 = target_to_arm7_9(target);
+
+	if (target_was_examined(target))
+		embeddedice_free_reg_cache(arm7_9->eice_cache);
+
+	arm_jtag_close_connection(&arm7_9->jtag_info);
+}
 
 int arm7_9_check_reset(struct target *target)
 {
@@ -2848,7 +2873,7 @@ int arm7_9_init_arch_info(struct target *target, struct arm7_9_common *arm7_9)
 	arm7_9->dcc_downloads = false;
 
 	arm->arch_info = arm7_9;
-	arm->core_type = ARM_MODE_ANY;
+	arm->core_type = ARM_CORE_TYPE_STD;
 	arm->read_core_reg = arm7_9_read_core_reg;
 	arm->write_core_reg = arm7_9_write_core_reg;
 	arm->full_context = arm7_9_full_context;

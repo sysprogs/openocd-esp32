@@ -77,6 +77,14 @@ typedef enum tap_state {
 } tap_state_t;
 
 /**
+ * Defines arguments for reset functions
+ */
+#define SRST_DEASSERT   0
+#define SRST_ASSERT     1
+#define TRST_DEASSERT   0
+#define TRST_ASSERT     1
+
+/**
  * Function tap_state_name
  * Returns a string suitable for display representing the JTAG tap_state
  */
@@ -154,8 +162,8 @@ void jtag_tap_free(struct jtag_tap *tap);
 
 struct jtag_tap *jtag_all_taps(void);
 const char *jtag_tap_name(const struct jtag_tap *tap);
-struct jtag_tap *jtag_tap_by_string(const char* dotted_name);
-struct jtag_tap *jtag_tap_by_jim_obj(Jim_Interp* interp, Jim_Obj *obj);
+struct jtag_tap *jtag_tap_by_string(const char *dotted_name);
+struct jtag_tap *jtag_tap_by_jim_obj(Jim_Interp *interp, Jim_Obj *obj);
 struct jtag_tap *jtag_tap_by_position(unsigned abs_position);
 struct jtag_tap *jtag_tap_next_enabled(struct jtag_tap *p);
 unsigned jtag_tap_count_enabled(void);
@@ -202,11 +210,11 @@ struct jtag_tap_event_action {
 };
 
 /**
- * Defines the function signature requide for JTAG event callback
+ * Defines the function signature required for JTAG event callback
  * functions, which are added with jtag_register_event_callback()
  * and removed jtag_unregister_event_callback().
  * @param event The event to handle.
- * @param prive A pointer to data that was passed to
+ * @param priv A pointer to data that was passed to
  *	jtag_register_event_callback().
  * @returns Must return ERROR_OK on success, or an error code on failure.
  *
@@ -241,7 +249,7 @@ int jtag_config_khz(unsigned khz);
  */
 int jtag_config_rclk(unsigned fallback_speed_khz);
 
-/** Retreives the clock speed of the JTAG interface in KHz. */
+/** Retrieves the clock speed of the JTAG interface in KHz. */
 unsigned jtag_get_speed_khz(void);
 
 enum reset_types {
@@ -384,7 +392,7 @@ typedef intptr_t jtag_callback_data_t;
 typedef void (*jtag_callback1_t)(jtag_callback_data_t data0);
 
 /** A simpler version of jtag_add_callback4(). */
-void jtag_add_callback(jtag_callback1_t, jtag_callback_data_t data0);
+void jtag_add_callback(jtag_callback1_t f, jtag_callback_data_t data0);
 
 
 /**
@@ -399,7 +407,7 @@ void jtag_add_callback(jtag_callback1_t, jtag_callback_data_t data0);
  * assumptions about what the callback does or what its arguments are.
  * These callbacks are typically executed *after* the *entire* JTAG
  * queue has been executed for e.g. USB interfaces, and they are
- * guaranteeed to be invoked in the order that they were queued.
+ * guaranteed to be invoked in the order that they were queued.
  *
  * If the execution of the queue fails before the callbacks, then --
  * depending on driver implementation -- the callbacks may or may not be
@@ -449,7 +457,7 @@ void jtag_add_tlr(void);
  * path when transitioning to/from end
  * state.
  *
- * A list of unambigious single clock state transitions, not
+ * A list of unambiguous single clock state transitions, not
  * all drivers can support this, but it is required for e.g.
  * XScale and Xilinx support
  *

@@ -116,7 +116,7 @@ struct stm32x_options {
 struct stm32x_flash_bank {
 	struct stm32x_options option_bytes;
 	int ppage_size;
-	int probed;
+	bool probed;
 
 	bool has_dual_banks;
 	/* used to access dual flash bank stm32xl */
@@ -145,7 +145,7 @@ FLASH_BANK_COMMAND_HANDLER(stm32x_flash_bank_command)
 	stm32x_info = malloc(sizeof(struct stm32x_flash_bank));
 
 	bank->driver_priv = stm32x_info;
-	stm32x_info->probed = 0;
+	stm32x_info->probed = false;
 	stm32x_info->has_dual_banks = false;
 	stm32x_info->can_load_options = false;
 	stm32x_info->register_base = FLASH_REG_BASE_B0;
@@ -215,7 +215,7 @@ static int stm32x_check_operation_supported(struct flash_bank *bank)
 	/* if we have a dual flash bank device then
 	 * we need to perform option byte stuff on bank0 only */
 	if (stm32x_info->register_base != FLASH_REG_BASE_B0) {
-		LOG_ERROR("Option Byte Operation's must use bank0");
+		LOG_ERROR("Option byte operations must use bank 0");
 		return ERROR_FLASH_OPERATION_FAILED;
 	}
 
@@ -229,33 +229,19 @@ static int stm32x_read_options(struct flash_bank *bank)
 	uint32_t option_bytes;
 	int retval;
 
-	/* read user and read protection option bytes */
-	retval = target_read_u32(target, STM32_OB_RDP, &option_bytes);
+	/* read user and read protection option bytes, user data option bytes */
+	retval = target_read_u32(target, STM32_FLASH_OBR_B0, &option_bytes);
 	if (retval != ERROR_OK)
 		return retval;
 
-	stm32x_info->option_bytes.rdp = option_bytes & 0xFF;
-	stm32x_info->option_bytes.user = (option_bytes >> 16) & 0xFF;
-
-	/* read user data option bytes */
-	retval = target_read_u32(target, STM32_OB_DATA0, &option_bytes);
-	if (retval != ERROR_OK)
-		return retval;
-
-	stm32x_info->option_bytes.data = ((option_bytes >> 8) & 0xFF00) | (option_bytes & 0xFF);
+	stm32x_info->option_bytes.rdp = (option_bytes & (1 << OPT_READOUT)) ? 0 : stm32x_info->default_rdp;
+	stm32x_info->option_bytes.user = (option_bytes >> stm32x_info->option_offset >> 2) & 0xff;
+	stm32x_info->option_bytes.data = (option_bytes >> stm32x_info->user_data_offset) & 0xffff;
 
 	/* read write protection option bytes */
-	retval = target_read_u32(target, STM32_OB_WRP0, &option_bytes);
+	retval = target_read_u32(target, STM32_FLASH_WRPR_B0, &stm32x_info->option_bytes.protection);
 	if (retval != ERROR_OK)
 		return retval;
-
-	stm32x_info->option_bytes.protection = ((option_bytes >> 8) & 0xFF00) | (option_bytes & 0xFF);
-
-	retval = target_read_u32(target, STM32_OB_WRP2, &option_bytes);
-	if (retval != ERROR_OK)
-		return retval;
-
-	stm32x_info->option_bytes.protection |= (((option_bytes >> 8) & 0xFF00) | (option_bytes & 0xFF)) << 16;
 
 	return ERROR_OK;
 }
@@ -373,16 +359,16 @@ static int stm32x_protect_check(struct flash_bank *bank)
 	if (retval != ERROR_OK)
 		return retval;
 
-	for (int i = 0; i < bank->num_prot_blocks; i++)
+	for (unsigned int i = 0; i < bank->num_prot_blocks; i++)
 		bank->prot_blocks[i].is_protected = (protection & (1 << i)) ? 0 : 1;
 
 	return ERROR_OK;
 }
 
-static int stm32x_erase(struct flash_bank *bank, int first, int last)
+static int stm32x_erase(struct flash_bank *bank, unsigned int first,
+		unsigned int last)
 {
 	struct target *target = bank->target;
-	int i;
 
 	if (bank->target->state != TARGET_HALTED) {
 		LOG_ERROR("Target not halted");
@@ -400,7 +386,7 @@ static int stm32x_erase(struct flash_bank *bank, int first, int last)
 	if (retval != ERROR_OK)
 		return retval;
 
-	for (i = first; i <= last; i++) {
+	for (unsigned int i = first; i <= last; i++) {
 		retval = target_write_u32(target, stm32x_get_flash_reg(bank, STM32_FLASH_CR), FLASH_PER);
 		if (retval != ERROR_OK)
 			return retval;
@@ -427,7 +413,8 @@ static int stm32x_erase(struct flash_bank *bank, int first, int last)
 	return ERROR_OK;
 }
 
-static int stm32x_protect(struct flash_bank *bank, int set, int first, int last)
+static int stm32x_protect(struct flash_bank *bank, int set, unsigned int first,
+		unsigned int last)
 {
 	struct target *target = bank->target;
 	struct stm32x_flash_bank *stm32x_info = bank->driver_priv;
@@ -447,7 +434,7 @@ static int stm32x_protect(struct flash_bank *bank, int set, int first, int last)
 		return retval;
 	}
 
-	for (int i = first; i <= last; i++) {
+	for (unsigned int i = first; i <= last; i++) {
 		if (set)
 			stm32x_info->option_bytes.protection &= ~(1 << i);
 		else
@@ -630,9 +617,7 @@ reset_pg_and_lock:
 		retval = retval2;
 
 cleanup:
-	if (new_buffer)
-		free(new_buffer);
-
+	free(new_buffer);
 	return retval;
 }
 
@@ -711,7 +696,7 @@ static int stm32x_probe(struct flash_bank *bank)
 	int page_size;
 	uint32_t base_address = 0x08000000;
 
-	stm32x_info->probed = 0;
+	stm32x_info->probed = false;
 	stm32x_info->register_base = FLASH_REG_BASE_B0;
 	stm32x_info->user_data_offset = 10;
 	stm32x_info->option_offset = 0;
@@ -728,30 +713,78 @@ static int stm32x_probe(struct flash_bank *bank)
 
 	/* set page size, protection granularity and max flash size depending on family */
 	switch (device_id & 0xfff) {
-	case 0x410: /* medium density */
+	case 0x440: /* stm32f05x */
+		page_size = 1024;
+		stm32x_info->ppage_size = 4;
+		max_flash_size_in_kb = 64;
+		stm32x_info->user_data_offset = 16;
+		stm32x_info->option_offset = 6;
+		stm32x_info->default_rdp = 0xAA;
+		stm32x_info->can_load_options = true;
+		break;
+	case 0x444: /* stm32f03x */
+	case 0x445: /* stm32f04x */
+		page_size = 1024;
+		stm32x_info->ppage_size = 4;
+		max_flash_size_in_kb = 32;
+		stm32x_info->user_data_offset = 16;
+		stm32x_info->option_offset = 6;
+		stm32x_info->default_rdp = 0xAA;
+		stm32x_info->can_load_options = true;
+		break;
+	case 0x448: /* stm32f07x */
+		page_size = 2048;
+		stm32x_info->ppage_size = 4;
+		max_flash_size_in_kb = 128;
+		stm32x_info->user_data_offset = 16;
+		stm32x_info->option_offset = 6;
+		stm32x_info->default_rdp = 0xAA;
+		stm32x_info->can_load_options = true;
+		break;
+	case 0x442: /* stm32f09x */
+		page_size = 2048;
+		stm32x_info->ppage_size = 4;
+		max_flash_size_in_kb = 256;
+		stm32x_info->user_data_offset = 16;
+		stm32x_info->option_offset = 6;
+		stm32x_info->default_rdp = 0xAA;
+		stm32x_info->can_load_options = true;
+		break;
+	case 0x410: /* stm32f1x medium-density */
 		page_size = 1024;
 		stm32x_info->ppage_size = 4;
 		max_flash_size_in_kb = 128;
 		break;
-	case 0x412: /* low density */
+	case 0x412: /* stm32f1x low-density */
 		page_size = 1024;
 		stm32x_info->ppage_size = 4;
 		max_flash_size_in_kb = 32;
 		break;
-	case 0x414: /* high density */
+	case 0x414: /* stm32f1x high-density */
 		page_size = 2048;
 		stm32x_info->ppage_size = 2;
 		max_flash_size_in_kb = 512;
 		break;
-	case 0x418: /* connectivity line density */
+	case 0x418: /* stm32f1x connectivity */
 		page_size = 2048;
 		stm32x_info->ppage_size = 2;
 		max_flash_size_in_kb = 256;
 		break;
-	case 0x420: /* value line density */
+	case 0x430: /* stm32f1 XL-density (dual flash banks) */
+		page_size = 2048;
+		stm32x_info->ppage_size = 2;
+		max_flash_size_in_kb = 1024;
+		stm32x_info->has_dual_banks = true;
+		break;
+	case 0x420: /* stm32f100xx low- and medium-density value line */
 		page_size = 1024;
 		stm32x_info->ppage_size = 4;
 		max_flash_size_in_kb = 128;
+		break;
+	case 0x428: /* stm32f100xx high-density value line */
+		page_size = 2048;
+		stm32x_info->ppage_size = 4;
+		max_flash_size_in_kb = 512;
 		break;
 	case 0x422: /* stm32f302/3xb/c */
 		page_size = 2048;
@@ -771,17 +804,6 @@ static int stm32x_probe(struct flash_bank *bank)
 		stm32x_info->default_rdp = 0xAA;
 		stm32x_info->can_load_options = true;
 		break;
-	case 0x428: /* value line High density */
-		page_size = 2048;
-		stm32x_info->ppage_size = 4;
-		max_flash_size_in_kb = 128;
-		break;
-	case 0x430: /* xl line density (dual flash banks) */
-		page_size = 2048;
-		stm32x_info->ppage_size = 2;
-		max_flash_size_in_kb = 1024;
-		stm32x_info->has_dual_banks = true;
-		break;
 	case 0x432: /* stm32f37x */
 		page_size = 2048;
 		stm32x_info->ppage_size = 2;
@@ -796,27 +818,6 @@ static int stm32x_probe(struct flash_bank *bank)
 		page_size = 2048;
 		stm32x_info->ppage_size = 2;
 		max_flash_size_in_kb = 64;
-		stm32x_info->user_data_offset = 16;
-		stm32x_info->option_offset = 6;
-		stm32x_info->default_rdp = 0xAA;
-		stm32x_info->can_load_options = true;
-		break;
-	case 0x440: /* stm32f05x */
-	case 0x444: /* stm32f03x */
-	case 0x445: /* stm32f04x */
-		page_size = 1024;
-		stm32x_info->ppage_size = 4;
-		max_flash_size_in_kb = 64;
-		stm32x_info->user_data_offset = 16;
-		stm32x_info->option_offset = 6;
-		stm32x_info->default_rdp = 0xAA;
-		stm32x_info->can_load_options = true;
-		break;
-	case 0x448: /* stm32f07x */
-	case 0x442: /* stm32f09x */
-		page_size = 2048;
-		stm32x_info->ppage_size = 4;
-		max_flash_size_in_kb = 256;
 		stm32x_info->user_data_offset = 16;
 		stm32x_info->option_offset = 6;
 		stm32x_info->default_rdp = 0xAA;
@@ -869,15 +870,11 @@ static int stm32x_probe(struct flash_bank *bank)
 	/* check that calculation result makes sense */
 	assert(num_pages > 0);
 
-	if (bank->sectors) {
-		free(bank->sectors);
-		bank->sectors = NULL;
-	}
+	free(bank->sectors);
+	bank->sectors = NULL;
 
-	if (bank->prot_blocks) {
-		free(bank->prot_blocks);
-		bank->prot_blocks = NULL;
-	}
+	free(bank->prot_blocks);
+	bank->prot_blocks = NULL;
 
 	bank->base = base_address;
 	bank->size = (num_pages * page_size);
@@ -900,7 +897,7 @@ static int stm32x_probe(struct flash_bank *bank)
 	if (num_prot_blocks == 32)
 		bank->prot_blocks[31].size = (num_pages - (31 * stm32x_info->ppage_size)) * page_size;
 
-	stm32x_info->probed = 1;
+	stm32x_info->probed = true;
 
 	return ERROR_OK;
 }
@@ -1368,8 +1365,7 @@ COMMAND_HANDLER(stm32x_handle_options_write_command)
 			COMMAND_PARSE_NUMBER(u16, CMD_ARGV[1], useropt);
 			CMD_ARGC--;
 			CMD_ARGV++;
-		}
-		else if (stm32x_info->has_dual_banks) {
+		} else if (stm32x_info->has_dual_banks) {
 			if (strcmp("BOOT0", CMD_ARGV[0]) == 0)
 				optionbyte |= (1 << 3);
 			else if (strcmp("BOOT1", CMD_ARGV[0]) == 0)
@@ -1488,8 +1484,6 @@ static int stm32x_mass_erase(struct flash_bank *bank)
 
 COMMAND_HANDLER(stm32x_handle_mass_erase_command)
 {
-	int i;
-
 	if (CMD_ARGC < 1)
 		return ERROR_COMMAND_SYNTAX_ERROR;
 
@@ -1501,7 +1495,7 @@ COMMAND_HANDLER(stm32x_handle_mass_erase_command)
 	retval = stm32x_mass_erase(bank);
 	if (retval == ERROR_OK) {
 		/* set all sectors as erased */
-		for (i = 0; i < bank->num_sectors; i++)
+		for (unsigned int i = 0; i < bank->num_sectors; i++)
 			bank->sectors[i].is_erased = 1;
 
 		command_print(CMD, "stm32x mass erase complete");

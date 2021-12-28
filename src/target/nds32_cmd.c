@@ -1007,7 +1007,7 @@ static const struct command_registration nds32_exec_command_handlers[] = {
 		.handler = handle_nds32_global_stop_command,
 		.mode = COMMAND_ANY,
 		.usage = "['on'|'off']",
-		.help = "turn on/off global stop. After turning on, every load/store" \
+		.help = "turn on/off global stop. After turning on, every load/store "
 			 "instructions will be stopped to check memory access.",
 	},
 	{
@@ -1015,7 +1015,7 @@ static const struct command_registration nds32_exec_command_handlers[] = {
 		.handler = handle_nds32_soft_reset_halt_command,
 		.mode = COMMAND_ANY,
 		.usage = "['on'|'off']",
-		.help = "as issuing rest-halt, to use soft-reset-halt or not." \
+		.help = "as issuing rest-halt, to use soft-reset-halt or not."
 			 "the feature is for backward-compatible.",
 	},
 	{
@@ -1036,7 +1036,7 @@ static const struct command_registration nds32_exec_command_handlers[] = {
 		.name = "login_edm_operation",
 		.handler = handle_nds32_login_edm_operation_command,
 		.mode = COMMAND_CONFIG,
-		.usage = "login_edm_operation misc_reg_no value",
+		.usage = "misc_reg_no value",
 		.help = "add EDM operations for secure MCU debugging.",
 	},
 	{
@@ -1123,4 +1123,3 @@ const struct command_registration nds32_command_handlers[] = {
 	},
 	COMMAND_REGISTRATION_DONE
 };
-

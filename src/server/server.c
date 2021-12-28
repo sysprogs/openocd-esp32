@@ -76,7 +76,7 @@ static int add_connection(struct service *service, struct command_context *cmd_c
 	memset(&c->sin, 0, sizeof(c->sin));
 	c->cmd_ctx = copy_command_context(cmd_ctx);
 	c->service = service;
-	c->input_pending = 0;
+	c->input_pending = false;
 	c->priv = NULL;
 	c->next = NULL;
 
@@ -210,7 +210,8 @@ int add_service(char *name,
 	new_connection_handler_t new_connection_handler,
 	input_handler_t input_handler,
 	connection_closed_handler_t connection_closed_handler,
-	void *priv)
+	void *priv,
+	struct service **new_service)
 {
 	struct service *c, **p;
 	struct hostent *hp;
@@ -325,7 +326,7 @@ int add_service(char *name,
 #endif
 	} else if (c->type == CONNECTION_PIPE) {
 #ifdef _WIN32
-		/* we currenty do not support named pipes under win32
+		/* we currently do not support named pipes under win32
 		 * so exit openocd for now */
 		LOG_ERROR("Named pipes currently not supported under this os");
 		free_service(c);
@@ -345,6 +346,10 @@ int add_service(char *name,
 	for (p = &services; *p; p = &(*p)->next)
 		;
 	*p = c;
+
+	/* if new_service is not NULL, return the created service into it */
+	if (new_service)
+		*new_service = c;
 
 	return ERROR_OK;
 }
@@ -403,19 +408,14 @@ static int remove_services(void)
 
 		remove_connections(c);
 
-		if (c->name)
-			free(c->name);
+		free(c->name);
 
 		if (c->type == CONNECTION_PIPE) {
 			if (c->fd != -1)
 				close(c->fd);
 		}
-		if (c->port)
-			free(c->port);
-
-		if (c->priv)
-			free(c->priv);
-
+		free(c->port);
+		free(c->priv);
 		/* delete service */
 		free(c);
 
@@ -562,7 +562,7 @@ int server_loop(struct command_context *command_context)
 				struct connection *c;
 
 				for (c = service->connections; c; ) {
-					if ((FD_ISSET(c->fd, &read_fds)) || c->input_pending) {
+					if ((c->fd >= 0 && FD_ISSET(c->fd, &read_fds)) || c->input_pending) {
 						retval = service->input(c);
 						if (retval != ERROR_OK) {
 							struct connection *next = c->next;
@@ -600,7 +600,7 @@ int server_loop(struct command_context *command_context)
 	return shutdown_openocd == SHUTDOWN_WITH_ERROR_CODE ? ERROR_FAIL : ERROR_OK;
 }
 
-void sig_handler(int sig)
+static void sig_handler(int sig)
 {
 	/* store only first signal that hits us */
 	if (shutdown_openocd == CONTINUE_MAIN_LOOP) {
@@ -631,7 +631,7 @@ static void sigkey_handler(int sig)
 #endif
 
 
-int server_preinit(void)
+int server_host_os_entry(void)
 {
 	/* this currently only calls WSAStartup on native win32 systems
 	 * before any socket operations are performed.
@@ -647,7 +647,21 @@ int server_preinit(void)
 		LOG_ERROR("Failed to Open Winsock");
 		return ERROR_FAIL;
 	}
+#endif
+	return ERROR_OK;
+}
 
+int server_host_os_close(void)
+{
+#ifdef _WIN32
+	WSACleanup();
+#endif
+	return ERROR_OK;
+}
+
+int server_preinit(void)
+{
+#ifdef _WIN32
 	/* register ctrl-c handler */
 	SetConsoleCtrlHandler(ControlHandler, TRUE);
 
@@ -688,7 +702,6 @@ int server_quit(void)
 	target_quit();
 
 #ifdef _WIN32
-	WSACleanup();
 	SetConsoleCtrlHandler(ControlHandler, FALSE);
 
 	return ERROR_OK;
@@ -799,7 +812,7 @@ static const struct command_registration server_command_handlers[] = {
 	{
 		.name = "bindto",
 		.handler = &handle_bindto_command,
-		.mode = COMMAND_ANY,
+		.mode = COMMAND_CONFIG,
 		.usage = "[name]",
 		.help = "Specify address by name on which to listen for "
 			"incoming TCP/IP connections",

@@ -35,7 +35,7 @@
 #endif
 
 #include "jtag_usb_common.h"
-#include "libusb_common.h"
+#include "libusb_helper.h"
 
 #define NO_TAP_SHIFT    0
 #define TAP_SHIFT       1
@@ -60,6 +60,7 @@ struct esp_remote_cmd {
 		#define ESP_REMOTE_CMD_RESET    1
 		#define ESP_REMOTE_CMD_SCAN     2
 		#define ESP_REMOTE_CMD_TMS_SEQ  3
+		#define ESP_REMOTE_CMD_SET_CLK  4
 	union {
 		uint16_t function_specific;
 		struct {
@@ -111,7 +112,7 @@ static struct sockaddr_in serv_addr;
 
 static int usb_vid = 0;
 static int usb_pid = 0;
-static struct jtag_libusb_device_handle *usb_device = NULL;
+static struct libusb_device_handle *usb_device = NULL;
 
 static int s_read_bits_queued = 0;
 
@@ -122,6 +123,8 @@ static inline size_t cmd_data_len_bytes(const struct esp_remote_cmd *cmd)
 		return DIV_ROUND_UP(cmd->scan.bits, 8);
 	else if (cmd->function == ESP_REMOTE_CMD_TMS_SEQ)
 		return DIV_ROUND_UP(cmd->tms_seq.bits, 8);
+	else if (cmd->function == ESP_REMOTE_CMD_SET_CLK)
+		return 4;
 	else
 		return 0;
 }
@@ -139,16 +142,18 @@ static int jtag_esp_remote_send_cmd_tcp(struct esp_remote_cmd *cmd)
 static int jtag_esp_remote_send_cmd_usb(struct esp_remote_cmd *cmd)
 {
 	const size_t data_len = cmd_data_len_bytes(cmd);
-	const size_t size = sizeof(struct esp_remote_cmd) + data_len;
-	size_t n=
-		jtag_libusb_bulk_write(usb_device,
+	const int size = sizeof(struct esp_remote_cmd) + data_len;
+	int tr, ret = jtag_libusb_bulk_write(usb_device,
 		USB_OUT_EP,
 		(char *)cmd,
 		size,
-		1000 /*ms*/);
-	if (n != size) {
+		1000 /*ms*/,
+		&tr);
+	if (ret != ERROR_OK)
+		return ERROR_FAIL;
+	if (tr != size) {
 		LOG_ERROR("jtag_esp_remote: usb sent only %d out of %d bytes.",
-			(int)n,
+			(int)tr,
 			(int)size);
 		return ERROR_FAIL;
 	}
@@ -190,18 +195,19 @@ static int jtag_esp_remote_receive_cmd_usb(struct esp_remote_cmd *cmd)
 						break;
 				}
 				assert (internal_buffer_occupied == 0);
-				size_t n= jtag_libusb_bulk_read(usb_device,
+				int tr, ret = jtag_libusb_bulk_read(usb_device,
 					USB_IN_EP,
 					internal_buffer,
 					sizeof(internal_buffer),
-					1000 /*ms*/);
+					1000,	/*ms*/
+					&tr);
 				/* libusb will read groups of bytes which were send toghether and
 				 * not everything in the receive buffer */
-				if (n == 0) {
+				if (ret != ERROR_OK || tr == 0) {
 					LOG_ERROR("jtag_esp_remote: usb receive error");
 					return ERROR_FAIL;
 				}
-				internal_buffer_occupied = n;
+				internal_buffer_occupied = tr;
 			}
 		}
 	}
@@ -485,7 +491,7 @@ jtag_esp_remote_scan_read_exit:
 	return retval;
 }
 
-static int jtag_esp_remote_runtest(int cycles, tap_state_t state)
+static int jtag_esp_remote_runtest(int cycles, tap_state_t end_state)
 {
 	int retval;
 
@@ -493,11 +499,10 @@ static int jtag_esp_remote_runtest(int cycles, tap_state_t state)
 	if (retval != ERROR_OK)
 		return retval;
 
-	retval = jtag_esp_remote_queue_tdi(NULL, cycles, TAP_SHIFT, false);
-	if (retval != ERROR_OK)
-		return retval;
+	for (int i = 0; i < cycles; i++)
+		jtag_esp_remote_clock_tms(0);
 
-	return jtag_esp_remote_state_move(state);
+	return jtag_esp_remote_state_move(end_state);
 }
 
 static int jtag_esp_remote_stableclocks(int cycles)
@@ -626,7 +631,7 @@ static int jtag_esp_remote_init_usb(void)
 {
 	const uint16_t vids[]= {usb_vid, 0};	/* must be null terminated */
 	const uint16_t pids[]= {usb_pid, 0};	/* must be null terminated */
-	int r= jtag_libusb_open(vids, pids, NULL, &usb_device);
+	int r= jtag_libusb_open(vids, pids, NULL, &usb_device, NULL);
 	if (r != ERROR_OK) {
 		if (r == ERROR_FAIL)
 			return ERROR_JTAG_INVALID_INTERFACE;	/*we likely can't find the USB
@@ -638,7 +643,7 @@ static int jtag_esp_remote_init_usb(void)
 	jtag_libusb_set_configuration(usb_device, USB_CONFIGURATION);
 	if (libusb_kernel_driver_active(usb_device, USB_INTERFACE))
 		libusb_detach_kernel_driver(usb_device, USB_INTERFACE);
-	jtag_libusb_claim_interface(usb_device, USB_INTERFACE);
+	libusb_claim_interface(usb_device, USB_INTERFACE);
 	return ERROR_OK;
 }
 
@@ -657,7 +662,7 @@ static int jtag_esp_remote_init(void)
 static int jtag_esp_remote_quit(void)
 {
 	if (usb_device) {
-		jtag_libusb_release_interface(usb_device, USB_INTERFACE);
+		libusb_release_interface(usb_device, USB_INTERFACE);
 		jtag_libusb_close(usb_device);
 	} else {
 		if (server_address) {
@@ -667,6 +672,46 @@ static int jtag_esp_remote_quit(void)
 		return close(sockfd);
 	}
 	return ERROR_OK;
+}
+
+static int jtag_esp_remote_jtag_speed_div(int speed, int *khz)
+{
+	*khz = speed / 1000;
+
+	return ERROR_OK;
+}
+
+static int jtag_esp_remote_jtag_khz(int khz, int *speed)
+{
+	if (khz == 0) {
+		LOG_ERROR("jtag_esp_remote: Adaptive clocking is not supported.");
+		return ERROR_JTAG_NOT_IMPLEMENTED;
+	}
+
+	*speed = khz * 1000;
+
+	return ERROR_OK;
+}
+
+static int jtag_esp_remote_jtag_speed(int speed)
+{
+	if (speed == 0) {
+		LOG_ERROR("jtag_esp_remote: Adaptive clocking is not supported.");
+		return ERROR_JTAG_NOT_IMPLEMENTED;
+	}
+
+	uint8_t speed_buff[4] = {
+		((uint32_t)speed >> 24) & 0xFF,
+		((uint32_t)speed >> 16) & 0xFF,
+		((uint32_t)speed >> 8) & 0xFF,
+		((uint32_t)speed >> 0) & 0xFF
+	};
+
+	ESP_REMOTE_CMD_DECL(cmd, ESP_REMOTE_CMD_SET_CLK, sizeof(speed_buff));
+
+	memcpy(cmd->data, &speed_buff, sizeof(speed_buff));
+
+	return jtag_esp_remote_send_cmd(cmd);
 }
 
 COMMAND_HANDLER(jtag_esp_remote_protocol)
@@ -783,13 +828,21 @@ static const struct command_registration jtag_esp_remote_command_handlers[] = {
 	COMMAND_REGISTRATION_DONE
 };
 
-struct jtag_interface jtag_esp_remote_interface = {
-	.name = "jtag_esp_remote",
+static struct jtag_interface esp_remote_jtag_interface = {
 	.supported = DEBUG_CAP_TMS_SEQ,
+	.execute_queue = jtag_esp_remote_execute_queue,
+};
+
+struct adapter_driver esp_remote_adapter_driver = {
+	.name = "jtag_esp_remote",
 	.commands = jtag_esp_remote_command_handlers,
 	.transports = jtag_only,
 
 	.init = jtag_esp_remote_init,
 	.quit = jtag_esp_remote_quit,
-	.execute_queue = jtag_esp_remote_execute_queue,
+	.speed_div = jtag_esp_remote_jtag_speed_div,
+	.speed = jtag_esp_remote_jtag_speed,
+	.khz = jtag_esp_remote_jtag_khz,
+
+	.jtag_ops = &esp_remote_jtag_interface,
 };

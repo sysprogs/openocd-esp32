@@ -75,6 +75,9 @@
 #define ESP32_S2_RTCWDT_PROTECT_OFF   0xAC
 #define ESP32_S2_SWD_CONF_OFF         0xB0
 #define ESP32_S2_SWD_WPROTECT_OFF     0xB4
+#define ESP32_S2_RTC_CNTL_DIG_PWC_REG_OFF      0x8C
+#define ESP32_S2_RTC_CNTL_DIG_PWC_REG             (ESP32_S2_RTCCNTL_BASE + \
+		ESP32_S2_RTC_CNTL_DIG_PWC_REG_OFF)
 #define ESP32_S2_RTCWDT_CFG           (ESP32_S2_RTCCNTL_BASE + ESP32_S2_RTCWDT_CFG_OFF)
 #define ESP32_S2_RTCWDT_PROTECT       (ESP32_S2_RTCCNTL_BASE + ESP32_S2_RTCWDT_PROTECT_OFF)
 #define ESP32_S2_SWD_CONF_REG         (ESP32_S2_RTCCNTL_BASE + ESP32_S2_SWD_CONF_OFF)
@@ -439,6 +442,13 @@ static int esp32s2_soc_reset(struct target *target)
 		return res;
 	}
 	res = target_write_u32(target,
+		ESP32_S2_RTC_CNTL_DIG_PWC_REG,
+		0);
+	if (res != ERROR_OK) {
+		LOG_ERROR("Failed to write ESP32_S2_RTC_CNTL_DIG_PWC_REG (%d)!", res);
+		return res;
+	}
+	res = target_write_u32(target,
 		ESP32_S2_CLK_CONF,
 		ESP32_S2_CLK_CONF_DEF);
 	if (res != ERROR_OK) {
@@ -688,7 +698,7 @@ static const struct xtensa_power_ops esp32s2_pwr_ops = {
 	.queue_reg_write = xtensa_dm_queue_pwr_reg_write
 };
 
-static const struct esp_xtensa_flash_breakpoint_ops esp32s2_spec_brp_ops = {
+static const struct esp_flash_breakpoint_ops esp32s2_spec_brp_ops = {
 	.breakpoint_add = esp_flash_breakpoint_add,
 	.breakpoint_remove = esp_flash_breakpoint_remove
 };
@@ -784,6 +794,7 @@ struct target_type esp32s2_target = {
 
 	.checksum_memory = xtensa_checksum_memory,
 
+	.get_gdb_arch = xtensa_get_gdb_arch,
 	.get_gdb_reg_list = xtensa_get_gdb_reg_list,
 
 	.run_algorithm = xtensa_run_algorithm,

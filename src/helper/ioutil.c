@@ -230,8 +230,7 @@ COMMAND_HANDLER(handle_cp_command)
 	else
 		command_print(CMD, "copy failed");
 
-	if (data != NULL)
-		free(data);
+	free(data);
 	if (f != NULL)
 		fclose(f);
 
@@ -403,7 +402,7 @@ static int ioutil_Jim_Command_mac(Jim_Interp *interp, int argc,
 		{
 			if (strcmp("eth0", ifr->ifr_name) != 0)
 				continue;
-			strncpy(ifreq.ifr_name, ifr->ifr_name, sizeof(ifreq.ifr_name));
+			strncpy(ifreq.ifr_name, ifr->ifr_name, sizeof(ifreq.ifr_name) - 1);
 			if (ioctl(SockFD, SIOCGIFHWADDR, &ifreq) < 0) {
 				close(SockFD);
 				return JIM_ERR;

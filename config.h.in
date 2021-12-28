@@ -47,6 +47,8 @@
 /* 0 if you do not want the MPSSE mode of FTDI based devices. */
 #define BUILD_FTDI 1
 
+#define BUILD_ESP_USB_JTAG 1
+
 /* 0 if you don't want the Gateworks GW16012 driver. */
 #define BUILD_GW16012 0
 

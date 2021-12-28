@@ -110,7 +110,20 @@ add_library(target
 	esp_riscv_apptrace.c
 	esp32_sysview.c
 	esp32c3.c
-	riscv/riscv_algorithm.c)
+	riscv/riscv_algorithm.c
+	a64_disassembler.c
+	adi_v5_dapdirect.c
+	arc.c
+	arc_cmd.c
+	arc_jtag.c
+	arc_mem.c
+	mips64.c
+	mips64_pracc.c
+	esp.c
+	rtt.c
+	esp_riscv.c
+	aarch64.c
+	mips_mips64.c)
 target_include_directories(target PRIVATE ../..)
 	
 SET_TARGET_PROPERTIES(target PROPERTIES COMPILE_FLAGS -I${CMAKE_CURRENT_BINARY_DIR})

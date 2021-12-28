@@ -32,6 +32,7 @@ NOR_DRIVERS = \
 	%D%/esp32.c \
 	%D%/esp32s2.c \
 	%D%/esp32c3.c \
+	%D%/esp32s3.c \
 	%D%/esirisc_flash.c \
 	%D%/faux.c \
 	%D%/fespi.c \
@@ -57,9 +58,13 @@ NOR_DRIVERS = \
 	%D%/psoc4.c \
 	%D%/psoc5lp.c \
 	%D%/psoc6.c \
+	%D%/renesas_rpchf.c \
+	%D%/sfdp.c \
+	%D%/sh_qspi.c \
 	%D%/sim3x.c \
 	%D%/spi.c \
 	%D%/stmsmi.c \
+	%D%/stmqspi.c \
 	%D%/stellaris.c \
 	%D%/stm32f1x.c \
 	%D%/stm32f2x.c \
@@ -80,11 +85,15 @@ NOR_DRIVERS = \
 NORHEADERS = \
 	%D%/core.h \
 	%D%/cc3220sf.h \
+	%D%/bluenrg-x.h \
 	%D%/cc26xx.h \
 	%D%/cfi.h \
 	%D%/driver.h \
 	%D%/imp.h \
 	%D%/non_cfi.h \
 	%D%/ocl.h \
+	%D%/sfdp.h \
 	%D%/spi.h \
+	%D%/stm32l4x.h \
+	%D%/stmqspi.h \
 	%D%/msp432.h

@@ -60,9 +60,6 @@
 #include "smp.h"
 #include <helper/time_support.h>
 
-#define foreach_smp_target(pos, head) \
-	for (pos = head; (pos != NULL); pos = pos->next)
-
 static int cortex_a_poll(struct target *target);
 static int cortex_a_debug_entry(struct target *target);
 static int cortex_a_restore_context(struct target *target, bool bpwp);
@@ -844,7 +841,7 @@ static int cortex_a_internal_restore(struct target *target, int current,
 			LOG_ERROR("How do I resume into Jazelle state??");
 			return ERROR_FAIL;
 		case ARM_STATE_AARCH64:
-			LOG_ERROR("Shoudn't be in AARCH64 state");
+			LOG_ERROR("Shouldn't be in AARCH64 state");
 			return ERROR_FAIL;
 	}
 	LOG_DEBUG("resume pc = 0x%08" PRIx32, resume_pc);
@@ -1118,7 +1115,8 @@ static int cortex_a_post_debug_entry(struct target *target)
 	return ERROR_OK;
 }
 
-int cortex_a_set_dscr_bits(struct target *target, unsigned long bit_mask, unsigned long value)
+static int cortex_a_set_dscr_bits(struct target *target,
+		unsigned long bit_mask, unsigned long value)
 {
 	struct armv7a_common *armv7a = target_to_armv7a(target);
 	uint32_t dscr;
@@ -1683,10 +1681,10 @@ static int cortex_a_assert_reset(struct target *target)
 		 */
 
 		/*
-		 * FIXME: fix reset when transport is SWD. This is a temporary
+		 * FIXME: fix reset when transport is not JTAG. This is a temporary
 		 * work-around for release v0.10 that is not intended to stay!
 		 */
-		if (transport_is_swd() ||
+		if (!transport_is_jtag() ||
 				(target->reset_halt && (jtag_get_reset_config() & RESET_SRST_NO_GATING)))
 			adapter_assert_reset();
 
@@ -1706,6 +1704,7 @@ static int cortex_a_assert_reset(struct target *target)
 
 static int cortex_a_deassert_reset(struct target *target)
 {
+	struct armv7a_common *armv7a = target_to_armv7a(target);
 	int retval;
 
 	LOG_DEBUG(" ");
@@ -1724,7 +1723,8 @@ static int cortex_a_deassert_reset(struct target *target)
 			LOG_WARNING("%s: ran after reset and before halt ...",
 				target_name(target));
 			if (target_was_examined(target)) {
-				retval = target_halt(target);
+				retval = mem_ap_write_atomic_u32(armv7a->debug_ap,
+						armv7a->debug_base + CPUDBG_DRCR, DRCR_HALT);
 				if (retval != ERROR_OK)
 					return retval;
 			} else
@@ -2499,7 +2499,7 @@ static int cortex_a_read_phys_memory(struct target *target,
 	if (!count || !buffer)
 		return ERROR_COMMAND_SYNTAX_ERROR;
 
-	LOG_DEBUG("Reading memory at real address " TARGET_ADDR_FMT "; size %" PRId32 "; count %" PRId32,
+	LOG_DEBUG("Reading memory at real address " TARGET_ADDR_FMT "; size %" PRIu32 "; count %" PRIu32,
 		address, size, count);
 
 	/* read memory through the CPU */
@@ -2516,7 +2516,7 @@ static int cortex_a_read_memory(struct target *target, target_addr_t address,
 	int retval;
 
 	/* cortex_a handles unaligned memory access */
-	LOG_DEBUG("Reading memory at address " TARGET_ADDR_FMT "; size %" PRId32 "; count %" PRId32,
+	LOG_DEBUG("Reading memory at address " TARGET_ADDR_FMT "; size %" PRIu32 "; count %" PRIu32,
 		address, size, count);
 
 	cortex_a_prep_memaccess(target, 0);
@@ -2535,7 +2535,7 @@ static int cortex_a_write_phys_memory(struct target *target,
 	if (!count || !buffer)
 		return ERROR_COMMAND_SYNTAX_ERROR;
 
-	LOG_DEBUG("Writing memory to real address " TARGET_ADDR_FMT "; size %" PRId32 "; count %" PRId32,
+	LOG_DEBUG("Writing memory to real address " TARGET_ADDR_FMT "; size %" PRIu32 "; count %" PRIu32,
 		address, size, count);
 
 	/* write memory through the CPU */
@@ -2552,7 +2552,7 @@ static int cortex_a_write_memory(struct target *target, target_addr_t address,
 	int retval;
 
 	/* cortex_a handles unaligned memory access */
-	LOG_DEBUG("Writing memory at address " TARGET_ADDR_FMT "; size %" PRId32 "; count %" PRId32,
+	LOG_DEBUG("Writing memory at address " TARGET_ADDR_FMT "; size %" PRIu32 "; count %" PRIu32,
 		address, size, count);
 
 	/* memory writes bypass the caches, must flush before writing */
@@ -2681,7 +2681,7 @@ static int cortex_a_examine_first(struct target *target)
 
 	int i;
 	int retval = ERROR_OK;
-	uint32_t didr, cpuid, dbg_osreg;
+	uint32_t didr, cpuid, dbg_osreg, dbg_idpfr1;
 
 	/* Search for the APB-AP - it is needed for access to debug registers */
 	retval = dap_find_ap(swjdp, AP_TYPE_APB_AP, &armv7a->debug_ap);
@@ -2720,6 +2720,10 @@ static int cortex_a_examine_first(struct target *target)
 			  target->coreid, armv7a->debug_base);
 	} else
 		armv7a->debug_base = target->dbgbase;
+
+	if ((armv7a->debug_base & (1UL<<31)) == 0)
+		LOG_WARNING("Debug base address for target %s has bit 31 set to 0. Access to debug registers will likely fail!\n"
+			    "Please fix the target configuration.", target_name(target));
 
 	retval = mem_ap_read_atomic_u32(armv7a->debug_ap,
 			armv7a->debug_base + CPUDBG_DIDR, &didr);
@@ -2786,7 +2790,25 @@ static int cortex_a_examine_first(struct target *target)
 		}
 	}
 
-	armv7a->arm.core_type = ARM_MODE_MON;
+	retval = mem_ap_read_atomic_u32(armv7a->debug_ap,
+				 armv7a->debug_base + CPUDBG_ID_PFR1, &dbg_idpfr1);
+	if (retval != ERROR_OK)
+		return retval;
+
+	if (dbg_idpfr1 & 0x000000f0) {
+		LOG_DEBUG("target->coreid %" PRId32 " has security extensions",
+				target->coreid);
+		armv7a->arm.core_type = ARM_CORE_TYPE_SEC_EXT;
+	}
+	if (dbg_idpfr1 & 0x0000f000) {
+		LOG_DEBUG("target->coreid %" PRId32 " has virtualization extensions",
+				target->coreid);
+		/*
+		 * overwrite and simplify the checks.
+		 * virtualization extensions require implementation of security extension
+		 */
+		armv7a->arm.core_type = ARM_CORE_TYPE_VIRT_EXT;
+	}
 
 	/* Avoid recreating the registers cache */
 	if (!target_was_examined(target)) {
@@ -2938,6 +2960,7 @@ static void cortex_a_deinit_target(struct target *target)
 	}
 
 	free(cortex_a->brp_list);
+	arm_free_reg_cache(dpm->arm);
 	free(dpm->dbp);
 	free(dpm->dwp);
 	free(target->private_config);

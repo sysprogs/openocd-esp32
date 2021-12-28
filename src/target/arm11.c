@@ -1105,11 +1105,11 @@ static int arm11_target_create(struct target *target, Jim_Interp *interp)
 		return ERROR_COMMAND_SYNTAX_ERROR;
 	}
 
-	arm11 = calloc(1, sizeof *arm11);
+	arm11 = calloc(1, sizeof(*arm11));
 	if (!arm11)
 		return ERROR_FAIL;
 
-	arm11->arm.core_type = ARM_MODE_ANY;
+	arm11->arm.core_type = ARM_CORE_TYPE_STD;
 	arm_init_arch_info(target, &arm11->arm);
 
 	arm11->jtag_info.tap = target->tap;
@@ -1129,6 +1129,14 @@ static int arm11_init_target(struct command_context *cmd_ctx,
 {
 	/* Initialize anything we can set up without talking to the target */
 	return ERROR_OK;
+}
+
+static void arm11_deinit_target(struct target *target)
+{
+	struct arm11_common *arm11 = target_to_arm11(target);
+
+	arm11_dpm_deinit(arm11);
+	free(arm11);
 }
 
 /* talk to the target and set things up */
@@ -1180,7 +1188,7 @@ static int arm11_examine(struct target *target)
 			type = "ARM1156";
 			break;
 		case 0x7B76:
-			arm11->arm.core_type = ARM_MODE_MON;
+			arm11->arm.core_type = ARM_CORE_TYPE_SEC_EXT;
 			/* NOTE: could default arm11->hardware_step to true */
 			type = "ARM1176";
 			break;
@@ -1379,5 +1387,6 @@ struct target_type arm11_target = {
 	.commands = arm11_command_handlers,
 	.target_create = arm11_target_create,
 	.init_target = arm11_init_target,
+	.deinit_target = arm11_deinit_target,
 	.examine = arm11_examine,
 };

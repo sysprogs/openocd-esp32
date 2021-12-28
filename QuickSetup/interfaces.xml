@@ -203,22 +203,6 @@
 		<UniversalDriverId>com.sysprogs.libusb.mini</UniversalDriverId>
 	</ProgrammingInterface>
 	<ProgrammingInterface>
-		<ID>cc3200lp</ID>
-		<Name>TI CC3200 Launchpad</Name>
-		<ScriptFile>interface/ftdi/cc3200lp.cfg</ScriptFile>
-		<UsbIdentities>
-			<UsbIdentity>
-				<VID>0451</VID>
-				<PID>c32a</PID>
-				<Interface>00</Interface>
-			</UsbIdentity>
-		</UsbIdentities>
-		<SpeedCapability>NotSupported</SpeedCapability>
-		<RequiresCommandLineReset>false</RequiresCommandLineReset>
-		<UniversalDriverId>com.sysprogs.libusb.mini</UniversalDriverId>
-		<SerialNumberCommand>ftdi_serial</SerialNumberCommand>
-	</ProgrammingInterface>
-	<ProgrammingInterface>
 		<ID>cmsis-dap</ID>
 		<Name>CMSIS-DAP</Name>
 		<ScriptFile>interface/cmsis-dap.cfg</ScriptFile>
@@ -252,19 +236,6 @@
 		</UsbIdentities>
 		<SerialNumberCommand>cmsis_dap_serial</SerialNumberCommand>
 	</ProgrammingInterface>
-	<ProgrammingInterface>
-		<ID>ti-icdi</ID>
-		<Name>TI ICDI</Name>
-		<ScriptFile>interface/ti-icdi-auto.cfg</ScriptFile>
-		<UsbIdentities>
-			<UsbIdentity>
-				<VID>1CBE</VID>
-				<PID>00FD</PID>
-				<Interface>02</Interface>
-			</UsbIdentity>
-		</UsbIdentities>
-		<SerialNumberCommand>hla_serial</SerialNumberCommand>
-	</ProgrammingInterface>
   <ProgrammingInterface>
     <ID>tumpa</ID>
     <Name>Tumpa</Name>
@@ -278,5 +249,17 @@
     </UsbIdentities>
     <UniversalDriverId>com.sysprogs.libusb.mini</UniversalDriverId>
     <SerialNumberCommand>ftdi_serial</SerialNumberCommand>
+  </ProgrammingInterface>
+  <ProgrammingInterface>
+    <ID>esp_usb_jtag</ID>
+    <Name>ESP32C3 built-in JTAG</Name>
+    <ScriptFile>interface/esp_usb_jtag.cfg</ScriptFile>
+    <UsbIdentities>
+      <UsbIdentity>
+        <VID>303A</VID>
+        <PID>1001</PID>
+      </UsbIdentity>
+    </UsbIdentities>
+    <UniversalDriverId>com.sysprogs.libusb.mini</UniversalDriverId>
   </ProgrammingInterface>
 </ArrayOfProgrammingInterface>

@@ -29,7 +29,7 @@
 #include <helper/time_support.h>
 #include "bitq.h"
 #include "jtag_usb_common.h"
-#include "libusb_common.h"
+#include "libusb_helper.h"
 
 #define __packed __attribute__((packed))
 
@@ -150,31 +150,30 @@ struct jtag_proto_caps_speed_apb {
 	uint16_t div_max;	/*maximum divisor (to base speed), inclusive */
 } __packed;
 
-#define VEND_DESCRIPTOR_JTAG_CAPS 0x2000
+#define VEND_DESCRIPTOR_BUILTIN_JTAG_CAPS 0x2000
 
-#define VEND_JTAG_SETDIV 0
-#define VEND_JTAG_SETIO 1
-#define VEND_JTAG_GETTDO 2
+#define VEND_JTAG_SETDIV        0
+#define VEND_JTAG_SETIO         1
+#define VEND_JTAG_GETTDO        2
+#define VEND_JTAG_SET_CHIPID    3
 
-#define VEND_JTAG_SETIO_TDI             (1<<0)
-#define VEND_JTAG_SETIO_TMS             (1<<1)
-#define VEND_JTAG_SETIO_TCK             (1<<2)
+#define VEND_JTAG_SETIO_TDI     (1<<0)
+#define VEND_JTAG_SETIO_TMS     (1<<1)
+#define VEND_JTAG_SETIO_TCK     (1<<2)
 #define VEND_JTAG_SETIO_TRST    (1<<3)
 #define VEND_JTAG_SETIO_SRST    (1<<4)
 
 #define CMD_CLK(cap, tdi, tms) ((cap ? 4 : 0)|(tms ? 2 : 0)|(tdi ? 1 : 0))
-#define CMD_RST(srst) (8|(srst ? 1 : 0))
-#define CMD_FLUSH 0xA
-#define CMD_RSVD 0xB
-#define CMD_REP(r) (0xC+(r))
+#define CMD_RST(srst)   (8|(srst ? 1 : 0))
+#define CMD_FLUSH       0xA
+#define CMD_RSVD        0xB
+#define CMD_REP(r)      (0xC+(r))
 
 /*The internal repeats register is 10 bits, which means we can have 5 repeat commands in a
  *row at max. This translates to ('b1111111111+1=)1024 reps max. */
 #define CMD_REP_MAX_REPS 1024
 
-/*Currently we only support one USB device. Its PID/VID are defined here. */
-#define USB_VID 0x303A
-#define USB_PID 0x1001
+/*Currently we only support one USB device. */
 #define USB_CONFIGURATION 0
 
 /*Buffer size; is equal to the endpoint size. In bytes
@@ -190,9 +189,15 @@ struct jtag_proto_caps_speed_apb {
  *to be read, we have multiple buffers to store those before the bitq interface reads them out. */
 #define IN_BUF_CT 8
 
+/*
+ * comment from libusb:
+ * As per the USB 3.0 specs, the current maximum limit for the depth is 7.
+ */
+#define MAX_USB_PORTS   7
+
 /*Private data */
 struct esp_usb_jtag {
-	struct jtag_libusb_device_handle *usb_device;
+	struct libusb_device_handle *usb_device;
 	int base_speed_khz;
 	int div_min;
 	int div_max;
@@ -219,6 +224,7 @@ struct esp_usb_jtag {
 								 * traces here. */
 
 	int hw_in_fifo_len;
+	char *serial[256+1];	/* device serial */
 };
 
 /*For now, we only use one static private struct. Technically, we can re-work this, but I don't
@@ -226,6 +232,12 @@ struct esp_usb_jtag {
 /*OpenOCD supports multiple JTAG adapters anyway. */
 static struct esp_usb_jtag esp_usb_jtag_priv;
 static struct esp_usb_jtag *priv= &esp_usb_jtag_priv;
+static const char *esp_usb_jtag_serial;
+
+static int esp_usb_vid = 0;
+static int esp_usb_pid = 0;
+static int esp_usb_jtag_caps = 0;
+static int esp_usb_target_chip_id = 0;
 
 /*The JTAG adapter can drop a logfile detailing all low-level USB transactions that are done.
  *If this is defined, the log will have entries that allow replay on a testbed. */
@@ -233,6 +245,9 @@ static struct esp_usb_jtag *priv= &esp_usb_jtag_priv;
 
 const char *cmds_string[]= {"000", "001", "010", "011", "100", "101", "110", "111",
 			    "srst0", "srst1", "flush", "rsv", "rep0", "rep1", "rep2", "rep3"};
+
+static int esp_usb_jtag_init(void);
+static int esp_usb_jtag_quit(void);
 
 static void log_cmds(uint8_t *buf, int ct, int wr)
 {
@@ -269,6 +284,90 @@ static void log_resp(uint8_t *buf, int ct, int recvd)
 	fflush(priv->logfile);
 }
 
+static bool esp_usb_jtag_libusb_location_equal(libusb_device *dev1, libusb_device *dev2)
+{
+	if (libusb_get_bus_number(dev1) != libusb_get_bus_number(dev2))
+		return false;
+
+#ifdef HAVE_LIBUSB_GET_PORT_NUMBERS
+	uint8_t port_path1[MAX_USB_PORTS], port_path2[MAX_USB_PORTS];
+
+	int path_len1 = libusb_get_port_numbers(dev1, port_path1, MAX_USB_PORTS);
+	if (path_len1 == LIBUSB_ERROR_OVERFLOW) {
+		LOG_WARNING("cannot determine path to usb device! (more than %i ports in path)\n",
+			MAX_USB_PORTS);
+		return false;
+	}
+
+	int path_len2 = libusb_get_port_numbers(dev2, port_path2, MAX_USB_PORTS);
+	if (path_len2 == LIBUSB_ERROR_OVERFLOW) {
+		LOG_WARNING("cannot determine path to usb device! (more than %i ports in path)\n",
+			MAX_USB_PORTS);
+		return false;
+	}
+
+	if (path_len1 != path_len2)
+		return false;
+
+	for (int i = 0; i < path_len1; i++) {
+		if (port_path1[i] != port_path2[i])
+			return false;
+	}
+#endif	/* HAVE_LIBUSB_GET_PORT_NUMBERS */
+	if (libusb_get_device_address(dev1) != libusb_get_device_address(dev2))
+		return false;
+	return true;
+}
+
+static int esp_usb_jtag_revive_device(struct libusb_device_handle *usb_device)
+{
+	const uint16_t vids[]= {esp_usb_vid, 0};	/* must be null terminated */
+	const uint16_t pids[]= {esp_usb_pid, 0};	/* must be null terminated */
+	libusb_device *cur_dev = libusb_get_device(usb_device);
+	libusb_device *new_dev = NULL;
+	int ret, tries = 5;
+
+	while (tries-- >= 0) {
+		new_dev = jtag_libusb_find_device(vids, pids, esp_usb_jtag_serial);
+		if (new_dev) {
+			if (esp_usb_jtag_libusb_location_equal(cur_dev, new_dev)) {
+				/* device is still at the same location on bus and with the same address,
+				        try to reset it */
+				int rc = libusb_reset_device(usb_device);
+				if (rc == LIBUSB_ERROR_NOT_FOUND || rc == LIBUSB_ERROR_NO_DEVICE) {
+					/* re-enumeration is necessary */
+					break;
+				}
+				libusb_unref_device(new_dev);
+				return rc == 0 ? ERROR_OK : ERROR_WAIT;
+			}
+			break;
+		}
+		jtag_sleep(100000);
+	}
+	if (new_dev == NULL) {
+		LOG_ERROR("esp_usb_jtag: device not found!");
+		return ERROR_FAIL;
+	}
+	libusb_unref_device(new_dev);
+	ret = esp_usb_jtag_quit();
+	if (ret != ERROR_OK) {
+		LOG_ERROR("esp_usb_jtag: failed to deinit (%d)", ret);
+		return ret;
+	}
+	tries = 5;
+	while (tries-- >= 0) {
+		ret = esp_usb_jtag_init();
+		if (ret == ERROR_OK)
+			break;
+		jtag_sleep(100000);
+	}
+	if (ret != ERROR_OK) {
+		LOG_ERROR("esp_usb_jtag: failed to init (%d)", ret);
+		return ret;
+	}
+	return ERROR_OK;
+}
 
 /*Try to receive from USB endpoint into the current priv->in_buf */
 static int esp_usb_jtag_recv_buf(void)
@@ -278,9 +377,9 @@ static int esp_usb_jtag_recv_buf(void)
 			priv->cur_in_buf_wr,
 			priv->in_buf_size_bits[priv->cur_in_buf_wr]);
 
-	size_t ct= (priv->pending_in_bits+7)/8;
+	int recvd = 0, ct = (priv->pending_in_bits+7)/8;
 	if (ct > IN_BUF_SZ)
-		ct= IN_BUF_SZ;
+		ct = IN_BUF_SZ;
 	if (ct == 0) {
 		/*Note that the adapters IN EP specifically does *not* usually generate 0-byte in
 		 * packets if there has */
@@ -288,37 +387,44 @@ static int esp_usb_jtag_recv_buf(void)
 		 * read it. */
 		return ERROR_OK;
 	}
-	size_t n=
-		jtag_libusb_bulk_read(priv->usb_device,
-		priv->read_ep,
-		(char *)priv->in_buf[priv->cur_in_buf_wr],
-		ct,
-		5000 /*ms*/);
-	if (priv->logfile)
-		log_resp(priv->in_buf[priv->cur_in_buf_wr], ct, n);
-	if (n == 0) {
-		/*Sometimes the hardware returns 0 bytes instead of NAKking the transaction. Ignore
-		 * this. */
-		return ERROR_FAIL;
+
+	priv->in_buf_size_bits[priv->cur_in_buf_wr]= 0;
+	while (recvd < ct) {
+		int ret, tr;
+		ret = jtag_libusb_bulk_read(priv->usb_device,
+			priv->read_ep,
+			(char *)priv->in_buf[priv->cur_in_buf_wr] + recvd,
+			ct,
+			500,	/*ms*/
+			&tr);
+		if (priv->logfile)
+			log_resp(priv->in_buf[priv->cur_in_buf_wr], ct, tr);
+		if (ret != ERROR_OK || tr == 0) {
+			/*Sometimes the hardware returns 0 bytes instead of NAKking the transaction. Ignore
+			* this. */
+			return ERROR_FAIL;
+		}
+
+		if (tr != ct) {
+			/*Huh, short read? */
+			LOG_DEBUG("esp_usb_jtag: usb received only %d out of %d bytes.", tr, ct);
+		}
+		/*Adjust the amount of bits we still expect to read from the USB device after this.
+		 **/
+		int bits_in_buf= priv->pending_in_bits;			/*initially assume we read
+									* everything that was pending */
+		if (bits_in_buf > tr*8)
+			bits_in_buf= tr*8;			/*...but correct that if that was not the
+								* case. */
+		priv->pending_in_bits-= bits_in_buf;
+		priv->in_buf_size_bits[priv->cur_in_buf_wr]+= bits_in_buf;
+		recvd += tr;
 	}
-	if (n != ct) {
-		/*Huh, short read? */
-		LOG_ERROR("esp_usb_jtag: usb received only %d out of %d bytes.", (int)n, (int)ct);
-		return ERROR_FAIL;
-	}
-	/*Adjust the amount of bits we still expect to read from the USB device after this. */
-	int bits_in_buf= priv->pending_in_bits;			/*initially assume we read
-								 * everything that was pending */
-	if (bits_in_buf > (int)ct*8)
-		bits_in_buf= ct*8;			/*...but correct that if that was not the
-							 * case. */
-	priv->pending_in_bits-= bits_in_buf;
-	priv->in_buf_size_bits[priv->cur_in_buf_wr]= bits_in_buf;
 	/*next in buffer for the next time. */
 	priv->cur_in_buf_wr++;
 	if (priv->cur_in_buf_wr == IN_BUF_CT)
 		priv->cur_in_buf_wr= 0;
-	LOG_DEBUG_IO("esp_usb_jtag: In ep: received %d bytes; %d bytes (%d bits) left.", (int)n,
+	LOG_DEBUG_IO("esp_usb_jtag: In ep: received %d bytes; %d bytes (%d bits) left.", recvd,
 		(priv->pending_in_bits+7)/8, priv->pending_in_bits);
 	return ERROR_OK;
 }
@@ -326,19 +432,31 @@ static int esp_usb_jtag_recv_buf(void)
 /*Sends priv->out_buf to the USB device. */
 static int esp_usb_jtag_send_buf(void)
 {
-	size_t ct= priv->out_buf_pos_nibbles/2;
-	size_t n= 0;
-	n= jtag_libusb_bulk_write(priv->usb_device,
-		priv->write_ep,
-		((char *)priv->out_buf),
-		ct,
-		5000 /*ms*/);
-	LOG_DEBUG_IO("esp_usb_jtag: sent %d bytes.", (int)n);
-	if (priv->logfile)
-		log_cmds(priv->out_buf, ct, n);
-	if (n != ct) {
-		LOG_ERROR("esp_usb_jtag: usb sent only %d out of %d bytes.", (int)n, (int)ct);
-		return ERROR_FAIL;
+	int ct = priv->out_buf_pos_nibbles/2;
+	int ret, tr = 0, written = 0;
+
+	while (written < ct) {
+		ret = jtag_libusb_bulk_write(priv->usb_device,
+			priv->write_ep,
+			((char *)priv->out_buf) + written,
+			ct - written,
+			500,	/*ms*/
+			&tr);
+		LOG_DEBUG_IO("esp_usb_jtag: sent %d bytes.", tr);
+		if (priv->logfile)
+			log_cmds(priv->out_buf, ct, tr);
+		if (written + tr != ct) {
+			LOG_DEBUG("esp_usb_jtag: usb sent only %d out of %d bytes.",
+				written + tr,
+				ct);
+		}
+		if (ret != ERROR_OK) {
+			int reset_ret = esp_usb_jtag_revive_device(priv->usb_device);
+			if (reset_ret != ERROR_OK)
+				LOG_ERROR("esp_usb_jtag: failed to revive USB device!");
+			return ret;
+		}
+		written += tr;
 	}
 	priv->out_buf_pos_nibbles= 0;
 
@@ -354,59 +472,80 @@ static int esp_usb_jtag_send_buf(void)
 
 /*Simply adds a command to the buffer. Is called by the RLE encoding mechanism.
  *Also sends the intermediate buffer if there's enough to go into one USB packet. */
-static void esp_usb_jtag_command_add_raw(int cmd)
+static int esp_usb_jtag_command_add_raw(int cmd)
 {
+	int ret;
+
 	if ((priv->out_buf_pos_nibbles & 1) == 0)
 		priv->out_buf[priv->out_buf_pos_nibbles/2] = (cmd<<4);
 	else
 		priv->out_buf[priv->out_buf_pos_nibbles/2] |= cmd;
 	priv->out_buf_pos_nibbles++;
 
-	if (priv->out_buf_pos_nibbles == OUT_BUF_SZ*2)
-		esp_usb_jtag_send_buf();
-	if (priv->out_buf_pos_nibbles%(OUT_EP_SZ*2) == 0) {
-		if (priv->pending_in_bits > (IN_BUF_SZ + priv->hw_in_fifo_len - 1) * 8)
-			esp_usb_jtag_send_buf();
+	if (priv->out_buf_pos_nibbles == OUT_BUF_SZ*2) {
+		ret = esp_usb_jtag_send_buf();
+		if (ret != ERROR_OK)
+			return ret;
 	}
+	if (priv->out_buf_pos_nibbles%(OUT_EP_SZ*2) == 0) {
+		if (priv->pending_in_bits > (IN_BUF_SZ + priv->hw_in_fifo_len - 1) * 8) {
+			ret = esp_usb_jtag_send_buf();
+			if (ret != ERROR_OK)
+				return ret;
+		}
+	}
+	return ERROR_OK;
 }
 
 /*Writes a command stream equivalent to writing `cmd` `ct` times. */
-static void esp_usb_jtag_write_rlestream(int cmd, int ct)
+static int esp_usb_jtag_write_rlestream(int cmd, int ct)
 {
+	int ret;
 	/*Special case: stacking flush commands does not make sense (and may not make the hardware
 	 * very happy) */
 	if (cmd == CMD_FLUSH)
-		ct= 1;
+		ct = 1;
 	/*Output previous command and repeat commands */
-	esp_usb_jtag_command_add_raw(cmd);
+	ret = esp_usb_jtag_command_add_raw(cmd);
+	if (ret != ERROR_OK)
+		return ret;
 	ct--;	/*as the previous line already executes the command one time */
 	while (ct > 0) {
-		esp_usb_jtag_command_add_raw(CMD_REP(ct&3));
+		ret = esp_usb_jtag_command_add_raw(CMD_REP(ct&3));
+		if (ret != ERROR_OK)
+			return ret;
 		ct>>= 2;
 	}
+	return ERROR_OK;
 }
 
 
 /*Adds a command to the buffer of things to be sent. Transparently handles RLE compression using
  *the CMD_REP_x commands */
-static void esp_usb_jtag_command_add(int cmd)
+static int esp_usb_jtag_command_add(int cmd)
 {
 	if (cmd == priv->prev_cmd && priv->prev_cmd_repct < CMD_REP_MAX_REPS)
 		priv->prev_cmd_repct++;
 	else {
 		/*We can now write out the previous command plus repeat count. */
-		if (priv->prev_cmd_repct)
-			esp_usb_jtag_write_rlestream(priv->prev_cmd, priv->prev_cmd_repct);
+		if (priv->prev_cmd_repct) {
+			int ret = esp_usb_jtag_write_rlestream(priv->prev_cmd, priv->prev_cmd_repct);
+			if (ret != ERROR_OK)
+				return ret;
+		}
 		/*Ready for new command. */
 		priv->prev_cmd= cmd;
 		priv->prev_cmd_repct= 1;
 	}
+	return ERROR_OK;
 }
 
 /*Called by bitq interface to output a bit on tdi and perhaps read a bit from tdo */
 static int esp_usb_jtag_out(int tms, int tdi, int tdo_req)
 {
-	esp_usb_jtag_command_add(CMD_CLK(tdo_req, tdi, tms));
+	int ret = esp_usb_jtag_command_add(CMD_CLK(tdo_req, tdi, tms));
+	if (ret != ERROR_OK)
+		return ret;
 	if (tdo_req)
 		priv->pending_in_bits++;
 	return ERROR_OK;
@@ -415,22 +554,30 @@ static int esp_usb_jtag_out(int tms, int tdi, int tdo_req)
 /*Called by bitq interface to flush all output commands and get returned data ready to read */
 static int esp_usb_jtag_flush(void)
 {
+	int ret;
 	/*Make sure last command is written */
-	if (priv->prev_cmd_repct)
-		esp_usb_jtag_write_rlestream(priv->prev_cmd, priv->prev_cmd_repct);
+	if (priv->prev_cmd_repct) {
+		ret = esp_usb_jtag_write_rlestream(priv->prev_cmd, priv->prev_cmd_repct);
+		if (ret != ERROR_OK)
+			return ret;
+	}
 	priv->prev_cmd_repct= 0;
 	/*Flush in buffer */
-	esp_usb_jtag_command_add_raw(CMD_FLUSH);
+	ret = esp_usb_jtag_command_add_raw(CMD_FLUSH);
+	if (ret != ERROR_OK)
+		return ret;
 	/*Make sure we have an even amount of commands, as we can't write a nibble by itself. */
 	if (priv->out_buf_pos_nibbles & 1) {
 		/*If not, pad with an extra FLUSH */
-		esp_usb_jtag_command_add_raw(CMD_FLUSH);
+		ret = esp_usb_jtag_command_add_raw(CMD_FLUSH);
+		if (ret != ERROR_OK)
+			return ret;
 	}
 	LOG_DEBUG_IO("esp_usb_jtag: Flush!");
 	/*Send off the buffer. */
-	int r= esp_usb_jtag_send_buf();
-	if (r != ERROR_OK)
-		return r;
+	ret = esp_usb_jtag_send_buf();
+	if (ret != ERROR_OK)
+		return ret;
 
 	/*Immediately fetch the response bits. */
 	while (priv->pending_in_bits > 0) {
@@ -456,8 +603,7 @@ static int esp_usb_jtag_reset(int trst, int srst)
 	/*ToDo: handle trst using setup commands. Kind-of superfluous, however, as we can also do */
 	/*a tap reser using tms, and it's also not implemented on other ESP32 chips with external
 	 * JTAG. */
-	esp_usb_jtag_command_add(CMD_RST(srst));
-	return ERROR_OK;
+	return esp_usb_jtag_command_add(CMD_RST(srst));
 }
 
 /*Called by bitq to see if the IN data already is returned to the host. */
@@ -500,8 +646,8 @@ static int esp_usb_jtag_init(void)
 {
 	memset(priv, 0, sizeof(struct esp_usb_jtag));
 
-	const uint16_t vids[]= {USB_VID, 0};	/* must be null terminated */
-	const uint16_t pids[]= {USB_PID, 0};	/* must be null terminated */
+	const uint16_t vids[]= {esp_usb_vid, 0};	/* must be null terminated */
+	const uint16_t pids[]= {esp_usb_pid, 0};	/* must be null terminated */
 
 	bitq_interface= calloc(sizeof(struct bitq_interface), 1);
 	bitq_interface->out= esp_usb_jtag_out;
@@ -511,10 +657,16 @@ static int esp_usb_jtag_init(void)
 	bitq_interface->in_rdy= esp_usb_jtag_in_rdy;
 	bitq_interface->in= esp_usb_jtag_in;
 
-	int r= jtag_libusb_open(vids, pids, NULL, &priv->usb_device);
+	int r= jtag_libusb_open(vids, pids, esp_usb_jtag_serial, &priv->usb_device, NULL);
 	if (r != ERROR_OK) {
 		LOG_ERROR("esp_usb_jtag: could not find or open device!");
 		goto out;
+	}
+
+	if (!esp_usb_jtag_serial) {
+		r = jtag_libusb_get_serial(priv->usb_device, &esp_usb_jtag_serial);
+		if (r != ERROR_OK)
+			goto out;
 	}
 
 	jtag_libusb_set_configuration(priv->usb_device, USB_CONFIGURATION);
@@ -529,7 +681,7 @@ static int esp_usb_jtag_init(void)
 	char jtag_caps_desc[256];
 	r= jtag_libusb_control_transfer(priv->usb_device,
 		LIBUSB_ENDPOINT_IN|LIBUSB_REQUEST_TYPE_STANDARD|LIBUSB_RECIPIENT_DEVICE,
-		LIBUSB_REQUEST_GET_DESCRIPTOR, VEND_DESCRIPTOR_JTAG_CAPS, 0,
+		LIBUSB_REQUEST_GET_DESCRIPTOR, esp_usb_jtag_caps, 0,
 		jtag_caps_desc, 255, 1000);
 	if (r <= 0) {
 		LOG_ERROR("esp_usb_jtag: could not retrieve jtag_caps descriptor!");
@@ -541,13 +693,19 @@ static int esp_usb_jtag_init(void)
 	priv->div_min= 1;
 	priv->div_max= 1;
 
-	struct jtag_proto_caps_hdr *hdr= (struct jtag_proto_caps_hdr *)jtag_caps_desc;
+	/* start of the descriptor header *
+	 * eub uses string descriptor. Skip 1 byte length and 1 byte descriptor type */
+	int p = esp_usb_jtag_caps == VEND_DESCRIPTOR_BUILTIN_JTAG_CAPS ? 0 : 2;
+
+	struct jtag_proto_caps_hdr *hdr= (struct jtag_proto_caps_hdr *)&jtag_caps_desc[p];
 	if (hdr->proto_ver != JTAG_PROTO_CAPS_VER) {
 		LOG_ERROR("esp_usb_jtag: unknown jtag_caps descriptor version 0x%X!",
 			hdr->proto_ver);
 		goto out;
 	}
-	int p= 2;	/*start of rest of descriptors */
+
+	p += sizeof(struct jtag_proto_caps_hdr);
+
 	while (p < hdr->length) {
 		struct jtag_gen_hdr *dhdr= (struct jtag_gen_hdr *)&jtag_caps_desc[p];
 		if (dhdr->type == JTAG_PROTO_CAPS_SPEED_APB_TYPE) {
@@ -558,7 +716,7 @@ static int esp_usb_jtag_init(void)
 			priv->div_min= spcap->div_min;
 			priv->div_max= spcap->div_max;
 			/*todo: mark in priv that this is apb-derived and as such may change if apb
-			 * ever changes? */
+			* ever changes? */
 		} else
 			LOG_WARNING("esp_usb_jtag: unknown caps type 0x%X", dhdr->type);
 		p+= dhdr->length;
@@ -574,12 +732,27 @@ static int esp_usb_jtag_init(void)
 	/*ToDo: grab from (future) descriptor if we ever have a device with larger IN buffers */
 	priv->hw_in_fifo_len= 4;
 
+	/* inform bridge board about the connected target chip for the specific operations
+	 * it is also safe to send this info to chips that have builtin usb jtag */
+	jtag_libusb_control_transfer(priv->usb_device,
+		0x40,
+		VEND_JTAG_SET_CHIPID,
+		esp_usb_target_chip_id,
+		0,
+		NULL,
+		0,
+		1000);
+
 	return ERROR_OK;
+
 out:
-	jtag_libusb_close(priv->usb_device);
+	free((void *)esp_usb_jtag_serial);
+	esp_usb_jtag_serial = NULL;
+	if (priv->usb_device)
+		jtag_libusb_close(priv->usb_device);
 	free(bitq_interface);
-	bitq_interface= NULL;
-	priv->usb_device= NULL;
+	bitq_interface = NULL;
+	priv->usb_device = NULL;
 	return ERROR_FAIL;
 }
 
@@ -702,6 +875,57 @@ COMMAND_HANDLER(esp_usb_jtag_log_cmd)
 	return ERROR_OK;
 }
 
+COMMAND_HANDLER(esp_usb_jtag_serial_cmd)
+{
+	if (CMD_ARGC != 1)
+		return ERROR_COMMAND_SYNTAX_ERROR;
+
+	esp_usb_jtag_serial = strdup(CMD_ARGV[0]);
+	if (!esp_usb_jtag_serial)
+		command_print(CMD, "Could not set ESP USB JTAG serial number: %s.", strerror(errno));
+
+	return ERROR_OK;
+}
+
+COMMAND_HANDLER(esp_usb_jtag_vid_pid)
+{
+	if (CMD_ARGC < 2) {
+		LOG_ERROR("You need to supply the vendor and product IDs");
+		return ERROR_FAIL;
+	}
+
+	COMMAND_PARSE_NUMBER(int, CMD_ARGV[0], esp_usb_vid);
+	COMMAND_PARSE_NUMBER(int, CMD_ARGV[1], esp_usb_pid);
+	LOG_INFO("esp_usb_jtag: VID set to 0x%x and PID to 0x%x", esp_usb_vid, esp_usb_pid);
+
+	return ERROR_OK;
+}
+
+COMMAND_HANDLER(esp_usb_jtag_caps_descriptor)
+{
+	if (CMD_ARGC < 1) {
+		LOG_ERROR("You need to supply the jtag capabilities descriptor");
+		return ERROR_FAIL;
+	}
+
+	COMMAND_PARSE_NUMBER(int, CMD_ARGV[0], esp_usb_jtag_caps);
+	LOG_INFO("esp_usb_jtag: capabilities descriptor set to 0x%x", esp_usb_jtag_caps);
+
+	return ERROR_OK;
+}
+
+COMMAND_HANDLER(esp_usb_jtag_chip_id)
+{
+	if (CMD_ARGC < 1) {
+		LOG_ERROR("You need to supply the chip id");
+		return ERROR_FAIL;
+	}
+
+	COMMAND_PARSE_NUMBER(int, CMD_ARGV[0], esp_usb_target_chip_id);
+	LOG_INFO("esp_usb_jtag: target chip id set to %d", esp_usb_target_chip_id);
+
+	return ERROR_OK;
+}
 
 static const struct command_registration esp_usb_jtag_subcommands[] = {
 	{
@@ -725,6 +949,35 @@ static const struct command_registration esp_usb_jtag_subcommands[] = {
 		.help = "Log USB comms to file",
 		.usage = "logfile.txt"
 	},
+	{
+		.name = "serial",
+		.handler = &esp_usb_jtag_serial_cmd,
+		.mode = COMMAND_CONFIG,
+		.help = "Sets serial number of USB device to connect to",
+		.usage = "serial_number"
+	},
+	{
+		.name = "vid_pid",
+		.handler = &esp_usb_jtag_vid_pid,
+		.mode = COMMAND_CONFIG,
+		.help = "set vendor ID and product ID for ESP usb jtag driver",
+		.usage = "",
+	},
+	{
+		.name = "caps_descriptor",
+		.handler = &esp_usb_jtag_caps_descriptor,
+		.mode = COMMAND_CONFIG,
+		.help = "set jtag descriptor to read capabilities of ESP usb jtag driver",
+		.usage = "",
+	},
+	{
+		.name = "chip_id",
+		.handler = &esp_usb_jtag_chip_id,
+		.mode = COMMAND_CONFIG,
+		.help =
+			"set chip_id to transfer to the bridge",
+		.usage = "",
+	},
 	COMMAND_REGISTRATION_DONE
 };
 
@@ -739,17 +992,21 @@ static const struct command_registration esp_usb_jtag_commands[] = {
 	COMMAND_REGISTRATION_DONE
 };
 
-
-struct jtag_interface esp_usb_jtag_interface = {
-	.name = "esp_usb_jtag",
+static struct jtag_interface esp_usb_jtag_interface = {
 	.supported = DEBUG_CAP_TMS_SEQ,
+	.execute_queue = bitq_execute_queue,
+};
+
+struct adapter_driver esp_usb_adapter_driver = {
+	.name = "esp_usb_jtag",
 	.transports = jtag_only,
 	.commands = esp_usb_jtag_commands,
 
 	.init = esp_usb_jtag_init,
 	.quit = esp_usb_jtag_quit,
-	.execute_queue = bitq_execute_queue,
 	.speed_div = esp_usb_jtag_speed_div,
 	.speed = esp_usb_jtag_speed,
 	.khz = esp_usb_jtag_khz,
+
+	.jtag_ops = &esp_usb_jtag_interface,
 };

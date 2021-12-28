@@ -31,6 +31,7 @@
 #endif
 
 #include <jtag/jtag.h>
+#include <transport/transport.h>
 #include "commands.h"
 
 struct cmd_queue_page {
@@ -48,6 +49,19 @@ static struct jtag_command **next_command_pointer = &jtag_command_queue;
 
 void jtag_queue_command(struct jtag_command *cmd)
 {
+	if (!transport_is_jtag()) {
+		/*
+		 * FIXME: This should not happen!
+		 * There could be old code that queues jtag commands with non jtag interfaces so, for
+		 * the moment simply highlight it by log an error.
+		 * We should fix it quitting with assert(0) because it is an internal error, or returning
+		 * an error after call to jtag_command_queue_reset() to free the jtag queue and avoid
+		 * memory leaks.
+		 * The fix can be applied immediately after next release (v0.11.0 ?)
+		 */
+		LOG_ERROR("JTAG API jtag_queue_command() called on non JTAG interface");
+	}
+
 	/* this command goes on the end, so ensure the queue terminates */
 	cmd->next = NULL;
 
@@ -200,10 +214,10 @@ int jtag_build_buffer(const struct scan_command *cmd, uint8_t **buffer)
 	for (i = 0; i < cmd->num_fields; i++) {
 		if (cmd->fields[i].out_value) {
 			if (LOG_LEVEL_IS(LOG_LVL_DEBUG_IO)) {
-				char *char_buf = buf_to_str(cmd->fields[i].out_value,
+				char *char_buf = buf_to_hex_str(cmd->fields[i].out_value,
 						(cmd->fields[i].num_bits > DEBUG_JTAG_IOZ)
 						? DEBUG_JTAG_IOZ
-								: cmd->fields[i].num_bits, 16);
+								: cmd->fields[i].num_bits);
 
 				LOG_DEBUG("fields[%i].out_value[%i]: 0x%s", i,
 						cmd->fields[i].num_bits, char_buf);
@@ -243,10 +257,10 @@ int jtag_read_buffer(uint8_t *buffer, const struct scan_command *cmd)
 					malloc(DIV_ROUND_UP(num_bits, 8)), 0, num_bits);
 
 			if (LOG_LEVEL_IS(LOG_LVL_DEBUG_IO)) {
-				char *char_buf = buf_to_str(captured,
+				char *char_buf = buf_to_hex_str(captured,
 						(num_bits > DEBUG_JTAG_IOZ)
 						? DEBUG_JTAG_IOZ
-								: num_bits, 16);
+								: num_bits);
 
 				LOG_DEBUG("fields[%i].in_value[%i]: 0x%s",
 						i, num_bits, char_buf);
