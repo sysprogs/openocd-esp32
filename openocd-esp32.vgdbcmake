@@ -76,7 +76,7 @@
         <CMakeTargetSpecificSettings>
           <TargetID>openocd</TargetID>
           <Debug>
-            <Arguments>-f interface/esp_usb_jtag.cfg -f target/esp32c3.cfg</Arguments>
+            <Arguments>-f interface/esp_usb_jtag.cfg -c "adapter_khz 3000" -f target/esp32c3.cfg </Arguments>
             <WorkingDirectory>E:\projects\sysprogs-github\openocd-esp32\tcl</WorkingDirectory>
           </Debug>
           <Deployment>
@@ -159,9 +159,12 @@
       <ExamineRegistersInRawFormat>true</ExamineRegistersInRawFormat>
       <DisableSignals>false</DisableSignals>
       <EnableAsyncExecutionMode>false</EnableAsyncExecutionMode>
+      <AsyncModeSupportsBreakpoints>true</AsyncModeSupportsBreakpoints>
+      <TemporaryBreakConsolidationTimeout>0</TemporaryBreakConsolidationTimeout>
       <EnableNonStopMode>false</EnableNonStopMode>
       <MaxBreakpointLimit>0</MaxBreakpointLimit>
       <EnableVerboseMode>true</EnableVerboseMode>
+      <EnablePrettyPrinters>false</EnablePrettyPrinters>
     </AdditionalGDBSettings>
     <LaunchGDBSettings xsi:type="GDBLaunchParametersNewInstance">
       <DebuggedProgram>$(TargetPath)</DebuggedProgram>
