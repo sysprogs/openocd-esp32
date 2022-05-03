@@ -42,11 +42,6 @@
  * that contain an adapter_driver structure that can added to this list.
  */
 
-#if BUILD_ZY1000 == 1
-extern struct adapter_driver zy1000_adapter_driver;
-#elif defined(BUILD_MINIDRIVER_DUMMY)
-extern struct adapter_driver minidummy_adapter_driver;
-#else /* standard drivers */
 #if BUILD_PARPORT == 1
 extern struct adapter_driver parport_adapter_driver;
 #endif
@@ -64,6 +59,9 @@ extern struct adapter_driver esp_usb_adapter_driver;
 #endif
 #if BUILD_JTAG_VPI == 1
 extern struct adapter_driver jtag_vpi_adapter_driver;
+#endif
+#if BUILD_VDEBUG == 1
+extern struct adapter_driver vdebug_adapter_driver;
 #endif
 #if BUILD_JTAG_DPI == 1
 extern struct adapter_driver jtag_dpi_adapter_driver;
@@ -155,7 +153,6 @@ extern struct adapter_driver stlink_dap_adapter_driver;
 #if BUILD_RSHIM == 1
 extern struct adapter_driver rshim_dap_adapter_driver;
 #endif
-#endif /* standard drivers */
 
 #if BUILD_ESP_REMOTE
 extern struct adapter_driver esp_remote_adapter_driver;
@@ -164,16 +161,8 @@ extern struct adapter_driver esp_remote_adapter_driver;
 /**
  * The list of built-in JTAG interfaces, containing entries for those
  * drivers that were enabled by the @c configure script.
- *
- * The list should be defined to contain either one minidriver interface
- * or some number of standard driver interfaces, never both.
  */
 struct adapter_driver *adapter_drivers[] = {
-#if BUILD_ZY1000 == 1
-		&zy1000_adapter_driver,
-#elif defined(BUILD_MINIDRIVER_DUMMY)
-		&minidummy_adapter_driver,
-#else /* standard drivers */
 #if BUILD_PARPORT == 1
 		&parport_adapter_driver,
 #endif
@@ -191,6 +180,9 @@ struct adapter_driver *adapter_drivers[] = {
 #endif
 #if BUILD_JTAG_VPI == 1
 		&jtag_vpi_adapter_driver,
+#endif
+#if BUILD_VDEBUG == 1
+		&vdebug_adapter_driver,
 #endif
 #if BUILD_JTAG_DPI == 1
 		&jtag_dpi_adapter_driver,
@@ -282,9 +274,8 @@ struct adapter_driver *adapter_drivers[] = {
 #if BUILD_RSHIM == 1
 		&rshim_dap_adapter_driver,
 #endif
-#endif /* standard drivers */
 #if BUILD_ESP_REMOTE
 		&esp_remote_adapter_driver,
-#endif //BUILD_ESP_REMOTE
+#endif /* standard drivers */
 		NULL,
 	};

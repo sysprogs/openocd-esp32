@@ -35,7 +35,7 @@
 /* Overall memory map
  * TODO: read memory configuration from target registers */
 #define ESP32_S2_IROM_MASK_LOW          0x40000000
-#define ESP32_S2_IROM_MASK_HIGH         0x4001a100
+#define ESP32_S2_IROM_MASK_HIGH         0x40020000
 #define ESP32_S2_IRAM_LOW               0x40020000
 #define ESP32_S2_IRAM_HIGH              0x40070000
 #define ESP32_S2_DRAM_LOW               0x3ffb0000
@@ -752,6 +752,8 @@ static const struct command_registration esp_any_command_handlers[] = {
 	COMMAND_REGISTRATION_DONE
 };
 
+extern const struct command_registration semihosting_common_handlers[];
+
 static const struct command_registration esp32s2_command_handlers[] = {
 	{
 		.name = "xtensa",
@@ -766,6 +768,13 @@ static const struct command_registration esp32s2_command_handlers[] = {
 		.help = "ESP command group",
 		.usage = "",
 		.chain = esp_any_command_handlers,
+	},
+	{
+		.name = "arm",
+		.mode = COMMAND_ANY,
+		.help = "ARM Command Group",
+		.usage = "",
+		.chain = semihosting_common_handlers
 	},
 	COMMAND_REGISTRATION_DONE
 };

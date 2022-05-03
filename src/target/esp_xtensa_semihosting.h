@@ -19,14 +19,12 @@
 
 #include <unistd.h>
 #include "target.h"
-#include "command.h"
+#include <helper/command.h>
 #include "xtensa.h"
-#include "xtensa_semihosting.h"
 #include "semihosting_common.h"
 #include "esp_xtensa.h"
+#include "esp_semihosting.h"
 #include "stdbool.h"
-
-#define ESP_SYS_DRV_INFO 0xE0
 
 int esp_xtensa_semihosting_init(struct target *target);
 int esp_xtensa_semihosting(struct target *target, int *retval);

@@ -29,6 +29,7 @@
 #include "rtos/rtos.h"
 #include "smp.h"
 #include "esp_xtensa_smp.h"
+#include "esp_xtensa_semihosting.h"
 
 /*
 Multiprocessor stuff common:
@@ -93,7 +94,7 @@ int esp_xtensa_smp_assert_reset(struct target *target)
 	if (!target->smp)
 		return xtensa_assert_reset(target);
 
-	foreach_smp_target(head, target->head) {
+	foreach_smp_target(head, target->smp_targets) {
 		res = xtensa_assert_reset(head->target);
 		if (res != ERROR_OK)
 			return res;
@@ -121,7 +122,7 @@ static struct target *get_halted_esp_xtensa_smp(struct target *target, int32_t c
 	struct target_list *head;
 	struct target *curr;
 
-	foreach_smp_target(head, target->head) {
+	foreach_smp_target(head, target->smp_targets) {
 		curr = head->target;
 		if ((curr->coreid == coreid) && (curr->state == TARGET_HALTED))
 			return curr;
@@ -158,7 +159,7 @@ int esp_xtensa_smp_poll(struct target *target)
 	ret = esp_xtensa_poll(target);
 	if (esp_xtensa->esp.dbg_stubs.base && old_dbg_stubs_base != esp_xtensa->esp.dbg_stubs.base) {
 		/* debug stubs base is set only in PRO-CPU TRAX register, so sync this info */
-		foreach_smp_target(head, target->head) {
+		foreach_smp_target(head, target->smp_targets) {
 			curr = head->target;
 			if (curr == target)
 				continue;
@@ -173,7 +174,7 @@ int esp_xtensa_smp_poll(struct target *target)
 					(target->state == TARGET_RUNNING || target->state == TARGET_HALTED)) {
 			LOG_DEBUG("%s: Check for unexamined cores after reset", target_name(target));
 			bool all_examined = true;
-			foreach_smp_target(head, target->head) {
+			foreach_smp_target(head, target->smp_targets) {
 				curr = head->target;
 				if (curr == target)
 					continue;
@@ -203,9 +204,9 @@ int esp_xtensa_smp_poll(struct target *target)
 			target_call_event_callbacks(target, TARGET_EVENT_DEBUG_HALTED);
 		else {
 			if (esp_xtensa_semihosting(target, &ret) != 0) {
-				if (target->smp && target->semihosting->op == ESP_SYS_DRV_INFO) {
+				if (target->smp && target->semihosting->op == ESP_SEMIHOSTING_SYS_DRV_INFO) {
 					/* semihosting's version syncing with other cores */
-					foreach_smp_target(head, target->head) {
+					foreach_smp_target(head, target->smp_targets) {
 						curr = head->target;
 						if (curr == target)
 							continue;
@@ -266,7 +267,7 @@ static int esp_xtensa_smp_update_halt_gdb(struct target *target, bool *need_resu
 		gdb_target = target->gdb_service->target;
 
 	/* due to smpbreak config other cores can also go to HALTED state */
-	foreach_smp_target(head, target->head) {
+	foreach_smp_target(head, target->smp_targets) {
 		curr = head->target;
 		LOG_DEBUG("Check target '%s'", target_name(curr));
 		/* skip calling context */
@@ -340,7 +341,7 @@ static int esp_xtensa_smp_resume_cores(struct target *target, int handle_breakpo
 
 	LOG_DEBUG("%s", target_name(target));
 
-	foreach_smp_target(head, target->head) {
+	foreach_smp_target(head, target->smp_targets) {
 		curr = head->target;
 		if ((curr != target) && (curr->state != TARGET_RUNNING)
 			/* in single-core mode disabled core cannot be examined, but need to be
@@ -457,7 +458,7 @@ int esp_xtensa_smp_watchpoint_add(struct target *target, struct watchpoint *watc
 	res = xtensa_watchpoint_add(target, watchpoint);
 	if (target->smp && res == ERROR_OK) {
 		struct target_list *head;
-		foreach_smp_target(head, target->head) {
+		foreach_smp_target(head, target->smp_targets) {
 			struct target *curr = head->target;
 			if (curr == target || !target_was_examined(curr))
 				continue;
@@ -482,7 +483,7 @@ int esp_xtensa_smp_watchpoint_remove(struct target *target, struct watchpoint *w
 	res = xtensa_watchpoint_remove(target, watchpoint);
 	if (target->smp && res == ERROR_OK) {
 		struct target_list *head;
-		foreach_smp_target(head, target->head) {
+		foreach_smp_target(head, target->smp_targets) {
 			struct target *curr = head->target;
 			if (curr == target)
 				continue;
@@ -500,7 +501,7 @@ int esp_xtensa_smp_run_func_image(struct target *target,
 	uint32_t num_args,
 	...)
 {
-	struct target *run_target;
+	struct target *run_target = target;
 	struct target_list *head;
 	va_list ap;
 	uint32_t smp_break;
@@ -508,7 +509,7 @@ int esp_xtensa_smp_run_func_image(struct target *target,
 
 	if (target->smp) {
 		/* find first HALTED and examined core */
-		foreach_smp_target(head, target->head) {
+		foreach_smp_target(head, target->smp_targets) {
 			run_target = head->target;
 			if (target_was_examined(run_target) && run_target->state == TARGET_HALTED)
 				break;
@@ -530,8 +531,7 @@ int esp_xtensa_smp_run_func_image(struct target *target,
 		res = esp_xtensa_smp_smpbreak_disable(run_target, &smp_break);
 		if (res != ERROR_OK)
 			return res;
-	} else
-		run_target = target;
+	}
 
 	va_start(ap, num_args);
 	res = algorithm_run_func_image_va(run_target, run, num_args, ap);
@@ -551,7 +551,7 @@ int esp_xtensa_smp_run_onboard_func(struct target *target,
 	uint32_t num_args,
 	...)
 {
-	struct target *run_target;
+	struct target *run_target = target;
 	struct target_list *head;
 	va_list ap;
 	uint32_t smp_break;
@@ -559,7 +559,7 @@ int esp_xtensa_smp_run_onboard_func(struct target *target,
 
 	if (target->smp) {
 		/* find first HALTED and examined core */
-		foreach_smp_target(head, target->head) {
+		foreach_smp_target(head, target->smp_targets) {
 			run_target = head->target;
 			if (target_was_examined(run_target) && run_target->state == TARGET_HALTED)
 				break;
@@ -571,8 +571,7 @@ int esp_xtensa_smp_run_onboard_func(struct target *target,
 		res = esp_xtensa_smp_smpbreak_disable(run_target, &smp_break);
 		if (res != ERROR_OK)
 			return res;
-	} else
-		run_target = target;
+	}
 
 	va_start(ap, num_args);
 	res = algorithm_run_onboard_func_va(run_target, run, func_addr, num_args, ap);
@@ -627,7 +626,7 @@ int esp_xtensa_smp_target_init(struct command_context *cmd_ctx, struct target *t
 		if (!target->working_area_cfg.phys_spec) {
 			/* Working areas are configured for one core only. Use the same config data for other cores.
 			It is safe to share config data because algorithms can not be ran on different cores concurrently. */
-			foreach_smp_target(head, target->head) {
+			foreach_smp_target(head, target->smp_targets) {
 				struct target *curr = head->target;
 				if (curr == target)
 					continue;
@@ -640,7 +639,7 @@ int esp_xtensa_smp_target_init(struct command_context *cmd_ctx, struct target *t
 			}
 		}
 		if (!target->alt_working_area_cfg.phys_spec) {
-			foreach_smp_target(head, target->head) {
+			foreach_smp_target(head, target->smp_targets) {
 				struct target *curr = head->target;
 				if (curr == target)
 					continue;
@@ -653,7 +652,7 @@ int esp_xtensa_smp_target_init(struct command_context *cmd_ctx, struct target *t
 			}
 		}
 		/* TODO: make one cycle instead of three */
-		foreach_smp_target(head, target->head) {
+		foreach_smp_target(head, target->smp_targets) {
 			struct target *curr = head->target;
 			ret = esp_xtensa_semihosting_init(curr);
 			if (ret != ERROR_OK)
@@ -673,7 +672,7 @@ COMMAND_HANDLER(esp_xtensa_smp_cmd_permissive_mode)
 	if (target->smp && CMD_ARGC > 0) {
 		struct target_list *head;
 		struct target *curr;
-		foreach_smp_target(head, target->head) {
+		foreach_smp_target(head, target->smp_targets) {
 			curr = head->target;
 			int ret = CALL_COMMAND_HANDLER(xtensa_cmd_permissive_mode_do,
 				target_to_xtensa(curr));
@@ -692,7 +691,7 @@ COMMAND_HANDLER(esp_xtensa_smp_cmd_smpbreak)
 	if (target->smp && CMD_ARGC > 0) {
 		struct target_list *head;
 		struct target *curr;
-		foreach_smp_target(head, target->head) {
+		foreach_smp_target(head, target->smp_targets) {
 			curr = head->target;
 			int ret = CALL_COMMAND_HANDLER(xtensa_cmd_smpbreak_do, curr);
 			if (ret != ERROR_OK)
@@ -709,7 +708,7 @@ COMMAND_HANDLER(esp_xtensa_smp_cmd_mask_interrupts)
 	if (target->smp && CMD_ARGC > 0) {
 		struct target_list *head;
 		struct target *curr;
-		foreach_smp_target(head, target->head) {
+		foreach_smp_target(head, target->smp_targets) {
 			curr = head->target;
 			int ret = CALL_COMMAND_HANDLER(xtensa_cmd_mask_interrupts_do,
 				target_to_xtensa(curr));
@@ -728,7 +727,7 @@ COMMAND_HANDLER(esp_xtensa_smp_cmd_perfmon_enable)
 	if (target->smp && CMD_ARGC > 0) {
 		struct target_list *head;
 		struct target *curr;
-		foreach_smp_target(head, target->head) {
+		foreach_smp_target(head, target->smp_targets) {
 			curr = head->target;
 			int ret = CALL_COMMAND_HANDLER(xtensa_cmd_perfmon_enable_do,
 				target_to_xtensa(curr));
@@ -747,7 +746,7 @@ COMMAND_HANDLER(esp_xtensa_smp_cmd_perfmon_dump)
 	if (target->smp) {
 		struct target_list *head;
 		struct target *curr;
-		foreach_smp_target(head, target->head) {
+		foreach_smp_target(head, target->smp_targets) {
 			curr = head->target;
 			LOG_INFO("CPU%d:", curr->coreid);
 			int ret = CALL_COMMAND_HANDLER(xtensa_cmd_perfmon_dump_do,
@@ -767,7 +766,7 @@ COMMAND_HANDLER(esp_xtensa_smp_cmd_tracestart)
 	if (target->smp) {
 		struct target_list *head;
 		struct target *curr;
-		foreach_smp_target(head, target->head) {
+		foreach_smp_target(head, target->smp_targets) {
 			curr = head->target;
 			int ret = CALL_COMMAND_HANDLER(xtensa_cmd_tracestart_do,
 				target_to_xtensa(curr));
@@ -786,7 +785,7 @@ COMMAND_HANDLER(esp_xtensa_smp_cmd_tracestop)
 	if (target->smp){
 		struct target_list *head;
 		struct target *curr;
-		foreach_smp_target(head, target->head) {
+		foreach_smp_target(head, target->smp_targets) {
 			curr = head->target;
 			int ret = CALL_COMMAND_HANDLER(xtensa_cmd_tracestop_do,
 				target_to_xtensa(curr));
@@ -807,7 +806,7 @@ COMMAND_HANDLER(esp_xtensa_smp_cmd_tracedump)
 		struct target *curr;
 		uint32_t cores_max_id = 0;
 		/* assume that core IDs are assigned to SMP targets sequentially: 0,1,2... */
-		foreach_smp_target(head, target->head) {
+		foreach_smp_target(head, target->smp_targets) {
 			curr = head->target;
 			if (cores_max_id < (uint32_t)curr->coreid)
 				cores_max_id = curr->coreid;
@@ -818,7 +817,7 @@ COMMAND_HANDLER(esp_xtensa_smp_cmd_tracedump)
 				cores_max_id+1);
 			return ERROR_FAIL;
 		}
-		foreach_smp_target(head, target->head) {
+		foreach_smp_target(head, target->smp_targets) {
 			curr = head->target;
 			int ret = CALL_COMMAND_HANDLER(xtensa_cmd_tracedump_do,
 				target_to_xtensa(curr), CMD_ARGV[curr->coreid]);
@@ -835,19 +834,18 @@ COMMAND_HANDLER(esp_xtensa_smp_cmd_semihost_basedir)
 {
 	struct target *target = get_current_target(CMD_CTX);
 	if (target->smp && CMD_ARGC > 0) {
+		int ret = ERROR_OK;
 		struct target_list *head;
-		struct target *curr;
-		foreach_smp_target(head, target->head) {
-			curr = head->target;
-			int ret = CALL_COMMAND_HANDLER(esp_xtensa_cmd_semihost_basedir_do,
-				target_to_esp_xtensa(curr));
+		foreach_smp_target(head, target->smp_targets) {
+			CMD_CTX->current_target = head->target;
+			ret = esp_semihosting_basedir_command(CMD);
 			if (ret != ERROR_OK)
-				return ret;
+				break;
 		}
-		return ERROR_OK;
+		cmd->ctx->current_target = target;
+		return ret;
 	}
-	return CALL_COMMAND_HANDLER(esp_xtensa_cmd_semihost_basedir_do,
-		target_to_esp_xtensa(target));
+	return esp_semihosting_basedir_command(CMD);
 }
 
 const struct command_registration esp_xtensa_smp_xtensa_command_handlers[] = {
@@ -918,7 +916,8 @@ const struct command_registration esp_xtensa_smp_esp_command_handlers[] = {
 		.name = "semihost_basedir",
 		.handler = esp_xtensa_smp_cmd_semihost_basedir,
 		.mode = COMMAND_ANY,
-		.help = "Set the base directory for semohosting I/O.",
+		.help = "Set the base directory for semihosting I/O."
+				"DEPRECATED! use arm semihosting_basedir",
 		.usage = "dir",
 	},
 	COMMAND_REGISTRATION_DONE

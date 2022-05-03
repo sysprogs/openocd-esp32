@@ -27,7 +27,7 @@
 #include "xtensa.h"
 #include "xtensa_algorithm.h"
 #include "register.h"
-#include "time_support.h"
+#include <helper/time_support.h>
 
 #define XT_WATCHPOINTS_NUM_MAX  2
 
@@ -2269,6 +2269,9 @@ int xtensa_wait_algorithm(struct target *target,
 				return retval;
 		}
 	}
+
+	/* avoid gdb keep_alive warning */
+	keep_alive();
 
 	for (int i = xtensa->core_cache->num_regs - 1; i >= 0; i--) {
 		struct reg *reg = &xtensa->core_cache->reg_list[i];

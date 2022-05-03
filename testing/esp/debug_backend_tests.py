@@ -103,6 +103,9 @@ testee_info = TesteeInfo()
 def idf_ver_min(ver_str):
     return unittest.skipIf(testee_info.idf_ver < IdfVersion.fromstr(ver_str), "requires min IDF_VER='%s', current IDF_VER='%s'" % (ver_str, testee_info.idf_ver))
 
+def skip_for_ver(ver_str):
+    return unittest.skipIf(testee_info.idf_ver == IdfVersion.fromstr(ver_str), "requires IDF_VER='%s', current IDF_VER='%s'" % (ver_str, testee_info.idf_ver))
+
 def run_with_version(ver_str):
     return unittest.skipIf(testee_info.idf_ver != IdfVersion.fromstr(ver_str), "Not Applicable to this version")
 
@@ -141,6 +144,14 @@ def only_for_arch(archs_to_run):
             skip = False
             break
     return unittest.skipIf(skip, "skipped due to arch '%s' does not match to '%s'" % (testee_info.arch, archs_to_run))
+
+def idf_ver_min_for_arch(ver_str, archs_to_run):
+    skip = True
+    for id in archs_to_run:
+        if re.match(id, testee_info.arch):
+            return idf_ver_min(ver_str)
+    # do not skip if arch is not found
+    return unittest.skipIf(False, "")
 
 class DebuggerTestError(RuntimeError):
     """ Base class for debugger's test errors
@@ -509,7 +520,8 @@ class DebuggerTestAppTests(DebuggerTestsBase):
         if testee_info.idf_ver < IdfVersion.fromstr('3.3'):
             outmost_frame = len(frames) - 1
         else:
-            outmost_frame = len(frames) - 2 # -2 because our task function is called by FreeRTOS task wrapper
+            # -2 because our task function is called by FreeRTOS task wrapper for Xtensa or 'prvTaskExitError' for RISCV
+            outmost_frame = len(frames) - 2
         get_logger().debug('outmost_frame = %d', outmost_frame)
         self.assertGreaterEqual(outmost_frame, 0)
         # Sometimes GDB does not provide full backtrace. so check this
@@ -533,6 +545,10 @@ class DebuggerTestAppTests(DebuggerTestsBase):
                 line_nums.append(self.gdb.data_eval_expr('%s_break_ln' % p))
             self.assertTrue(frames[outmost_frame]['line'] in line_nums)
 
+    def run_to_bp_and_check_location(self, exp_rsn, func_name, lineno_var_pref):
+        frames = self.run_to_bp_and_check_basic(exp_rsn, func_name)
+        line = self.gdb.data_eval_expr('%s_break_ln' % lineno_var_pref)
+        self.assertEqual(line, frames[0]['line'])
 
 class DebuggerGenericTestAppTests(DebuggerTestAppTests):
     """ Base class to run tests which use generic test app

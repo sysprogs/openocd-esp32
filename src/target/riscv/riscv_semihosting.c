@@ -41,14 +41,11 @@
 #include "config.h"
 #endif
 
-#include "log.h"
+#include <helper/log.h>
 
 #include "target/target.h"
 #include "target/semihosting_common.h"
 #include "riscv.h"
-
-// Temporary hack
-extern int esp_riscv_semihosting(struct target *target);
 
 static int riscv_semihosting_setup(struct target *target, int enable);
 static int riscv_semihosting_post_result(struct target *target);
@@ -88,12 +85,15 @@ semihosting_result_t riscv_semihosting(struct target *target, int *retval)
 	if (result != ERROR_OK)
 		return SEMI_ERROR;
 
-	uint8_t tmp[12];
+	uint8_t tmp_buf[12];
 
-	/* Read the current instruction, including the bracketing */
-	*retval = target_read_memory(target, pc - 4, 2, 6, tmp);
-	if (*retval != ERROR_OK)
-		return SEMI_ERROR;
+	/* Read three uncompressed instructions: The previous, the current one (pointed to by PC) and the next one */
+	for (int i = 0; i < 3; i++) {
+		/* Instruction memories may not support arbitrary read size. Use any size that will work. */
+		*retval = riscv_read_by_any_size(target, (pc - 4) + 4 * i, 4, tmp_buf + 4 * i);
+		if (*retval != ERROR_OK)
+			return SEMI_ERROR;
+	}
 
 	/*
 	 * The instructions that trigger a semihosting call,
@@ -103,9 +103,9 @@ semihosting_result_t riscv_semihosting(struct target *target, int *retval)
 	 * 00100073              ebreak
 	 * 40705013              srai    zero,zero,0x7
 	 */
-	uint32_t pre = target_buffer_get_u32(target, tmp);
-	uint32_t ebreak = target_buffer_get_u32(target, tmp + 4);
-	uint32_t post = target_buffer_get_u32(target, tmp + 8);
+	uint32_t pre = target_buffer_get_u32(target, tmp_buf);
+	uint32_t ebreak = target_buffer_get_u32(target, tmp_buf + 4);
+	uint32_t post = target_buffer_get_u32(target, tmp_buf + 8);
 	LOG_DEBUG("check %08x %08x %08x from 0x%" PRIx64 "-4", pre, ebreak, post, pc);
 
 	if (pre != 0x01f01013 || ebreak != 0x00100073 || post != 0x40705013) {
@@ -139,20 +139,23 @@ semihosting_result_t riscv_semihosting(struct target *target, int *retval)
 		semihosting->param = r1;
 		semihosting->word_size_bytes = riscv_xlen(target) / 8;
 
+		/* workaround for the IDF 4.4 apptrace_init call */
+		if (semihosting->op == 0x64)
+			semihosting->op = 0x101;
+
 		/* Check for ARM operation numbers. */
-		if (0 <= semihosting->op && semihosting->op <= 0x31) {
+		if ((semihosting->op >= 0 && semihosting->op <= 0x31) ||
+			(semihosting->op >= 0x100 && semihosting->op <= 0x107)) {
+
 			*retval = semihosting_common(target);
 			if (*retval != ERROR_OK) {
 				LOG_ERROR("Failed semihosting operation (0x%02X)", semihosting->op);
 				return SEMI_ERROR;
 			}
 		} else {
-			// Temporary hack
-			*retval = esp_riscv_semihosting(target);
-			if (*retval != ERROR_OK) {
-				/* Unknown operation number, not a semihosting call. */
-				return SEMI_NONE;
-			}
+			/* Unknown operation number, not a semihosting call. */
+			LOG_DEBUG("   -> NONE (unknown operation number)");
+			return SEMI_NONE;
 		}
 	}
 
@@ -161,12 +164,10 @@ semihosting_result_t riscv_semihosting(struct target *target, int *retval)
 	 * operation to complete.
 	 */
 	if (semihosting->is_resumable && !semihosting->hit_fileio) {
-		/* PC has already been corrected in post_result */
-		*retval = target_resume(target, 1, 0, 0, 0);
-		if (*retval != ERROR_OK) {
-			LOG_ERROR("Failed to resume target");
+		/* Resume right after the EBREAK 4 bytes instruction. */
+		*retval = riscv_set_register(target, GDB_REGNO_PC, pc + 4);
+		if (*retval != ERROR_OK)
 			return SEMI_ERROR;
-		}
 
 		LOG_DEBUG("   -> HANDLED");
 		return SEMI_HANDLED;
@@ -203,12 +204,6 @@ static int riscv_semihosting_post_result(struct target *target)
 	}
 
 	LOG_DEBUG("0x%" PRIx64, semihosting->result);
-	riscv_reg_t new_pc;
-	riscv_get_register(target, &new_pc, GDB_REGNO_DPC);
-	new_pc += 4;
-	riscv_set_register(target, GDB_REGNO_DPC, new_pc);
-	riscv_set_register(target, GDB_REGNO_PC, new_pc);
-
 	riscv_set_register(target, GDB_REGNO_A0, semihosting->result);
 	return 0;
 }

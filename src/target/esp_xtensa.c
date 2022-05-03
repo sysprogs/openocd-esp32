@@ -21,12 +21,12 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-#include "register.h"
 #include "smp.h"
 #include "xtensa_algorithm.h"
 #include "esp_xtensa.h"
 #include "esp_xtensa_apptrace.h"
 #include "esp_xtensa_semihosting.h"
+#include "register.h"
 
 #define ESP_XTENSA_DBGSTUBS_UPDATE_DATA_ENTRY(_e_) \
 	do { \
@@ -219,7 +219,7 @@ int esp_xtensa_breakpoint_add(struct target *target, struct breakpoint *breakpoi
 		        GDB causes call to esp_flash_breakpoint_add() for every core, since it treats flash breakpoints as HW ones */
 		if (target->smp) {
 			struct target_list *curr;
-			foreach_smp_target(curr, target->head) {
+			foreach_smp_target(curr, target->smp_targets) {
 				esp_xtensa = target_to_esp_xtensa(curr->target);
 				if (esp_common_flash_breakpoint_exists(&esp_xtensa->esp, breakpoint))
 					return ERROR_OK;
@@ -247,39 +247,13 @@ int esp_xtensa_breakpoint_remove(struct target *target, struct breakpoint *break
 	return res;
 }
 
-COMMAND_HELPER(esp_xtensa_cmd_semihost_basedir_do, struct esp_xtensa_common *esp_xtensa)
-{
-	if (CMD_ARGC != 1) {
-		command_print(CMD,
-			"Current semihosting base dir: %s",
-			esp_xtensa->semihost.basedir ? esp_xtensa->semihost.basedir : "");
-		return ERROR_OK;
-	}
-
-	char *s = strdup(CMD_ARGV[0]);
-	if (!s) {
-		command_print(CMD, "Failed to allocate memory!");
-		return ERROR_FAIL;
-	}
-	if (esp_xtensa->semihost.basedir)
-		free(esp_xtensa->semihost.basedir);
-	esp_xtensa->semihost.basedir = s;
-
-	return ERROR_OK;
-}
-
-COMMAND_HANDLER(esp_xtensa_cmd_semihost_basedir)
-{
-	return CALL_COMMAND_HANDLER(esp_xtensa_cmd_semihost_basedir_do,
-		target_to_esp_xtensa(get_current_target(CMD_CTX)));
-}
-
 const struct command_registration esp_command_handlers[] = {
 	{
 		.name = "semihost_basedir",
-		.handler = esp_xtensa_cmd_semihost_basedir,
+		.handler = esp_semihosting_basedir_command,
 		.mode = COMMAND_ANY,
-		.help = "Set the base directory for semohosting I/O.",
+		.help = "Set the base directory for semihosting I/O."
+			"DEPRECATED! use arm semihosting_basedir",
 		.usage = "dir",
 	},
 	COMMAND_REGISTRATION_DONE

@@ -24,8 +24,9 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include <sys/types.h>
 #include <time.h>
+#include "helper/replacements.h"
+#include <server/server.h>
 
 /*
  * According to:
@@ -75,7 +76,13 @@ enum semihosting_operation_numbers {
 	SEMIHOSTING_SYS_WRITE = 0x05,
 	SEMIHOSTING_SYS_WRITEC = 0x03,
 	SEMIHOSTING_SYS_WRITE0 = 0x04,
+	SEMIHOSTING_USER_CMD_0x100 = 0x100, /* First user cmd op code */
+	SEMIHOSTING_USER_CMD_0x107 = 0x107, /* Last supported user cmd op code */
+	SEMIHOSTING_USER_CMD_0x1FF = 0x1FF, /* Last user cmd op code */
 };
+
+/** Maximum allowed Tcl command segment length in bytes*/
+#define SEMIHOSTING_MAX_TCL_COMMAND_FIELD_LENGTH (1024 * 1024)
 
 /*
  * Codes used by SEMIHOSTING_SYS_EXIT (formerly
@@ -89,6 +96,13 @@ enum semihosting_reported_exceptions {
 	ADP_STOPPED_RUN_TIME_ERROR = ((2 << 16) + 35),
 };
 
+enum semihosting_redirect_config {
+	SEMIHOSTING_REDIRECT_CFG_NONE,
+	SEMIHOSTING_REDIRECT_CFG_DEBUG,
+	SEMIHOSTING_REDIRECT_CFG_STDIO,
+	SEMIHOSTING_REDIRECT_CFG_ALL,
+};
+
 struct target;
 
 /*
@@ -98,6 +112,15 @@ struct semihosting {
 
 	/** A flag reporting whether semihosting is active. */
 	bool is_active;
+
+	/** Semihosting STDIO file descriptors */
+	int stdin_fd, stdout_fd, stderr_fd;
+
+	/** redirection configuration, NONE by default */
+	enum semihosting_redirect_config redirect_cfg;
+
+	/** Handle to redirect semihosting print via tcp */
+	struct connection *tcp_connection;
 
 	/** A flag reporting whether semihosting fileio is active. */
 	bool is_fileio;
@@ -153,15 +176,27 @@ struct semihosting {
 	/** The current time when 'execution starts' */
 	clock_t setup_time;
 
+	/** Base directory for semihosting I/O operations. */
+	char *basedir;
+
+	int (*user_command_handler)(struct target *target);
 	int (*setup)(struct target *target, int enable);
 	int (*post_result)(struct target *target);
-	int (*read_fields)(struct target *target, size_t number, uint8_t *fields);
-	int (*write_fields)(struct target *target, size_t number, uint8_t *fields);
-	char *(*get_filename)(struct target *target, uint64_t addr_fn, size_t len, uint32_t * mode);
-	off_t (*lseek)(int fd, off_t offset, int whence);
 };
 
-int semihosting_common_init(struct target *target, void *setup, void *post_result);
+int semihosting_common_init(struct target *target, void *setup,
+	void *post_result);
 int semihosting_common(struct target *target);
+
+/* utility functions which may also be used by semihosting extensions (custom vendor-defined syscalls) */
+int semihosting_read_fields(struct target *target, size_t number,
+	uint8_t *fields);
+int semihosting_write_fields(struct target *target, size_t number,
+	uint8_t *fields);
+uint64_t semihosting_get_field(struct target *target, size_t index,
+	uint8_t *fields);
+void semihosting_set_field(struct target *target, uint64_t value,
+	size_t index,
+	uint8_t *fields);
 
 #endif	/* OPENOCD_TARGET_SEMIHOSTING_COMMON_H */

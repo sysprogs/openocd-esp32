@@ -18,8 +18,8 @@ def get_logger():
 class DebuggerSpecialTestsImpl:
     """ Special test cases generic for dual and single core modes
     """
-    # TODO: SIGTRAP is not generated for RISCV when crash occures
-    @skip_for_chip(['esp32c3'])
+
+    @idf_ver_min_for_arch('latest', ['riscv32'])
     def test_restart_debug_from_crash(self):
         """
             This test checks that debugger can operate correctly after SW reset with stalled CPU.
@@ -32,7 +32,7 @@ class DebuggerSpecialTestsImpl:
         self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_SIGTRAP, 'crash_task', ['crash'], outmost_func_name='crash_task')
         self.prepare_app_for_debugging(self.test_app_cfg.app_off)
 
-    @skip_for_chip(['esp32s3']) #TODO: Will be enabled after fix 
+    @skip_for_chip(['esp32s3'])
     def test_gdb_regs_mapping(self):
         """
             This test checks that GDB and OpenOCD has identical registers mapping.
@@ -45,11 +45,13 @@ class DebuggerSpecialTestsImpl:
         regs = self.gdb.get_reg_names()
         i = 10
         for reg in regs:
-            if (len(reg) == 0):
+            if (len(reg) == 0 or reg == 'zero'):
                 continue
 
-            if reg == 'mmid' or reg == 'ustatus' or reg == 'sar_byte':
-                break # stop at first priveleged register, currently they are not set by GDB
+            # TODO: With the new gdb version (gdb9) privileged regs now can be set. So, break condition needs to be changed for each chip.
+            # eg. Now mmid is pass but it is failing at a0 for esp32
+            if reg == 'mmid' or reg == 'mstatus' or reg == 'q0':
+                break
 
             # set to reasonable value, because GDB tries to read memory @ pc
             val = 0x40000400 if reg == 'pc' else i
@@ -75,7 +77,6 @@ class DebuggerSpecialTestsImpl:
         self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'vTaskDelay', ['vTaskDelay0'])
         self.clear_bps()
 
-    @skip_for_chip(['esp32s3']) #TODO: Will be enabled after fix
     def test_debugging_works_after_hw_reset(self):
         """
             This test checks that debugging works after HW reset.
@@ -101,9 +102,32 @@ class DebuggerSpecialTestsImpl:
         self.prepare_app_for_debugging(self.test_app_cfg.app_off)
         self._debug_image()
 
+    @idf_ver_min('4.3')
+    @idf_ver_min_for_arch('latest', ['riscv32'])
+    def test_bp_and_wp_set_by_program(self):
+        """
+            This test checks that breakpoints and watchpoints set by program on target work.
+            1) Select appropriate sub-test number on target.
+            2) Resume target, wait for the program to hit breakpoints.
+        """
+        self.select_sub_test(803)
+        # breakpoint at 'target_bp_func1' entry
+        self.run_to_bp_and_check_location(dbg.TARGET_STOP_REASON_SIGTRAP, 'target_bp_func1', 'target_bp_func1')
+        # watchpoint hit on write var in 'target_bp_func1'
+        self.run_to_bp_and_check_location(dbg.TARGET_STOP_REASON_SIGTRAP, 'target_bp_func1', 'target_wp_var1_1')
+        # watchpoint hit on read var in 'target_bp_func1'
+        self.run_to_bp_and_check_location(dbg.TARGET_STOP_REASON_SIGTRAP, 'target_bp_func1', 'target_wp_var1_2')
+        # breakpoint at 'target_bp_func2' entry
+        self.run_to_bp_and_check_location(dbg.TARGET_STOP_REASON_SIGTRAP, 'target_bp_func2', 'target_bp_func2')
+        # watchpoint hit on write var in 'target_bp_func2'
+        self.run_to_bp_and_check_location(dbg.TARGET_STOP_REASON_SIGTRAP, 'target_bp_func2', 'target_wp_var2_1')
+        # watchpoint hit on read var in 'target_bp_func2'
+        self.run_to_bp_and_check_location(dbg.TARGET_STOP_REASON_SIGTRAP, 'target_bp_func2', 'target_wp_var2_2')
+
+
 # to be skipped for any board with ESP32-S2 chip
 # TODO: enable these tests when PSRAM is supported for ESP32-S2
-@skip_for_chip(['esp32s2', 'esp32c3', 'esp32s3'])
+@skip_for_chip(['esp32s2', 'esp32c3'])
 class PsramTestsImpl:
     """ PSRAM specific test cases generic for dual and single core modes
     """
@@ -137,6 +161,7 @@ class PsramTestsImpl:
 class DebuggerSpecialTestsDual(DebuggerGenericTestAppTestsDual, DebuggerSpecialTestsImpl):
     """ Test cases for dual core mode
     """
+    @skip_for_chip(['esp32s3'])
     def test_cores_states_after_esptool_connection(self):
         """
             This test checks that cores are in running or halted state after esptool connection.

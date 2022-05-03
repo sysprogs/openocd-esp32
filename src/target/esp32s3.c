@@ -42,7 +42,7 @@ implementation.
 #define ESP32_S3_IRAM_LOW               0x40370000
 #define ESP32_S3_IRAM_HIGH              0x403E0000
 #define ESP32_S3_IROM_MASK_LOW          0x40000000
-#define ESP32_S3_IROM_MASK_HIGH         0x4001a100
+#define ESP32_S3_IROM_MASK_HIGH         0x40060000
 #define ESP32_S3_DRAM_LOW               0x3FC88000
 #define ESP32_S3_DRAM_HIGH              0x3FD00000
 #define ESP32_S3_RTC_IRAM_LOW           0x600FE000
@@ -146,6 +146,22 @@ static int esp32s3_gdb_regs_mapping[ESP32_S3_NUM_REGS] = {
 	XT_REG_IDX_PRID, XT_REG_IDX_ICOUNT, XT_REG_IDX_ICOUNTLEVEL, XT_REG_IDX_EXCVADDR,
 	XT_REG_IDX_CCOMPARE0, XT_REG_IDX_CCOMPARE1, XT_REG_IDX_CCOMPARE2,
 	XT_REG_IDX_MISC0, XT_REG_IDX_MISC1, XT_REG_IDX_MISC2, XT_REG_IDX_MISC3,
+
+	XT_REG_IDX_PWRCTL, XT_REG_IDX_PWRSTAT, XT_REG_IDX_ERISTAT,
+	XT_REG_IDX_CS_ITCTRL, XT_REG_IDX_CS_CLAIMSET, XT_REG_IDX_CS_CLAIMCLR,
+	XT_REG_IDX_CS_LOCKACCESS, XT_REG_IDX_CS_LOCKSTATUS, XT_REG_IDX_CS_AUTHSTATUS,
+	XT_REG_IDX_FAULT_INFO,
+	XT_REG_IDX_TRAX_ID, XT_REG_IDX_TRAX_CTRL, XT_REG_IDX_TRAX_STAT,
+	XT_REG_IDX_TRAX_DATA, XT_REG_IDX_TRAX_ADDR, XT_REG_IDX_TRAX_PCTRIGGER,
+	XT_REG_IDX_TRAX_PCMATCH, XT_REG_IDX_TRAX_DELAY, XT_REG_IDX_TRAX_MEMSTART,
+	XT_REG_IDX_TRAX_MEMEND,
+	XT_REG_IDX_PMG, XT_REG_IDX_PMPC, XT_REG_IDX_PM0, XT_REG_IDX_PM1,
+	XT_REG_IDX_PMCTRL0, XT_REG_IDX_PMCTRL1, XT_REG_IDX_PMSTAT0, XT_REG_IDX_PMSTAT1,
+	XT_REG_IDX_OCD_ID, XT_REG_IDX_OCD_DCRCLR, XT_REG_IDX_OCD_DCRSET, XT_REG_IDX_OCD_DSR,
+	XT_REG_IDX_A0, XT_REG_IDX_A1, XT_REG_IDX_A2, XT_REG_IDX_A3,
+	XT_REG_IDX_A4, XT_REG_IDX_A5, XT_REG_IDX_A6, XT_REG_IDX_A7,
+	XT_REG_IDX_A8, XT_REG_IDX_A9, XT_REG_IDX_A10, XT_REG_IDX_A11,
+	XT_REG_IDX_A12, XT_REG_IDX_A13, XT_REG_IDX_A14, XT_REG_IDX_A15,
 };
 
 /* actually this table contains user + TIE registers
@@ -299,13 +315,13 @@ static const struct xtensa_config esp32s3_xtensa_cfg = {
 
 static int esp32s3_fetch_user_regs(struct target *target)
 {
-	LOG_DEBUG("%s: user regs fetching is not implememnted!", target_name(target));
+	LOG_DEBUG("%s: user regs fetching is not implemented!", target_name(target));
 	return ERROR_OK;
 }
 
 static int esp32s3_queue_write_dirty_user_regs(struct target *target)
 {
-	LOG_DEBUG("%s: user regs writing is not implememnted!", target_name(target));
+	LOG_DEBUG("%s: user regs writing is not implemented!", target_name(target));
 	return ERROR_OK;
 }
 
@@ -371,7 +387,7 @@ static int esp32s3_soc_reset(struct target *target)
 	assert(target->state == TARGET_HALTED);
 
 	if (target->smp) {
-		foreach_smp_target(head, target->head) {
+		foreach_smp_target(head, target->smp_targets) {
 			xtensa = target_to_xtensa(head->target);
 			/* if any of the cores is stalled unstall them */
 			if (xtensa_dm_core_is_stalled(&xtensa->dbg_mod)) {
@@ -602,6 +618,10 @@ static int esp32s3_target_init(struct command_context *cmd_ctx, struct target *t
 	if (ret != ERROR_OK)
 		return ret;
 
+	ret = esp_xtensa_semihosting_init(target);
+	if (ret != ERROR_OK)
+		return ret;
+
 	return ERROR_OK;
 }
 
@@ -664,6 +684,8 @@ static int esp32s3_target_create(struct target *target, Jim_Interp *interp)
 	return ERROR_OK;
 }
 
+extern const struct command_registration semihosting_common_handlers[];
+
 static const struct command_registration esp32s3_command_handlers[] = {
 	{
 		.usage = "",
@@ -678,6 +700,13 @@ static const struct command_registration esp32s3_command_handlers[] = {
 		.name = "esp32",
 		.usage = "",
 		.chain = smp_command_handlers,
+	},
+	{
+		.name = "arm",
+		.mode = COMMAND_ANY,
+		.help = "ARM Command Group",
+		.usage = "",
+		.chain = semihosting_common_handlers
 	},
 	COMMAND_REGISTRATION_DONE
 };

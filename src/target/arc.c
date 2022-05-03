@@ -227,7 +227,7 @@ static int arc_get_register(struct reg *reg)
 
 	if (desc->is_core) {
 		/* Accessing to R61/R62 registers causes Jtag hang */
-		if (desc->arch_num == CORE_R61_NUM || desc->arch_num == CORE_R62_NUM) {
+		if (desc->arch_num == ARC_R61 || desc->arch_num == ARC_R62) {
 			LOG_ERROR("It is forbidden to read core registers 61 and 62.");
 			return ERROR_FAIL;
 		}
@@ -267,8 +267,8 @@ static int arc_set_register(struct reg *reg, uint8_t *buf)
 		return ERROR_TARGET_NOT_HALTED;
 
 	/* Accessing to R61/R62 registers causes Jtag hang */
-	if (desc->is_core && (desc->arch_num == CORE_R61_NUM ||
-			desc->arch_num == CORE_R62_NUM)) {
+	if (desc->is_core && (desc->arch_num == ARC_R61 ||
+			desc->arch_num == ARC_R62)) {
 		LOG_ERROR("It is forbidden to write core registers 61 and 62.");
 		return ERROR_FAIL;
 	}
@@ -866,7 +866,7 @@ static int arc_save_context(struct target *target)
 	/* Read data from target. */
 	if (core_cnt > 0) {
 		retval = arc_jtag_read_core_reg(&arc->jtag_info, core_addrs, core_cnt, core_values);
-		if (ERROR_OK != retval) {
+		if (retval != ERROR_OK) {
 			LOG_ERROR("Attempt to read core registers failed.");
 			retval = ERROR_FAIL;
 			goto exit;
@@ -874,7 +874,7 @@ static int arc_save_context(struct target *target)
 	}
 	if (aux_cnt > 0) {
 		retval = arc_jtag_read_aux_reg(&arc->jtag_info, aux_addrs, aux_cnt, aux_values);
-		if (ERROR_OK != retval) {
+		if (retval != ERROR_OK) {
 			LOG_ERROR("Attempt to read aux registers failed.");
 			retval = ERROR_FAIL;
 			goto exit;
@@ -931,8 +931,8 @@ exit:
 static int get_current_actionpoint(struct target *target,
 		struct arc_actionpoint **actionpoint)
 {
-	assert(target != NULL);
-	assert(actionpoint != NULL);
+	assert(target);
+	assert(actionpoint);
 
 	uint32_t debug_ah;
 	/* Check if actionpoint caused halt */
@@ -981,7 +981,7 @@ static int arc_examine_debug_reason(struct target *target)
 		struct arc_actionpoint *actionpoint = NULL;
 		CHECK_RETVAL(get_current_actionpoint(target, &actionpoint));
 
-		if (actionpoint != NULL) {
+		if (actionpoint) {
 			if (!actionpoint->used)
 				LOG_WARNING("Target halted by an unused actionpoint.");
 
@@ -1197,7 +1197,7 @@ static int arc_restore_context(struct target *target)
 	 * Check before write, if aux and core count is greater than 0. */
 	if (core_cnt > 0) {
 		retval = arc_jtag_write_core_reg(&arc->jtag_info, core_addrs, core_cnt, core_values);
-		if (ERROR_OK != retval) {
+		if (retval != ERROR_OK) {
 			LOG_ERROR("Attempt to write to core registers failed.");
 			retval = ERROR_FAIL;
 			goto exit;
@@ -1206,7 +1206,7 @@ static int arc_restore_context(struct target *target)
 
 	if (aux_cnt > 0) {
 		retval = arc_jtag_write_aux_reg(&arc->jtag_info, aux_addrs, aux_cnt, aux_values);
-		if (ERROR_OK != retval) {
+		if (retval != ERROR_OK) {
 			LOG_ERROR("Attempt to write to aux registers failed.");
 			retval = ERROR_FAIL;
 			goto exit;
@@ -1467,7 +1467,7 @@ static int arc_configure_actionpoint(struct target *target, uint32_t ap_num,
 	if (control_tt != AP_AC_TT_DISABLE) {
 
 		if (arc->actionpoints_num_avail < 1) {
-			LOG_ERROR("No free actionpoints, maximim amount is %u",
+			LOG_ERROR("No free actionpoints, maximum amount is %u",
 					arc->actionpoints_num);
 			return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
 		}
@@ -1500,7 +1500,7 @@ static int arc_configure_actionpoint(struct target *target, uint32_t ap_num,
 static int arc_set_breakpoint(struct target *target,
 		struct breakpoint *breakpoint)
 {
-	if (breakpoint->set) {
+	if (breakpoint->is_set) {
 		LOG_WARNING("breakpoint already set");
 		return ERROR_OK;
 	}
@@ -1542,7 +1542,7 @@ static int arc_set_breakpoint(struct target *target,
 			return ERROR_COMMAND_ARGUMENT_INVALID;
 		}
 
-		breakpoint->set = 64; /* Any nice value but 0 */
+		breakpoint->is_set = true;
 	} else if (breakpoint->type == BKPT_HARD) {
 		struct arc_common *arc = target_to_arc(target);
 		struct arc_actionpoint *ap_list = arc->actionpoints_list;
@@ -1563,7 +1563,7 @@ static int arc_set_breakpoint(struct target *target,
 				breakpoint->address, AP_AC_TT_READWRITE, AP_AC_AT_INST_ADDR);
 
 		if (retval == ERROR_OK) {
-			breakpoint->set = bp_num + 1;
+			breakpoint_hw_set(breakpoint, bp_num);
 			ap_list[bp_num].used = 1;
 			ap_list[bp_num].bp_value = breakpoint->address;
 			ap_list[bp_num].type = ARC_AP_BREAKPOINT;
@@ -1588,7 +1588,7 @@ static int arc_unset_breakpoint(struct target *target,
 {
 	int retval = ERROR_OK;
 
-	if (!breakpoint->set) {
+	if (!breakpoint->is_set) {
 		LOG_WARNING("breakpoint not set");
 		return ERROR_OK;
 	}
@@ -1633,14 +1633,14 @@ static int arc_unset_breakpoint(struct target *target,
 			LOG_ERROR("Invalid breakpoint length: target supports only 2 or 4");
 			return ERROR_COMMAND_ARGUMENT_INVALID;
 		}
-		breakpoint->set = 0;
+		breakpoint->is_set = false;
 
 	}	else if (breakpoint->type == BKPT_HARD) {
 		struct arc_common *arc = target_to_arc(target);
 		struct arc_actionpoint *ap_list = arc->actionpoints_list;
-		unsigned int bp_num = breakpoint->set - 1;
+		unsigned int bp_num = breakpoint->number;
 
-		if ((breakpoint->set == 0) || (bp_num >= arc->actionpoints_num)) {
+		if (bp_num >= arc->actionpoints_num) {
 			LOG_DEBUG("Invalid actionpoint ID: %u in breakpoint: %" PRIu32,
 					  bp_num, breakpoint->unique_id);
 			return ERROR_OK;
@@ -1650,11 +1650,11 @@ static int arc_unset_breakpoint(struct target *target,
 						breakpoint->address, AP_AC_TT_DISABLE, AP_AC_AT_INST_ADDR);
 
 		if (retval == ERROR_OK) {
-			breakpoint->set = 0;
+			breakpoint->is_set = false;
 			ap_list[bp_num].used = 0;
 			ap_list[bp_num].bp_value = 0;
 
-			LOG_DEBUG("bpid: %" PRIu32 " - released actionpoint ID: %i",
+			LOG_DEBUG("bpid: %" PRIu32 " - released actionpoint ID: %u",
 					breakpoint->unique_id, bp_num);
 		}
 	} else {
@@ -1684,7 +1684,7 @@ static int arc_remove_breakpoint(struct target *target,
 	struct breakpoint *breakpoint)
 {
 	if (target->state == TARGET_HALTED) {
-		if (breakpoint->set)
+		if (breakpoint->is_set)
 			CHECK_RETVAL(arc_unset_breakpoint(target, breakpoint));
 	} else {
 		LOG_WARNING("target not halted");
@@ -1818,7 +1818,7 @@ static int arc_set_watchpoint(struct target *target,
 	struct arc_common *arc = target_to_arc(target);
 	struct arc_actionpoint *ap_list = arc->actionpoints_list;
 
-	if (watchpoint->set) {
+	if (watchpoint->is_set) {
 		LOG_WARNING("watchpoint already set");
 		return ERROR_OK;
 	}
@@ -1859,7 +1859,7 @@ static int arc_set_watchpoint(struct target *target,
 					watchpoint->address, enable, AP_AC_AT_MEMORY_ADDR);
 
 	if (retval == ERROR_OK) {
-		watchpoint->set = wp_num + 1;
+		watchpoint_set(watchpoint, wp_num);
 		ap_list[wp_num].used = 1;
 		ap_list[wp_num].bp_value = watchpoint->address;
 		ap_list[wp_num].type = ARC_AP_WATCHPOINT;
@@ -1878,13 +1878,13 @@ static int arc_unset_watchpoint(struct target *target,
 	struct arc_common *arc = target_to_arc(target);
 	struct arc_actionpoint *ap_list = arc->actionpoints_list;
 
-	if (!watchpoint->set) {
+	if (!watchpoint->is_set) {
 		LOG_WARNING("watchpoint not set");
 		return ERROR_OK;
 	}
 
-	unsigned int wp_num = watchpoint->set - 1;
-	if ((watchpoint->set == 0) || (wp_num >= arc->actionpoints_num)) {
+	unsigned int wp_num = watchpoint->number;
+	if (wp_num >= arc->actionpoints_num) {
 		LOG_DEBUG("Invalid actionpoint ID: %u in watchpoint: %" PRIu32,
 				wp_num, watchpoint->unique_id);
 		return ERROR_OK;
@@ -1894,7 +1894,7 @@ static int arc_unset_watchpoint(struct target *target,
 				watchpoint->address, AP_AC_TT_DISABLE, AP_AC_AT_MEMORY_ADDR);
 
 	if (retval == ERROR_OK) {
-		watchpoint->set = 0;
+		watchpoint->is_set = false;
 		ap_list[wp_num].used = 0;
 		ap_list[wp_num].bp_value = 0;
 
@@ -1926,7 +1926,7 @@ static int arc_remove_watchpoint(struct target *target,
 		return ERROR_TARGET_NOT_HALTED;
 	}
 
-	if (watchpoint->set)
+	if (watchpoint->is_set)
 		CHECK_RETVAL(arc_unset_watchpoint(target, watchpoint));
 
 	return ERROR_OK;
@@ -1940,7 +1940,7 @@ static int arc_hit_watchpoint(struct target *target, struct watchpoint **hit_wat
 	struct arc_actionpoint *actionpoint = NULL;
 	CHECK_RETVAL(get_current_actionpoint(target, &actionpoint));
 
-	if (actionpoint != NULL) {
+	if (actionpoint) {
 		if (!actionpoint->used)
 			LOG_WARNING("Target halted by unused actionpoint.");
 
@@ -1949,12 +1949,12 @@ static int arc_hit_watchpoint(struct target *target, struct watchpoint **hit_wat
 			LOG_WARNING("Target halted by breakpoint, but is treated as a watchpoint.");
 
 		for (struct watchpoint *watchpoint = target->watchpoints;
-				watchpoint != NULL;
+				watchpoint;
 				watchpoint = watchpoint->next) {
 			if (actionpoint->bp_value == watchpoint->address) {
 				*hit_watchpoint = watchpoint;
-				LOG_DEBUG("Hit watchpoint, wpid: %" PRIu32 ", watchpoint num: %i",
-							watchpoint->unique_id, watchpoint->set - 1);
+				LOG_DEBUG("Hit watchpoint, wpid: %" PRIu32 ", watchpoint num: %u",
+							watchpoint->unique_id, watchpoint->number);
 				return ERROR_OK;
 			}
 		}

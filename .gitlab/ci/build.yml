@@ -23,7 +23,7 @@
 
 .build_linux_arm_template: &build_linux_arm_template
   stage: build
-  image: $CI_DOCKER_REGISTRY/esp32-toolchain-arm-cross
+  image: $CI_DOCKER_REGISTRY/esp32-toolchain-arm-cross:3
   tags:
     - build
   artifacts:
@@ -41,12 +41,52 @@
     - ./bootstrap
     - mkdir _build
     - pushd _build/
-    - ../configure CFLAGS="${TEST_CFLAGS}" --prefix=$PWD/../$DIST_INSTALLED_DIR --host=${CONF_HOST}  $OPENOCD_CONFIGURE_OPTS
+    - ../configure CFLAGS="${TEST_CFLAGS}" --prefix=$PWD/../$DIST_INSTALLED_DIR --host=${CONF_HOST}  $OPENOCD_CONFIGURE_OPTS $GCOV_BUILD_OPTS
     - make
     - MAKEFLAGS= make install-strip
     - popd
+    - >
+      if [[ "${GCOV_BUILD_OPTS}" != "" ]]; then
+        echo coverage enabled
+        rsync -a --prune-empty-dirs --include '*/' --include '*.gcno' --exclude '*' _build/ ${DIST_INSTALLED_DIR}/_build
+      fi
     - *dist_archive
 
+.build_macos_template: &build_macos_template
+  stage: build
+  image: $CI_DOCKER_REGISTRY/esp32-toolchain-macos-cross:4
+  tags:
+    - build
+  artifacts:
+    paths:
+      - ${DIST_ART_DIR}
+    expire_in: 2 weeks
+  script:
+    - *get_release_name
+    - !reference [.add_gitlab_key, script]
+    - !reference [.submodules_mirror_update, script]
+
+    # Cross-compile libusb-1.0 for OSX
+    - export LIBUSB_VER=libusb-1.0.21
+    - wget https://dl.espressif.com/dl/$LIBUSB_VER.tar.gz -O $LIBUSB_VER.tar.gz
+    - tar xzf $LIBUSB_VER.tar.gz && rm $LIBUSB_VER.tar.gz
+    - pushd $LIBUSB_VER
+    - ./bootstrap.sh
+    - ./configure --prefix=$PWD/dist --host=${CONF_HOST} --enable-shared=no --enable-static=yes CC=${CONF_HOST}-cc
+    - make
+    - make install
+    - popd
+
+    # Finally, cross-compile OpenOCD
+    - export OSXCROSS_PKG_CONFIG_PATH=$PWD/$LIBUSB_VER/dist/lib/pkgconfig
+    - ./bootstrap
+    - mkdir _build
+    - pushd _build/
+    - ../configure --prefix=$PWD/../$DIST_INSTALLED_DIR --host=${CONF_HOST} $OPENOCD_CONFIGURE_OPTS LDFLAGS="-Wl,-framework,CoreFoundation -Wl,-framework,IOKit" CC=${CONF_HOST}-cc
+    - make
+    - MAKEFLAGS= make ${INSTALL_TARGET}
+    - popd
+    - *dist_archive
 
 build_linux:
   stage: build
@@ -73,14 +113,7 @@ build_linux:
     - popd
     - *dist_archive
 
-build_linux_armel:
-  <<: *build_linux_arm_template
-  variables:
-    CONF_HOST: "arm-linux-gnueabi"
-    PLATFORM_NAME: "linux-armel"
-    TEST_CFLAGS: ""
-
-build_linux_armel_test:
+build_linux_armhf_test:
   <<: *build_linux_arm_template
   only:
     refs:
@@ -88,8 +121,8 @@ build_linux_armel_test:
     variables:
       - $SCHEDULE_TYPE == "build_sanitizer_test"
   variables:
-    CONF_HOST: "arm-linux-gnueabi"
-    PLATFORM_NAME: "linux-armel-test"
+    CONF_HOST: "arm-linux-gnueabihf"
+    PLATFORM_NAME: "linux-armhf-test"
     TEST_CFLAGS: "-Wl,--no-as-needed -ldl -fsanitize=address -fsanitize=undefined -fsanitize-recover=address -ggdb3"
 
 build_linux_armhf:
@@ -98,6 +131,7 @@ build_linux_armhf:
     CONF_HOST: "arm-linux-gnueabihf"
     PLATFORM_NAME: "linux-armhf"
     TEST_CFLAGS: ""
+    GCOV_BUILD_OPTS: "--enable-build-gcov"
 
 build_linux_arm64:
   <<: *build_linux_arm_template
@@ -161,64 +195,15 @@ build_windows:
     - *dist_archive
 
 build_macos:
-  stage: build
-  image: $CI_DOCKER_REGISTRY/esp32-toolchain-macos-cross:2
-  tags:
-    - build
-  artifacts:
-    paths:
-      - ${DIST_ART_DIR}
-    expire_in: 2 weeks
+  <<: *build_macos_template
   variables:
     PLATFORM_NAME: "macos"
-    CONF_HOST: "x86_64-apple-darwin14"
-  script:
-    - *get_release_name
-    - !reference [.add_gitlab_key, script]
-    - !reference [.submodules_mirror_update, script]
-    # Osxcross comes with a no-op symlink for pkg-confg,
-    # remove it and install pkg-config.
-    # TODO: prepare a Docker image which would have it included.
-    - rm -f `which ${CONF_HOST}-pkg-config`
-    - wget https://dl.espressif.com/dl/pkg-config_0.28-1_amd64.deb
-    - dpkg -i ./pkg-config_0.28-1_amd64.deb
+    CONF_HOST: "x86_64-apple-darwin21.1"
+    INSTALL_TARGET: "install-strip"
 
-    # Build bootstrap tcl interpreter.
-    # TODO: include 'tcl' package into the docker image instead
-    - cp -r jimtcl jimtcl-bootstarp
-    - pushd jimtcl-bootstarp/
-    - ./configure --prefix=$PWD/local
-    - make
-    - make install
-    - popd
-    # Cross-compile libusb-1.0 for OSX
-
-    - export LIBUSB_VER=libusb-1.0.21
-    - wget https://dl.espressif.com/dl/$LIBUSB_VER.tar.gz -O $LIBUSB_VER.tar.gz
-    - tar xzf $LIBUSB_VER.tar.gz && rm $LIBUSB_VER.tar.gz
-    - pushd $LIBUSB_VER
-    - ./bootstrap.sh
-    - ./configure --prefix=$PWD/dist --host=${CONF_HOST} --enable-shared=no --enable-static=yes CC=${CONF_HOST}-cc
-    - make
-    - make install
-    - popd
-
-    # Finally, cross-compile OpenOCD
-    - export PKG_CONFIG_PATH=$PWD/$LIBUSB_VER/dist/lib/pkgconfig
-    - ./bootstrap
-    - mkdir _build
-    - pushd _build/
-    - ../configure --prefix=$PWD/../$DIST_INSTALLED_DIR --host=${CONF_HOST} $OPENOCD_CONFIGURE_OPTS LDFLAGS="-Wl,-framework,CoreFoundation -Wl,-framework,IOKit" CC=${CONF_HOST}-cc
-    - make
-    - MAKEFLAGS= make install-strip
-    - popd
-    - *dist_archive
-
-style_check:
-  stage: build
-  image: $CI_DOCKER_REGISTRY/esp32-ci-env
-  tags:
-    - build
-  script:
-    - tools/check-line-endings.sh $PWD
-    - tools/format-esp.sh && git diff --exit-code
+build_macos_arm64:
+  <<: *build_macos_template
+  variables:
+    PLATFORM_NAME: "macos-arm64"
+    CONF_HOST: "aarch64-apple-darwin21.1"
+    INSTALL_TARGET: "install"

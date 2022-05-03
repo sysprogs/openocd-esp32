@@ -25,10 +25,10 @@
 #include "windows.h"
 #endif
 
+#include <jtag/adapter.h>
 #include <jtag/interface.h>
 #include <helper/time_support.h>
 #include "bitq.h"
-#include "jtag_usb_common.h"
 #include "libusb_helper.h"
 
 #define __packed __attribute__((packed))
@@ -657,10 +657,16 @@ static int esp_usb_jtag_init(void)
 	bitq_interface->in_rdy= esp_usb_jtag_in_rdy;
 	bitq_interface->in= esp_usb_jtag_in;
 
-	int r= jtag_libusb_open(vids, pids, esp_usb_jtag_serial, &priv->usb_device, NULL);
+	int r= jtag_libusb_open(vids, pids, &priv->usb_device, NULL);
 	if (r != ERROR_OK) {
 		LOG_ERROR("esp_usb_jtag: could not find or open device!");
 		goto out;
+	}
+
+	/* serial number may have been set by `adapter serial` command */
+	if (adapter_get_required_serial()) {
+		free((void *)esp_usb_jtag_serial);
+		esp_usb_jtag_serial = strdup(adapter_get_required_serial());
 	}
 
 	if (!esp_usb_jtag_serial) {
@@ -668,6 +674,7 @@ static int esp_usb_jtag_init(void)
 		if (r != ERROR_OK)
 			goto out;
 	}
+	LOG_INFO("esp_usb_jtag: serial (%s)", esp_usb_jtag_serial);
 
 	jtag_libusb_set_configuration(priv->usb_device, USB_CONFIGURATION);
 
@@ -875,18 +882,6 @@ COMMAND_HANDLER(esp_usb_jtag_log_cmd)
 	return ERROR_OK;
 }
 
-COMMAND_HANDLER(esp_usb_jtag_serial_cmd)
-{
-	if (CMD_ARGC != 1)
-		return ERROR_COMMAND_SYNTAX_ERROR;
-
-	esp_usb_jtag_serial = strdup(CMD_ARGV[0]);
-	if (!esp_usb_jtag_serial)
-		command_print(CMD, "Could not set ESP USB JTAG serial number: %s.", strerror(errno));
-
-	return ERROR_OK;
-}
-
 COMMAND_HANDLER(esp_usb_jtag_vid_pid)
 {
 	if (CMD_ARGC < 2) {
@@ -948,13 +943,6 @@ static const struct command_registration esp_usb_jtag_subcommands[] = {
 		.mode = COMMAND_EXEC,
 		.help = "Log USB comms to file",
 		.usage = "logfile.txt"
-	},
-	{
-		.name = "serial",
-		.handler = &esp_usb_jtag_serial_cmd,
-		.mode = COMMAND_CONFIG,
-		.help = "Sets serial number of USB device to connect to",
-		.usage = "serial_number"
 	},
 	{
 		.name = "vid_pid",

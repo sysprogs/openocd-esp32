@@ -94,6 +94,12 @@ void abort(void)
 	while (1) ;
 }
 
+/* used in REGI2C_WRITE and REGI2C_WRITE_MASK */
+BaseType_t xPortEnterCriticalTimeout(portMUX_TYPE *mux, BaseType_t timeout)
+{
+	return (BaseType_t)1;
+}
+
 #if STUB_DEBUG
 static int stub_flash_test(void)
 {
@@ -679,6 +685,7 @@ static uint32_t stub_flash_get_size(void)
 		case 0x16: size = 4 * 1024 * 1024; break;
 		case 0x17: size = 8 * 1024 * 1024; break;
 		case 0x18: size = 16 * 1024 * 1024; break;
+		case 0x39: size = 32 * 1024 * 1024; break;
 		default:
 			size = 0;
 	}

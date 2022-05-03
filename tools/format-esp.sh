@@ -12,6 +12,7 @@
 ./tools/uncrustify1.sh src/target/xtensa_debug_module.h
 ./tools/uncrustify1.sh src/target/esp_xtensa.c
 ./tools/uncrustify1.sh src/target/esp_xtensa_apptrace.c
+./tools/uncrustify1.sh src/target/esp_xtensa_semihosting.c
 ./tools/uncrustify1.sh src/target/esp_riscv_apptrace.c
 ./tools/uncrustify1.sh src/target/esp.c
 ./tools/uncrustify1.sh src/target/esp32.c
@@ -22,8 +23,12 @@
 ./tools/uncrustify1.sh src/target/esp32_sysview.c
 ./tools/uncrustify1.sh src/target/esp.h
 ./tools/uncrustify1.sh src/target/esp_xtensa.h
+./tools/uncrustify1.sh src/target/esp_riscv.c
 ./tools/uncrustify1.sh src/target/esp_riscv.h
+./tools/uncrustify1.sh src/target/esp_semihosting.c
+./tools/uncrustify1.sh src/target/esp_semihosting.h
 ./tools/uncrustify1.sh src/target/esp_xtensa_apptrace.h
+./tools/uncrustify1.sh src/target/esp_xtensa_semihosting.h
 ./tools/uncrustify1.sh src/target/esp_riscv_apptrace.h
 ./tools/uncrustify1.sh src/target/esp32.h
 ./tools/uncrustify1.sh src/target/esp32s2.h
@@ -31,8 +36,10 @@
 ./tools/uncrustify1.sh src/target/esp32c3.h
 ./tools/uncrustify1.sh src/target/esp32_apptrace.h
 ./tools/uncrustify1.sh src/target/esp32_sysview.h
-./tools/uncrustify1.sh src/target/riscv/riscv_algorithm.c
-./tools/uncrustify1.sh src/target/riscv/riscv_algorithm.h
+./tools/uncrustify1.sh src/target/esp_algorithm.c
+./tools/uncrustify1.sh src/target/esp_algorithm.h
+./tools/uncrustify1.sh src/target/esp_riscv_algorithm.c
+./tools/uncrustify1.sh src/target/esp_riscv_algorithm.h
 ./tools/uncrustify1.sh src/flash/nor/esp_flash.h
 ./tools/uncrustify1.sh src/flash/nor/esp_riscv.h
 ./tools/uncrustify1.sh src/flash/nor/esp_xtensa.h
@@ -47,6 +54,7 @@
 ./tools/uncrustify1.sh contrib/loaders/flash/esp/esp32/stub_flasher_chip.h
 ./tools/uncrustify1.sh contrib/loaders/flash/esp/esp32/stub_flasher_image.h
 ./tools/uncrustify1.sh contrib/loaders/flash/esp/esp32/stub_flasher_chip.c
+./tools/uncrustify1.sh contrib/loaders/flash/esp/esp32/stub_spiflash_rom_patch.c
 ./tools/uncrustify1.sh contrib/loaders/flash/esp/esp32/stub_sha.c
 ./tools/uncrustify1.sh contrib/loaders/flash/esp/esp32s2/sdkconfig.h
 ./tools/uncrustify1.sh contrib/loaders/flash/esp/esp32s2/stub_flasher_chip.h

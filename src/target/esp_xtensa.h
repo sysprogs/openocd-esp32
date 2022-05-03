@@ -23,24 +23,16 @@
 #define ESP_XTENSA_H
 
 #include "target.h"
-#include "command.h"
+#include <helper/command.h>
 #include "esp.h"
 #include "xtensa.h"
 #include "esp_xtensa_apptrace.h"
 #include "esp_xtensa_semihosting.h"
 
-
-struct esp_xtensa_semihost_data {
-	char *basedir;
-	uint32_t version;		/* sending with drvinfo syscall */
-	bool need_resume;
-	struct esp_semihost_ops *ops;
-};
-
 struct esp_xtensa_common {
 	struct xtensa xtensa;
 	struct esp_common esp;
-	struct esp_xtensa_semihost_data semihost;
+	struct esp_semihost_data semihost;
 	struct esp_xtensa_apptrace_info apptrace;
 };
 
@@ -81,8 +73,6 @@ static inline int esp_xtensa_set_peri_reg_mask(struct target *target,
 
 	return ERROR_OK;
 }
-
-COMMAND_HELPER(esp_xtensa_cmd_semihost_basedir_do, struct esp_xtensa_common *esp_xtensa);
 
 extern const struct command_registration esp_command_handlers[];
 

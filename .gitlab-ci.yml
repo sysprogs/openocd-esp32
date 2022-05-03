@@ -1,6 +1,8 @@
 stages:
+  - pre_check
   - build
   - test
+  - coverage
   - sanitizer_tests
   - sanitizer_checks
   - deploy
@@ -18,6 +20,8 @@ variables:
 
   # Common parameters for the 'make' during CI tests
   MAKEFLAGS: "-j4 --no-keep-going"
+
+  GCOV_BUILD_OPTS: ""
 
   # OpenOCD configuration options
   OPENOCD_CONFIGURE_OPTS: "--disable-doxygen-html --disable-doxygen-pdf --enable-ftdi --enable-jlink --enable-ulink"
@@ -48,17 +52,6 @@ variables:
   TOOLCHAIN_PREFIX: "xtensa-esp32"
   CHIP_NAME: "esp32"
 
-  TEST_APP_IDF_TAG: $CI_COMMIT_REF_NAME
-
-.add_gh_key_remote: &add_gh_key_remote |
-  command -v ssh-agent >/dev/null || exit 1
-  eval $(ssh-agent -s)
-  printf '%s\n' "${GH_PUSH_KEY}" | tr -d '\r' | ssh-add - > /dev/null
-  mkdir -p ~/.ssh && chmod 700 ~/.ssh
-  [[ -f /.dockerenv ]] && echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config || ssh-keyscan -t rsa github.com >> ~/.ssh/known_hosts
-  git remote remove github || true
-  git remote add github ${GH_PUSH_REPO}
-
 # prefix should be like a $CI_PROJECT_NAME, but we cannot use variable here
 .release_tag_filter: &release_tag_filter
   only:
@@ -82,6 +75,16 @@ before_script:
   - set -o errexit; set -o pipefail; set -o nounset
   - test "${DEBUG_SHELL:-''}" = "1" && set -x
 
+.do_osx_code_sign: &do_osx_code_sign |
+  tar -xzf ${DIST_ART_DIR}/$ARCHIVE_NAME -C ${DIST_ART_DIR} && rm ${DIST_ART_DIR}/$ARCHIVE_NAME
+  export TARGET_BINARY="${DIST_ART_DIR}/openocd-esp32/bin/openocd"
+  $PWD/tools/codesign.sh
+  $PWD/tools/notarize.sh
+  pushd ${DIST_ART_DIR}
+  ${ARCHIVE_TOOL} ${ARCHIVE_NAME} openocd-esp32/
+  rm -r openocd-esp32/
+  popd
+
 osx_code_sign:
   stage: pre_release
   <<: *release_tag_filter
@@ -90,31 +93,15 @@ osx_code_sign:
     - macos_shell
   dependencies:
    - build_macos
+   - build_macos_arm64
   artifacts:
     paths:
       - ${DIST_ART_DIR}
   script:
     - ARCHIVE_NAME=$(cat ${DIST_ART_DIR}/dist_name_macos)
-    - tar -xzf ${DIST_ART_DIR}/$ARCHIVE_NAME -C ${DIST_ART_DIR} && rm ${DIST_ART_DIR}/$ARCHIVE_NAME
-    - export TARGET_BINARY="${DIST_ART_DIR}/openocd-esp32/bin/openocd"
-    - $PWD/tools/codesign.sh
-    - $PWD/tools/notarize.sh
-    - cd ${DIST_ART_DIR}
-    - ${ARCHIVE_TOOL} ${ARCHIVE_NAME} openocd-esp32/
-    - rm -r openocd-esp32/
-
-push_master_to_github:
-  stage: deploy
-  image: $CI_DOCKER_REGISTRY/esp32-ci-env
-  only:
-    - master
-  when: on_success
-  dependencies: []
-  variables:
-    GIT_STRATEGY: clone
-  script:
-    - *add_gh_key_remote
-    - git push github HEAD:master
+    - *do_osx_code_sign
+    - ARCHIVE_NAME=$(cat ${DIST_ART_DIR}/dist_name_macos-arm64)
+    - *do_osx_code_sign
 
 release_tag_draft:
   stage: release_stage1
@@ -169,7 +156,7 @@ upload_to_http:
     - master
   allow_failure: true
   dependencies:
-    - build_linux_armel
+    - build_linux_armhf
   artifacts:
     reports:
       dotenv: build.env
@@ -177,7 +164,7 @@ upload_to_http:
     - *use_ci_tools
   script:
     - cit_add_ssh_key "${HTTP_UPLOAD_KEY}"
-    - ARCHIVE_NAME=$(cat ${DIST_ART_DIR}/dist_name_linux-armel)
+    - ARCHIVE_NAME=$(cat ${DIST_ART_DIR}/dist_name_linux-armhf)
     - pushd ${DIST_ART_DIR}
     - scp ${ARCHIVE_NAME} ${HTTP_UPLOAD_DIR}/openocd/
     - popd
@@ -216,9 +203,49 @@ test_premajor_idf_rel_examples:
     branch: ${TEST_APP_PREMAJOR_IDF_RELEASE_BRANCH}
     strategy: depend
 
+create_coverage_reports:
+  stage: coverage
+  image: $CI_DOCKER_REGISTRY/rpi-test-env
+  tags:
+    - arm
+  allow_failure: true
+  artifacts:
+    paths:
+      - dist/lcov_all_report.tar.gz
+    reports:
+      metrics: cov_infos/metrics.txt
+    when: always
+    expire_in: 1 week
+  script:
+    - mkdir -p cov_infos
+    - mkdir -p dist
+    # Below lines copies all .info files into cov_infos folder
+    - >
+      folder_list=$(ls -d build_test_app*);
+      for each_folder in $folder_list ;
+      do
+      cp ${each_folder}/*.info cov_infos;
+      done
+    - ls -la cov_infos/
+    # Creating a html report of coverage files.
+    - genhtml --ignore-errors source cov_infos/*.info -o lcov_html_report/
+    - tar czf dist/lcov_all_report.tar.gz lcov_html_report/
+    # Below lines collecting all coverage file names with '-a' flag for lcov merge command.
+    - >
+      FILES="" ;
+      for each_file in cov_infos/*.info ;
+      do
+      FILES+=" -a ${each_file}" ;
+      done
+    - lcov ${FILES} -o cov_infos/merged.info
+    # Line in below creates a txt file from merged coverage file which includes coverage percentages.
+    - lcov --rc lcov_list_width=150 --list cov_infos/merged.info > cov_infos/metrics_input.txt
+    - python3 tools/list_to_metrics.py --file cov_infos/metrics_input.txt
+
 include:
   - '.gitlab/ci/util.yml'
   - '.gitlab/ci/build.yml'
   - '.gitlab/ci/build-test-app.yml'
   - '.gitlab/ci/test.yml'
   - '.gitlab/ci/test-sanitizers.yml'
+  - '.gitlab/ci/pre-check.yml'

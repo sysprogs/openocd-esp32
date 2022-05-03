@@ -23,7 +23,7 @@
 #endif
 #include "esp_riscv.h"
 #include <target/esp_riscv_apptrace.h>
-#include <target/riscv/riscv_algorithm.h>
+#include <target/esp_riscv_algorithm.h>
 
 static const struct esp_flash_apptrace_hw s_esp_riscv_flash_apptrace_hw = {
 	.info_init = esp_riscv_apptrace_info_init,
@@ -48,5 +48,4 @@ int esp_riscv_flash_init(struct esp_riscv_flash_bank *esp_info, uint32_t sec_sz,
 	return esp_flash_init(&esp_info->esp, sec_sz, run_func_image, is_irom_address,
 		is_drom_address, get_stub, &s_esp_riscv_flash_apptrace_hw,
 		&riscv_algo_hw);
-
 }

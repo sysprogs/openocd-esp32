@@ -39,6 +39,10 @@
     volatile static const int _nm_ ## _break_ln = __LINE__; \
     s_tmp_ln = _nm_ ## _break_ln;
 
+#define TEST_BREAK_LOC_EX(_nm_, _shft_)  \
+    volatile static const int _nm_ ## _break_ln = __LINE__ + _shft_; \
+    s_tmp_ln = _nm_ ## _break_ln;
+
 // used to prevent linker from optimizing out the variables holding BP line numbers
 volatile static int s_tmp_ln = 0;
 
@@ -51,9 +55,6 @@ typedef enum {
 } ut_result_t;
 
 typedef ut_result_t (*test_func_t)(int test_num);
-
-void test_timer_init(int timer_group, int timer_idx, uint32_t period);
-void test_timer_rearm(int timer_group, int timer_idx);
 
 /* Can run 'make menuconfig' to choose the GPIO to blink,
    or you can edit the following line and set a number here.
