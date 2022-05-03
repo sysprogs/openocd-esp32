@@ -103,14 +103,13 @@ add_library(target
 	xtensa_algorithm.c
 	esp_xtensa.c
 	esp_xtensa_apptrace.c
-	xtensa_semihosting.c
+	esp_xtensa_semihosting.c
 	esp_xtensa_semihosting.c
 	esp_xtensa_smp.c
 	esp32s3.c
 	esp_riscv_apptrace.c
 	esp32_sysview.c
 	esp32c3.c
-	riscv/riscv_algorithm.c
 	a64_disassembler.c
 	adi_v5_dapdirect.c
 	arc.c
@@ -123,7 +122,11 @@ add_library(target
 	rtt.c
 	esp_riscv.c
 	aarch64.c
-	mips_mips64.c)
+	mips_mips64.c
+	arm_tpiu_swo.c
+	esp_algorithm.c
+	esp_semihosting.c
+	esp_riscv_algorithm.c)
 target_include_directories(target PRIVATE ../..)
 	
 SET_TARGET_PROPERTIES(target PROPERTIES COMPILE_FLAGS -I${CMAKE_CURRENT_BINARY_DIR})

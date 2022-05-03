@@ -3772,7 +3772,6 @@ COMMAND_HANDLER(handle_mbatch_command)
 	return ERROR_OK;
 }
 
-static COMMAND_HELPER(parse_load_image_command_CMD_ARGV, struct image *image,
 static COMMAND_HELPER(parse_load_image_command, struct image *image,
 		target_addr_t *min_address, target_addr_t *max_address)
 {

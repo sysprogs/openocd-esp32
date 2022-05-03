@@ -23,7 +23,6 @@ add_library(ocdusbblaster STATIC drivers/usb_blaster/usb_blaster.c drivers/usb_b
 add_library(ocdjtagdrivers STATIC
 	drivers/driver.c
 	drivers/libusb_helper.c
-	drivers/usb_common.c
 	drivers/ftdi.c
 	drivers/mpsse.c
 	drivers/usbprog.c
@@ -47,7 +46,6 @@ add_library(ocdjtagdrivers STATIC
 	drivers/cmsis_dap_usb_bulk.c
 	drivers/cmsis_dap_usb_hid.c
 	drivers/xds110.c
-	drivers/jtag_usb_common.c
 	drivers/esp_usb_jtag.c
 	drivers/bitq.c)
 

@@ -103,17 +103,6 @@ static int semihosting_common_fileio_info(struct target *target,
 static int semihosting_common_fileio_end(struct target *target, int result,
 	int fileio_errno, bool ctrl_c);
 
-static int semihosting_read_fields(struct target *target, size_t number,
-	uint8_t *fields);
-static int semihosting_write_fields(struct target *target, size_t number,
-	uint8_t *fields);
-static uint64_t semihosting_get_field(struct target *target, size_t index,
-	uint8_t *fields);
-static void semihosting_set_field(struct target *target, uint64_t value,
-	size_t index,
-	uint8_t *fields);
-static char *semihosting_common_get_file_name(struct target * target, target_addr_t addr_fn, size_t len, uint32_t * mode);
-
 /* Attempts to include gdb_server.h failed. */
 extern int gdb_actual_connections;
 

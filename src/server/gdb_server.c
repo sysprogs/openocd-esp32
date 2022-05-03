@@ -3454,7 +3454,7 @@ static int gdb_input_inner(struct connection *connection)
 	int retval;
 	struct gdb_connection *gdb_con = connection->priv;
 	static bool warn_use_ext;
-    
+
 	target = get_target_from_connection(connection);
 
 	/* drain input buffer. If one of the packets fail, then an error

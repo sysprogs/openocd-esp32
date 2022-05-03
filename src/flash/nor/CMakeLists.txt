@@ -75,6 +75,8 @@ add_library(ocdflashnor
 	renesas_rpchf.c
 	sfdp.c
 	sh_qspi.c
-	stmqspi.c)
+	stmqspi.c
+	npcx.c
+	rp2040.c)
 
 target_include_directories(ocdflashnor PRIVATE ../../..)
