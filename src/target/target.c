@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 /***************************************************************************
  *   Copyright (C) 2005 by Dominic Rath                                    *
  *   Dominic.Rath@gmx.de                                                   *
@@ -22,19 +24,6 @@
  *                                                                         *
  *   Copyright (C) 2011 Andreas Fritiofson                                 *
  *   andreas.fritiofson@gmail.com                                          *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program.  If not, see <http://www.gnu.org/licenses/>. *
  ***************************************************************************/
 
 #ifdef HAVE_CONFIG_H
@@ -57,6 +46,7 @@
 #include "transport/transport.h"
 #include "arm_cti.h"
 #include "smp.h"
+#include "semihosting_common.h"
 
 /* default halt wait timeout (ms) */
 #define DEFAULT_HALT_TIMEOUT 5000
@@ -101,13 +91,13 @@ extern struct target_type dsp5680xx_target;
 extern struct target_type testee_target;
 extern struct target_type avr32_ap7k_target;
 extern struct target_type hla_target;
-extern struct target_type nds32_v2_target;
-extern struct target_type nds32_v3_target;
-extern struct target_type nds32_v3m_target;
 extern struct target_type esp32_target;
 extern struct target_type esp32s2_target;
 extern struct target_type esp32s3_target;
+extern struct target_type esp32c2_target;
+extern struct target_type esp32h2_target;
 extern struct target_type esp32c3_target;
+extern struct target_type esp32c6_target;
 extern struct target_type or1k_target;
 extern struct target_type quark_x10xx_target;
 extern struct target_type quark_d20xx_target;
@@ -141,13 +131,13 @@ static struct target_type *target_types[] = {
 	&testee_target,
 	&avr32_ap7k_target,
 	&hla_target,
-	&nds32_v2_target,
-	&nds32_v3_target,
-	&nds32_v3m_target,
 	&esp32_target,
 	&esp32s2_target,
 	&esp32s3_target,
+	&esp32c2_target,
+	&esp32h2_target,
 	&esp32c3_target,
+	&esp32c6_target,
 	&or1k_target,
 	&quark_x10xx_target,
 	&quark_d20xx_target,
@@ -246,14 +236,14 @@ static const struct jim_nvp nvp_target_event[] = {
 
 	{ .value = TARGET_EVENT_TRACE_CONFIG, .name = "trace-config" },
 
-	{ .value = TARGET_EVENT_SEMIHOSTING_USER_CMD_0x100, .name = "semihosting-user-cmd-0x100" },
-	{ .value = TARGET_EVENT_SEMIHOSTING_USER_CMD_0x101, .name = "semihosting-user-cmd-0x101" },
-	{ .value = TARGET_EVENT_SEMIHOSTING_USER_CMD_0x102, .name = "semihosting-user-cmd-0x102" },
-	{ .value = TARGET_EVENT_SEMIHOSTING_USER_CMD_0x103, .name = "semihosting-user-cmd-0x103" },
-	{ .value = TARGET_EVENT_SEMIHOSTING_USER_CMD_0x104, .name = "semihosting-user-cmd-0x104" },
-	{ .value = TARGET_EVENT_SEMIHOSTING_USER_CMD_0x105, .name = "semihosting-user-cmd-0x105" },
-	{ .value = TARGET_EVENT_SEMIHOSTING_USER_CMD_0x106, .name = "semihosting-user-cmd-0x106" },
-	{ .value = TARGET_EVENT_SEMIHOSTING_USER_CMD_0x107, .name = "semihosting-user-cmd-0x107" },
+	{ .value = TARGET_EVENT_SEMIHOSTING_USER_CMD_0X100, .name = "semihosting-user-cmd-0x100" },
+	{ .value = TARGET_EVENT_SEMIHOSTING_USER_CMD_0X101, .name = "semihosting-user-cmd-0x101" },
+	{ .value = TARGET_EVENT_SEMIHOSTING_USER_CMD_0X102, .name = "semihosting-user-cmd-0x102" },
+	{ .value = TARGET_EVENT_SEMIHOSTING_USER_CMD_0X103, .name = "semihosting-user-cmd-0x103" },
+	{ .value = TARGET_EVENT_SEMIHOSTING_USER_CMD_0X104, .name = "semihosting-user-cmd-0x104" },
+	{ .value = TARGET_EVENT_SEMIHOSTING_USER_CMD_0X105, .name = "semihosting-user-cmd-0x105" },
+	{ .value = TARGET_EVENT_SEMIHOSTING_USER_CMD_0X106, .name = "semihosting-user-cmd-0x106" },
+	{ .value = TARGET_EVENT_SEMIHOSTING_USER_CMD_0X107, .name = "semihosting-user-cmd-0x107" },
 
 	{ .name = NULL, .value = -1 }
 };
@@ -666,10 +656,10 @@ int target_resume(struct target *target, int current, target_addr_t address,
 	 * Disable polling during resume() to guarantee the execution of handlers
 	 * in the correct order.
 	 */
-	bool save_poll = jtag_poll_get_enabled();
-	jtag_poll_set_enabled(false);
+	bool save_poll_mask = jtag_poll_mask();
 	retval = target->type->resume(target, current, address, handle_breakpoints, debug_execution);
-	jtag_poll_set_enabled(save_poll);
+	jtag_poll_unmask(save_poll_mask);
+
 	if (retval != ERROR_OK)
 		return retval;
 
@@ -697,14 +687,12 @@ static int target_process_reset(struct command_invocation *cmd, enum target_rese
 	 * more predictable, i.e. dr/irscan & pathmove in events will
 	 * not have JTAG operations injected into the middle of a sequence.
 	 */
-	bool save_poll = jtag_poll_get_enabled();
-
-	jtag_poll_set_enabled(false);
+	bool save_poll_mask = jtag_poll_mask();
 
 	sprintf(buf, "ocd_process_reset %s", n->name);
 	retval = Jim_Eval(cmd->ctx->interp, buf);
 
-	jtag_poll_set_enabled(save_poll);
+	jtag_poll_unmask(save_poll_mask);
 
 	if (retval != JIM_OK) {
 		Jim_MakeErrorMessage(cmd->ctx->interp);
@@ -2083,7 +2071,7 @@ static int alloc_working_area_try_do(struct target *target, struct working_area_
 		struct working_area *new_wa = malloc(sizeof(*new_wa));
 		if (new_wa) {
 			new_wa->next = NULL;
-			new_wa->size = wa_cfg->size & ~3UL; /* 4-byte align */
+			new_wa->size = ALIGN_DOWN(wa_cfg->size, 4); /* 4-byte align */
 			new_wa->address = wa_cfg->area;
 			new_wa->backup = NULL;
 			new_wa->user = NULL;
@@ -2094,8 +2082,7 @@ static int alloc_working_area_try_do(struct target *target, struct working_area_
 	}
 
 	/* only allocate multiples of 4 byte */
-	if (size % 4)
-		size = (size + 3) & (~3UL);
+	size = ALIGN_UP(size, 4);
 
 	struct working_area *c = wa_cfg->areas;
 
@@ -2282,7 +2269,7 @@ static uint32_t get_working_area_avail_do(struct target *target, struct working_
 	uint32_t max_size = 0;
 
 	if (!c)
-		return wa_cfg->size;
+		return ALIGN_DOWN(wa_cfg->size, 4);
 
 	while (c) {
 		if (c->free && max_size < c->size)
@@ -2309,6 +2296,8 @@ static void target_destroy(struct target *target)
 	if (target->type->deinit_target)
 		target->type->deinit_target(target);
 
+	if (target->semihosting)
+		free(target->semihosting->basedir);
 	free(target->semihosting);
 
 	jtag_unregister_event_callback(jtag_enable_callback, target);
@@ -2639,7 +2628,7 @@ int target_blank_check_memory(struct target *target,
 	}
 
 	if (!target->type->blank_check_memory)
-		return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
+		return ERROR_NOT_IMPLEMENTED;
 
 	return target->type->blank_check_memory(target, blocks, num_blocks, erased_value);
 }
@@ -3383,7 +3372,7 @@ COMMAND_HANDLER(handle_soft_reset_halt_command)
 {
 	struct target *target = get_current_target(CMD_CTX);
 
-	LOG_USER("requesting target halt and executing a soft reset");
+	LOG_TARGET_INFO(target, "requesting target halt and executing a soft reset");
 
 	target_soft_reset_halt(target);
 
@@ -4399,11 +4388,19 @@ static void write_gmon(uint32_t *samples, uint32_t sample_num, const char *filen
 
 		/* max should be (largest sample + 1)
 		 * Refer to binutils/gprof/hist.c (find_histogram_for_pc) */
-		max++;
+		if (max < UINT32_MAX)
+			max++;
+
+		/* gprof requires (max - min) >= 2 */
+		while ((max - min) < 2) {
+			if (max < UINT32_MAX)
+				max++;
+			else
+				min--;
+		}
 	}
 
-	int address_space = max - min;
-	assert(address_space >= 2);
+	uint32_t address_space = max - min;
 
 	/* FIXME: What is the reasonable number of buckets?
 	 * The profiling result will be more accurate if there are enough buckets. */
@@ -4479,6 +4476,19 @@ COMMAND_HANDLER(handle_profile_command)
 
 	COMMAND_PARSE_NUMBER(u32, CMD_ARGV[0], offset);
 
+	uint32_t start_address = 0;
+	uint32_t end_address = 0;
+	bool with_range = false;
+	if (CMD_ARGC == 4) {
+		with_range = true;
+		COMMAND_PARSE_NUMBER(u32, CMD_ARGV[2], start_address);
+		COMMAND_PARSE_NUMBER(u32, CMD_ARGV[3], end_address);
+		if (start_address > end_address || (end_address - start_address) < 2) {
+			command_print(CMD, "Error: end - start < 2");
+			return ERROR_COMMAND_ARGUMENT_INVALID;
+		}
+	}
+
 	uint32_t *samples = malloc(sizeof(uint32_t) * MAX_PROFILE_SAMPLE_NUM);
 	if (!samples) {
 		LOG_ERROR("No memory to store samples.");
@@ -4529,15 +4539,6 @@ COMMAND_HANDLER(handle_profile_command)
 	if (retval != ERROR_OK) {
 		free(samples);
 		return retval;
-	}
-
-	uint32_t start_address = 0;
-	uint32_t end_address = 0;
-	bool with_range = false;
-	if (CMD_ARGC == 4) {
-		with_range = true;
-		COMMAND_PARSE_NUMBER(u32, CMD_ARGV[2], start_address);
-		COMMAND_PARSE_NUMBER(u32, CMD_ARGV[3], end_address);
 	}
 
 	write_gmon(samples, num_of_samples, CMD_ARGV[1],
@@ -4865,7 +4866,7 @@ static int target_jim_read_memory(Jim_Interp *interp, int argc,
 				break;
 			}
 
-			char value_buf[11];
+			char value_buf[19];
 			snprintf(value_buf, sizeof(value_buf), "0x%" PRIx64, v);
 
 			Jim_ListAppendElement(interp, result_list,
@@ -5367,10 +5368,18 @@ static int target_jim_set_reg(Jim_Interp *interp, int argc,
 	}
 
 	int tmp;
+#if JIM_VERSION >= 80
 	Jim_Obj **dict = Jim_DictPairs(interp, argv[1], &tmp);
 
 	if (!dict)
 		return JIM_ERR;
+#else
+	Jim_Obj **dict;
+	int ret = Jim_DictPairs(interp, argv[1], &dict, &tmp);
+
+	if (ret != JIM_OK)
+		return ret;
+#endif
 
 	const unsigned int length = tmp;
 	struct command_context *cmd_ctx = current_command_context(interp);
@@ -6629,15 +6638,56 @@ static int jim_target_names(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
 	return JIM_OK;
 }
 
+static struct target_list *
+__attribute__((warn_unused_result))
+create_target_list_node(Jim_Obj *const name) {
+	int len;
+	const char *targetname = Jim_GetString(name, &len);
+	struct target *target = get_target(targetname);
+	LOG_DEBUG("%s ", targetname);
+	if (!target)
+		return NULL;
+
+	struct target_list *new = malloc(sizeof(struct target_list));
+	if (!new) {
+		LOG_ERROR("Out of memory");
+		return new;
+	}
+
+	new->target = target;
+	return new;
+}
+
+/* TODO: If we return the last smp target, single core ESP32 test_thread fails. */
+static int get_target_with_common_rtos_type(struct list_head *lh, struct target **result)
+{
+	struct target *target = NULL;
+	struct target *first_target = NULL;
+	struct target_list *curr;
+	foreach_smp_target(curr, lh) {
+		struct rtos *curr_rtos = curr->target->rtos;
+		if (curr_rtos) {
+			if (target && target->rtos && target->rtos->type != curr_rtos->type) {
+				LOG_ERROR("Different rtos types in members of one smp target!");
+				return JIM_ERR;
+			}
+			target = curr->target;
+			if (!first_target)
+				first_target = target;
+		}
+	}
+	*result = first_target;
+	return JIM_OK;
+}
+
 static int jim_target_smp(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
 {
-	int i;
-	const char *targetname;
-	int retval, len;
-	struct target *target = NULL;
-	struct target_list *head, *new;
+	static int smp_group = 1;
 
-	retval = 0;
+	if (argc == 1) {
+		LOG_DEBUG("Empty SMP target");
+		return JIM_OK;
+	}
 	LOG_DEBUG("%d", argc);
 	/* argv[1] = target to associate in smp
 	 * argv[2] = target to associate in smp
@@ -6651,31 +6701,24 @@ static int jim_target_smp(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
 	}
 	INIT_LIST_HEAD(lh);
 
-	for (i = 1; i < argc; i++) {
-
-		targetname = Jim_GetString(argv[i], &len);
-		target = get_target(targetname);
-		LOG_DEBUG("%s ", targetname);
-		if (target) {
-			new = malloc(sizeof(struct target_list));
-			new->target = target;
+	for (int i = 1; i < argc; i++) {
+		struct target_list *new = create_target_list_node(argv[i]);
+		if (new)
 			list_add_tail(&new->lh, lh);
-		}
 	}
 	/*  now parse the list of cpu and put the target in smp mode*/
-	foreach_smp_target(head, lh) {
-		target = head->target;
-		target->smp = 1;
+	struct target_list *curr;
+	foreach_smp_target(curr, lh) {
+		struct target *target = curr->target;
+		target->smp = smp_group;
 		target->smp_targets = lh;
 	}
+	smp_group++;
 
-	if (target && target->rtos) {
-		//TODO-UPS patch for the upstream
-		foreach_smp_target(head, lh) {
-			retval = rtos_smp_init(head->target);  
-			break;
-		}
-	}
+	struct target *rtos_target;
+	int retval = get_target_with_common_rtos_type(lh, &rtos_target);
+	if (retval == JIM_OK && rtos_target)
+		retval = rtos_smp_init(rtos_target);
 
 	return retval;
 }

@@ -29,6 +29,7 @@
 #include "rtc_clk_common.h"
 #include "esp_app_trace_membufs_proto.h"
 #include "stub_rom_chip.h"
+#include "stub_logger.h"
 #include "stub_flasher_int.h"
 #include "stub_flasher_chip.h"
 #include "stub_flasher.h"
@@ -92,7 +93,7 @@ void vPortExitCritical(void)
 {
 }
 
-#if STUB_LOG_LOCAL_LEVEL > STUB_LOG_INFO
+#if STUB_LOG_ENABLE == 1
 void stub_print_cache_mmu_registers(void)
 {
 	uint32_t icache_ctrl1_reg = REG_READ(EXTMEM_ICACHE_CTRL1_REG);
@@ -197,42 +198,42 @@ int stub_rtc_clk_cpu_freq_get_config(rtc_cpu_freq_config_t *out_config)
 	uint32_t freq_mhz;
 	uint32_t soc_clk_sel = REG_GET_FIELD(SYSTEM_SYSCLK_CONF_REG, SYSTEM_SOC_CLK_SEL);
 	switch (soc_clk_sel) {
-		case DPORT_SOC_CLK_SEL_XTAL: {
-			source = RTC_CPU_FREQ_SRC_XTAL;
-			div = REG_GET_FIELD(SYSTEM_SYSCLK_CONF_REG, SYSTEM_PRE_DIV_CNT) + 1;
-			source_freq_mhz = (uint32_t) stub_rtc_clk_xtal_freq_get();
-			freq_mhz = source_freq_mhz / div;
+	case DPORT_SOC_CLK_SEL_XTAL: {
+		source = RTC_CPU_FREQ_SRC_XTAL;
+		div = REG_GET_FIELD(SYSTEM_SYSCLK_CONF_REG, SYSTEM_PRE_DIV_CNT) + 1;
+		source_freq_mhz = (uint32_t)stub_rtc_clk_xtal_freq_get();
+		freq_mhz = source_freq_mhz / div;
+	}
+	break;
+	case DPORT_SOC_CLK_SEL_PLL: {
+		source = RTC_CPU_FREQ_SRC_PLL;
+		uint32_t cpuperiod_sel = REG_GET_FIELD(SYSTEM_CPU_PER_CONF_REG,
+				SYSTEM_CPUPERIOD_SEL);
+		uint32_t pllfreq_sel = REG_GET_FIELD(SYSTEM_CPU_PER_CONF_REG,
+				SYSTEM_PLL_FREQ_SEL);
+		source_freq_mhz = (pllfreq_sel) ? RTC_PLL_FREQ_480M : RTC_PLL_FREQ_320M;
+		if (cpuperiod_sel == DPORT_CPUPERIOD_SEL_80) {
+			div = (source_freq_mhz == RTC_PLL_FREQ_480M) ? 6 : 4;
+			freq_mhz = 80;
+		} else if (cpuperiod_sel == DPORT_CPUPERIOD_SEL_160) {
+			div = (source_freq_mhz == RTC_PLL_FREQ_480M) ? 3 : 2;
+			div = 3;
+			freq_mhz = 160;
+		} else {
+			/* unsupported frequency configuration */
+			return -1;
 		}
 		break;
-		case DPORT_SOC_CLK_SEL_PLL: {
-			source = RTC_CPU_FREQ_SRC_PLL;
-			uint32_t cpuperiod_sel = REG_GET_FIELD(SYSTEM_CPU_PER_CONF_REG,
-				SYSTEM_CPUPERIOD_SEL);
-			uint32_t pllfreq_sel = REG_GET_FIELD(SYSTEM_CPU_PER_CONF_REG,
-				SYSTEM_PLL_FREQ_SEL);
-			source_freq_mhz = (pllfreq_sel) ? RTC_PLL_FREQ_480M : RTC_PLL_FREQ_320M;
-			if (cpuperiod_sel == DPORT_CPUPERIOD_SEL_80) {
-				div = (source_freq_mhz == RTC_PLL_FREQ_480M) ? 6 : 4;
-				freq_mhz = 80;
-			} else if (cpuperiod_sel == DPORT_CPUPERIOD_SEL_160) {
-				div = (source_freq_mhz == RTC_PLL_FREQ_480M) ? 3 : 2;
-				div = 3;
-				freq_mhz = 160;
-			} else {
-				/* unsupported frequency configuration */
-				return -1;
-			}
-			break;
-		}
-		case DPORT_SOC_CLK_SEL_8M:
-			source = RTC_CPU_FREQ_SRC_8M;
-			source_freq_mhz = 8;
-			div = 1;
-			freq_mhz = source_freq_mhz;
-			break;
-		default:
-			/* unsupported frequency configuration */
-			return -2;
+	}
+	case DPORT_SOC_CLK_SEL_8M:
+		source = RTC_CPU_FREQ_SRC_8M;
+		source_freq_mhz = 8;
+		div = 1;
+		freq_mhz = source_freq_mhz;
+		break;
+	default:
+		/* unsupported frequency configuration */
+		return -2;
 	}
 	*out_config = (rtc_cpu_freq_config_t) {
 		.source = source,
@@ -255,8 +256,9 @@ int stub_cpu_clock_configure(int cpu_freq_mhz)
 		old_config.freq_mhz = 0;
 	}
 
-#if STUB_LOG_LOCAL_LEVEL > STUB_LOG_NONE
-	uart_tx_wait_idle(CONFIG_CONSOLE_UART_NUM);
+#if STUB_LOG_ENABLE == 1
+	if (stub_get_log_dest() == STUB_LOG_DEST_UART)
+		uart_tx_wait_idle(CONFIG_CONSOLE_UART_NUM);
 #endif
 
 	/* set to maximum possible value */
@@ -279,17 +281,17 @@ int stub_cpu_clock_configure(int cpu_freq_mhz)
 	return old_config.freq_mhz;
 }
 
-#if STUB_LOG_LOCAL_LEVEL > STUB_LOG_NONE
-void stub_uart_console_configure()
+#if STUB_LOG_ENABLE == 1
+void stub_uart_console_configure(int dest)
 {
 	extern bool g_uart_print;
 	/* set the default parameter to UART module, but don't enable RX interrupt */
 	uartAttach(NULL);
 	/* first enable uart0 as printf channel */
 	uint32_t clock = ets_get_apb_freq();
-	ets_update_cpu_frequency(clock/1000000);
+	ets_update_cpu_frequency(clock / 1000000);
 
-	Uart_Init(ets_efuse_get_uart_print_channel(), UART_CLK_FREQ_ROM);
+	Uart_Init(0, UART_CLK_FREQ_ROM);
 	/* install to print later
 	 * Non-Flash Boot can print
 	 * Flash Boot can print when RTC_CNTL_STORE4_REG bit0 is 0 (can be 1 after deep sleep, software reset) and printf boot.
@@ -302,7 +304,7 @@ void stub_uart_console_configure()
 
 uint32_t stub_esp_clk_cpu_freq(void)
 {
-	return (CONFIG_ESP32C3_DEFAULT_CPU_FREQ_MHZ * 1000000);
+	return CONFIG_ESP32C3_DEFAULT_CPU_FREQ_MHZ * 1000000;
 }
 
 /* override apptrace control block advertising func, IDF's implementation issues syscall */
@@ -471,14 +473,12 @@ esp_flash_enc_mode_t stub_get_flash_encryption_mode(void)
 				if (dis_dl_enc && dis_dl_icache)
 					s_mode = ESP_FLASH_ENC_MODE_RELEASE;
 			}
-
-		} else
+		} else {
 			s_mode = ESP_FLASH_ENC_MODE_DISABLED;
-
+		}
 		s_first = false;
+		STUB_LOGD("flash_encryption_mode: %d\n", s_mode);
 	}
-
-	STUB_LOGD("flash_encryption_mode: %d\n", s_mode);
 
 	return s_mode;
 }

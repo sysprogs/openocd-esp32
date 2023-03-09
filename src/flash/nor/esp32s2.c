@@ -1,22 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+
 /***************************************************************************
  *   ESP32-S2 flash driver for OpenOCD                                     *
  *   Copyright (C) 2017 Espressif Systems Ltd.                             *
- *   Author: Alexey Gerenkov <alexey@espressif.com>                        *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.           *
  ***************************************************************************/
 
 #ifdef HAVE_CONFIG_H
@@ -24,12 +10,17 @@
 #endif
 
 #include "imp.h"
-#include <target/xtensa_algorithm.h>
-#include <target/esp_xtensa_apptrace.h>
-#include <target/esp_xtensa.h>
-#include <target/esp32s2.h>
+#include <target/xtensa/xtensa_algorithm.h>
+#include <target/espressif/esp_xtensa_apptrace.h>
+#include <target/espressif/esp_xtensa.h>
 #include "esp_xtensa.h"
 #include "contrib/loaders/flash/esp/esp32s2/stub_flasher_image.h"
+#include "contrib/loaders/flash/esp/esp32s2/stub_flasher_image_wlog.h"
+
+#define ESP32_S2_DROM_LOW   0x3f000000
+#define ESP32_S2_DROM_HIGH  0x3ff80000
+#define ESP32_S2_IROM_LOW   0x40080000
+#define ESP32_S2_IROM_HIGH  0x40800000
 
 #define ESP32_S2_FLASH_SECTOR_SIZE 4096
 
@@ -43,6 +34,12 @@ static const uint8_t esp32s2_flasher_stub_code[] = {
 static const uint8_t esp32s2_flasher_stub_data[] = {
 #include "contrib/loaders/flash/esp/esp32s2/stub_flasher_data.inc"
 };
+static const uint8_t esp32s2_flasher_stub_code_wlog[] = {
+#include "contrib/loaders/flash/esp/esp32s2/stub_flasher_code_wlog.inc"
+};
+static const uint8_t esp32s2_flasher_stub_data_wlog[] = {
+#include "contrib/loaders/flash/esp/esp32s2/stub_flasher_data_wlog.inc"
+};
 
 static struct esp_flasher_stub_config s_esp32s2_stub_cfg = {
 	.code = esp32s2_flasher_stub_code,
@@ -54,26 +51,34 @@ static struct esp_flasher_stub_config s_esp32s2_stub_cfg = {
 	.first_user_reg_param = XTENSA_STUB_ARGS_FUNC_START
 };
 
+static const struct esp_flasher_stub_config s_esp32s2_stub_cfg_wlog = {
+	.code = esp32s2_flasher_stub_code_wlog,
+	.code_sz = sizeof(esp32s2_flasher_stub_code_wlog),
+	.data = esp32s2_flasher_stub_data_wlog,
+	.data_sz = sizeof(esp32s2_flasher_stub_data_wlog),
+	.entry_addr = ESP32S2_STUB_WLOG_ENTRY_ADDR,
+	.bss_sz = ESP32S2_STUB_WLOG_BSS_SIZE,
+	.first_user_reg_param = XTENSA_STUB_ARGS_FUNC_START,
+	.log_buff_addr = ESP32S2_STUB_WLOG_LOG_ADDR,
+	.log_buff_size = ESP32S2_STUB_WLOG_LOG_SIZE
+};
+
 static bool esp32s2_is_irom_address(target_addr_t addr)
 {
-	return (addr >= ESP32_S2_IROM_LOW && addr < ESP32_S2_IROM_HIGH);
+	return addr >= ESP32_S2_IROM_LOW && addr < ESP32_S2_IROM_HIGH;
 }
 
 static bool esp32s2_is_drom_address(target_addr_t addr)
 {
-	return (addr >= ESP32_S2_DROM_LOW && addr < ESP32_S2_DROM_HIGH);
+	return addr >= ESP32_S2_DROM_LOW && addr < ESP32_S2_DROM_HIGH;
 }
 
 static const struct esp_flasher_stub_config *esp32s2_get_stub(struct flash_bank *bank)
 {
-	struct esp32s2_common *esp32 = target_to_esp32s2(bank->target);
-
-	if (esp32->chip_rev == ESP32_S2_REV_BETA) {
-		LOG_WARNING("esp32s2-beta support is removed. Using esp32s2 stub instead");
-		return &s_esp32s2_stub_cfg;
-	} else if (esp32->chip_rev == ESP32_S2_REV_0)
-		return &s_esp32s2_stub_cfg;
-	return NULL;
+	struct esp_flash_bank *esp_info = bank->driver_priv;
+	if (esp_info->stub_log_enabled)
+		return &s_esp32s2_stub_cfg_wlog;
+	return &s_esp32s2_stub_cfg;
 }
 
 /* flash bank <bank_name> esp32 <base> <size> 0 0 <target#>
@@ -125,14 +130,14 @@ struct flash_driver esp32s2_flash = {
 	.name = "esp32s2",
 	.commands = esp32s2_command_handlers,
 	.flash_bank_command = esp32s2_flash_bank_command,
-	.erase = esp_flash_erase,
-	.protect = esp_flash_protect,
-	.write = esp_flash_write,
-	.read = esp_flash_read,
-	.probe = esp_flash_probe,
-	.auto_probe = esp_flash_auto_probe,
-	.erase_check = esp_flash_blank_check,
-	.protect_check = esp_flash_protect_check,
+	.erase = esp_algo_flash_erase,
+	.protect = esp_algo_flash_protect,
+	.write = esp_algo_flash_write,
+	.read = esp_algo_flash_read,
+	.probe = esp_algo_flash_probe,
+	.auto_probe = esp_algo_flash_auto_probe,
+	.erase_check = esp_algo_flash_blank_check,
+	.protect_check = esp_algo_flash_protect_check,
 	.info = esp32s2_get_info,
 	.free_driver_priv = default_flash_free_driver_priv,
 };

@@ -90,14 +90,15 @@ class ApptraceTestsImpl:
         trace_file.close()
         trace_src = 'file://%s' % trace_file_name
         reader = reader_create(trace_src, 1.0)
-        # 0 ms poll period, stop when 800 bytes are received or due to 10 s timeout
-        self.oocd.apptrace_start("%s 0 800 10" % trace_src)
+        # 10 ms poll period, stop when 800 bytes are received or due to 10 s timeout
+        poll_period_ms = 0 # 10ms period doesn't work for ESP32. Why?
+        if testee_info.chip == "esp32c6" or testee_info.chip == "esp32h2":
+            poll_period_ms = 10 # Check why we need a delay during poll.OCD-717
+        self.oocd.apptrace_start("%s %d 800 10" % (trace_src, poll_period_ms))
         self.resume_exec()
         sleep(1) #  let it works some time
         self.stop_exec()
         self.gdb.target_reset()
-
-        print("lines before reset")
 
         lines_before_reset = []
         while True:
@@ -105,7 +106,6 @@ class ApptraceTestsImpl:
                 line = reader.readline()
                 if (len(line)):
                     lines_before_reset.append(line)
-                    print(line)
             except ReaderTimeoutError:
                 break
 
@@ -113,17 +113,14 @@ class ApptraceTestsImpl:
         self.run_to_bp(dbg.TARGET_STOP_REASON_BP, 'app_main')
         self.select_sub_test(505)
         self.resume_exec()
-        self.oocd.apptrace_wait_stop(tmo=30)
-
-        print("lines after reset")
-
+        sleep(2) #  let it works some time
+        self.oocd.apptrace_stop();
         lines_after_reset = []
         while True:
             try:
                 line = reader.readline()
                 if (len(line)):
                     lines_after_reset.append(line)
-                    print(line)
             except ReaderTimeoutError:
                 break
         reader.cleanup()

@@ -22,18 +22,27 @@
 #include <stdarg.h>
 #include <string.h>
 #include "esp_app_trace.h"
+#include "esp_app_trace_port.h"
 #include "esp_flash_partitions.h"
 #include "esp_image_format.h"
 #include "stub_flasher.h"
 #include "stub_rom_chip.h"
+#include "stub_logger.h"
 #include "stub_flasher_int.h"
 #include "stub_flasher_chip.h"
 
 #define STUB_DEBUG    0
 
-#define STUB_BP_INSN_SECT_BUF_SIZE        (2*STUB_FLASH_SECTOR_SIZE)
-#define MHZ (1000000)
+#if STUB_LOG_ENABLE == 1
+	#define STUB_BENCH(var)	\
+	uint64_t var = stub_get_time()
+#else
+	#define STUB_BENCH(var)	\
+	do {} while (0)
+#endif
 
+#define STUB_BP_INSN_SECT_BUF_SIZE        (2 * STUB_FLASH_SECTOR_SIZE)
+#define MHZ (1000000)
 
 extern void stub_flash_state_prepare(struct stub_flash_state *state);
 extern void stub_flash_state_restore(struct stub_flash_state *state);
@@ -51,7 +60,7 @@ extern void stub_flash_cache_flush(void);
 extern void stub_flash_state_prepare(struct stub_flash_state *state);
 extern void stub_flash_state_restore(struct stub_flash_state *state);
 extern void stub_clock_configure(void);
-extern void stub_uart_console_configure(void);
+extern void stub_uart_console_configure(int dest);
 extern int stub_apptrace_prepare(void);
 extern uint64_t stub_get_time(void);
 
@@ -70,6 +79,8 @@ static struct {
 	uint8_t *next_out;
 } s_fs;
 
+static uint32_t s_encrypt_binary = 0;
+
 /* used in app trace module */
 uint32_t esp_log_early_timestamp()
 {
@@ -79,7 +90,7 @@ uint32_t esp_log_early_timestamp()
 /* used in app trace module */
 uint32_t esp_clk_cpu_freq(void)
 {
-	return (g_ticks_per_us_pro * MHZ);
+	return g_ticks_per_us_pro * MHZ;
 }
 
 void __assert_func(const char *path, int line, const char *func, const char *msg)
@@ -104,7 +115,7 @@ BaseType_t xPortEnterCriticalTimeout(portMUX_TYPE *mux, BaseType_t timeout)
 static int stub_flash_test(void)
 {
 	int ret = ESP_STUB_ERR_OK;
-	uint8_t buf[32] = {9, 1, 2, 3, 4, 5, 6, 8};
+	uint8_t buf[32] = { 9, 1, 2, 3, 4, 5, 6, 8 };
 	uint32_t flash_addr = 0x1d4000;
 
 	esp_rom_spiflash_result_t rc = esp_rom_spiflash_erase_sector(
@@ -202,7 +213,8 @@ static int stub_flash_read(uint32_t addr, uint32_t size)
 			rd_sz &= ~0x3UL;
 		if (rd_sz == 0)
 			break;
-		uint64_t start = stub_get_time();
+
+		STUB_BENCH(start);
 		uint8_t *buf = esp_apptrace_buffer_get(ESP_APPTRACE_DEST_TRAX,
 			rd_sz,
 			ESP_APPTRACE_TMO_INFINITE);
@@ -210,17 +222,19 @@ static int stub_flash_read(uint32_t addr, uint32_t size)
 			STUB_LOGE("Failed to get trace buf!\n");
 			return ESP_STUB_ERR_FAIL;
 		}
-		uint64_t end = stub_get_time();
+		STUB_BENCH(end);
 		STUB_LOGD("Got trace buf %d bytes @ 0x%x in %lld us\n", rd_sz, buf,
 			end - start);
 
-		start = stub_get_time();
-		rc = stub_flash_read_buff(addr + total_cnt, (uint32_t *)buf, rd_sz);
-		end = stub_get_time();
-		STUB_LOGD("Read flash @ 0x%x sz %d in %d ms\n",
-			addr + total_cnt,
-			rd_sz,
-			end - start);
+		{
+			STUB_BENCH(start);
+			rc = stub_flash_read_buff(addr + total_cnt, (uint32_t *)buf, rd_sz);
+			STUB_BENCH(end);
+			STUB_LOGD("Read flash @ 0x%x sz %d in %d ms\n",
+				addr + total_cnt,
+				rd_sz,
+				(end - start) / 1000);
+		}
 
 		/* regardless of the read result, first free the buffer */
 		esp_err_t err = esp_apptrace_buffer_put(ESP_APPTRACE_DEST_TRAX,
@@ -294,20 +308,34 @@ static int stub_flash_read(uint32_t addr, uint32_t size)
 	return ESP_STUB_ERR_OK;
 }
 
-static esp_rom_spiflash_result_t stub_spiflash_write(uint32_t spi_flash_addr,
-	uint32_t *data,
-	uint32_t len)
+static esp_rom_spiflash_result_t stub_spiflash_write(uint32_t spi_flash_addr, uint32_t *data, uint32_t len,
+	bool encrypt)
 {
 	esp_rom_spiflash_result_t rc;
 
-	uint64_t start = stub_get_time();
-	if (stub_get_flash_encryption_mode() != ESP_FLASH_ENC_MODE_DISABLED)
+	/*
+	We can ask hardware to encrypt binary as long as flash encryption is enabled and encrypt option is set.
+	During breakpoint set and clear, we will set 'encrypt' flag according to efuse flash encryption settings.
+	So that hardware will handle the encryption if necessary.
+	During flash programming, 'encrypt' flag will reflect the user specified 'encrypt_binary' programming option.
+	If this is not set, we assume the binary is encrypted by the user.
+	If this is set but flash encryption is not enabled, by returning an error,
+	we will warn the user to do the right operation.
+	*/
+	if (encrypt && stub_get_flash_encryption_mode() == ESP_FLASH_ENC_MODE_DISABLED)
+		return ESP_STUB_ERR_FAIL;
+
+	bool write_encrypted = stub_get_flash_encryption_mode() != ESP_FLASH_ENC_MODE_DISABLED && encrypt;
+
+	STUB_BENCH(start);
+	if (write_encrypted)
 		rc = esp_rom_spiflash_write_encrypted(spi_flash_addr, data, len);
 	else
 		rc = esp_rom_spiflash_write(spi_flash_addr, data, len);
-	uint64_t end = stub_get_time();
+	STUB_BENCH(end);
 
-	STUB_LOGD("Write flash @ 0x%x sz %d in %d us\n",
+	STUB_LOGD("Write %sflash @ 0x%x sz %d in %lld us\n",
+		write_encrypted ? "encrypted-" : "",
 		spi_flash_addr,
 		len,
 		end - start);
@@ -333,7 +361,6 @@ static int stub_write_aligned_buffer(void *data_buf, uint32_t length)
 
 		if (s_fs.remaining_uncompressed - bytes_in_out_buf == 0 ||
 			bytes_in_out_buf == ESP_STUB_UNZIP_BUFF_SIZE) {
-
 			uint32_t wr_sz = bytes_in_out_buf;
 
 			/* add padding if this is the last package */
@@ -345,8 +372,8 @@ static int stub_write_aligned_buffer(void *data_buf, uint32_t length)
 			}
 
 			/* write buffer with aligned size */
-			esp_rom_spiflash_result_t rc = stub_spiflash_write(s_fs.next_write,
-				(uint32_t *)s_fs.out_buf, wr_sz);
+			esp_rom_spiflash_result_t rc = stub_spiflash_write(s_fs.next_write, (uint32_t *)s_fs.out_buf,
+				wr_sz, s_encrypt_binary);
 
 			if (rc != ESP_ROM_SPIFLASH_RESULT_OK) {
 				STUB_LOGE("Failed to write flash (%d)\n", rc);
@@ -367,10 +394,11 @@ static int stub_flash_write(void *args)
 {
 	uint32_t total_cnt = 0;
 	uint8_t *buf = NULL;
-	struct esp_flash_stub_flash_write_args *wargs =
-		(struct esp_flash_stub_flash_write_args *)args;
+	struct esp_flash_stub_flash_write_args *wargs = (struct esp_flash_stub_flash_write_args *)args;
 
-	STUB_LOGD("Start writing %d bytes @ 0x%x\n", wargs->size, wargs->start_addr);
+	STUB_LOGD("Start writing %d bytes @ 0x%x opt %x\n", wargs->size, wargs->start_addr, wargs->options);
+
+	s_encrypt_binary = wargs->options & ESP_STUB_FLASH_ENCRYPT_BINARY ? 1 : 0;
 
 #if CONFIG_STUB_STACK_DATA_POOL_SIZE > 0
 	/* for non-xtensa chips stub_apptrace_init alloc up buffers on stack, xtensa chips uses TRAX
@@ -395,12 +423,11 @@ static int stub_flash_write(void *args)
 
 	while (total_cnt < wargs->size) {
 		uint32_t wr_sz = wargs->size - total_cnt;
-		STUB_LOGD("Req trace down buf %d bytes %d-%d [%d]\n",
+		STUB_LOGV("Req trace down buf %d bytes %d-%d\n",
 			wr_sz,
 			wargs->size,
-			total_cnt,
-			stub_get_time());
-		uint32_t start = stub_get_time();
+			total_cnt);
+		STUB_BENCH(start);
 		buf = esp_apptrace_down_buffer_get(ESP_APPTRACE_DEST_TRAX,
 			&wr_sz,
 			ESP_APPTRACE_TMO_INFINITE);
@@ -409,8 +436,8 @@ static int stub_flash_write(void *args)
 			return ESP_STUB_ERR_FAIL;
 		}
 
-		uint32_t end = stub_get_time();
-		STUB_LOGD("Got trace down buf %d bytes @ 0x%x in %d us\n", wr_sz, buf,
+		STUB_BENCH(end);
+		STUB_LOGV("Got trace down buf %d bytes @ 0x%x in %lld us\n", wr_sz, buf,
 			end - start);
 
 		ret = stub_write_aligned_buffer(buf, wr_sz);
@@ -453,15 +480,14 @@ static int stub_write_inflated_data(void *data_buf, uint32_t length)
 			memset(data_buf + length, 0xFF, ESP_STUB_UNZIP_BUFF_SIZE - length);
 			length = ESP_STUB_UNZIP_BUFF_SIZE;
 		} else {
-			STUB_LOGE("Unaligned offset! %d\n", length);
+			STUB_LOGE("Unaligned offset! %d-%d\n", length, s_fs.remaining_uncompressed);
 			return ESP_STUB_ERR_FAIL;
 		}
 	}
 
 	/* write buffer with aligned size */
-	esp_rom_spiflash_result_t rc = stub_spiflash_write(s_fs.next_write,
-		(uint32_t *)data_buf,
-		length);
+	esp_rom_spiflash_result_t rc = stub_spiflash_write(s_fs.next_write, (uint32_t *)data_buf, length,
+		s_encrypt_binary);
 	if (rc != ESP_ROM_SPIFLASH_RESULT_OK) {
 		STUB_LOGE("Failed to write flash (%d)\n", rc);
 		return ESP_STUB_ERR_FAIL;
@@ -484,12 +510,12 @@ static int stub_run_inflator(void *data_buf, uint32_t length)
 		if (s_fs.remaining_compressed > length)
 			flags |= TINFL_FLAG_HAS_MORE_INPUT;
 
-		uint64_t start = stub_get_time();
+		STUB_BENCH(start);
 		status = tinfl_decompress(s_fs.inflator, data_buf, &in_bytes,
 			s_fs.out_buf, s_fs.next_out, &out_bytes,
 			flags);
-		uint64_t end = stub_get_time();
-		STUB_LOGD("tinfl_decompress in(%d) out(%d) (%lld)us\n",
+		STUB_BENCH(end);
+		STUB_LOGV("tinfl_decompress in(%d) out(%d) (%lld)us\n",
 			in_bytes,
 			out_bytes,
 			end - start);
@@ -518,11 +544,11 @@ static int stub_run_inflator(void *data_buf, uint32_t length)
 		return ESP_STUB_ERR_INFLATE;
 	}
 	if (status == TINFL_STATUS_DONE && s_fs.remaining_uncompressed > 0) {
-		STUB_LOGE("Not enough compressed data\n");
+		STUB_LOGE("Not enough compressed data (%d)\n", s_fs.remaining_uncompressed);
 		return ESP_STUB_ERR_NOT_ENOUGH_DATA;
 	}
 	if (status != TINFL_STATUS_DONE && s_fs.remaining_uncompressed == 0) {
-		STUB_LOGE("Too much compressed data\n");
+		STUB_LOGE("Too much compressed data (%d)\n", length);
 		return ESP_STUB_ERR_TOO_MUCH_DATA;
 	}
 	return ESP_STUB_ERR_OK;
@@ -532,10 +558,11 @@ static int stub_flash_write_deflated(void *args)
 {
 	uint32_t total_cnt = 0;
 	uint8_t *buf = NULL;
-	struct esp_flash_stub_flash_write_args *wargs =
-		(struct esp_flash_stub_flash_write_args *)args;
+	struct esp_flash_stub_flash_write_args *wargs = (struct esp_flash_stub_flash_write_args *)args;
 
-	STUB_LOGD("Start writing deflated %d bytes @ 0x%x\n", wargs->size, wargs->start_addr);
+	STUB_LOGD("Start writing %d bytes @ 0x%x opt %x\n", wargs->size, wargs->start_addr, wargs->options);
+
+	s_encrypt_binary = wargs->options & ESP_STUB_FLASH_ENCRYPT_BINARY ? 1 : 0;
 
 #if CONFIG_STUB_STACK_DATA_POOL_SIZE > 0
 	/* for non-xtensa chips stub_apptrace_init alloc up buffers on stack, xtensa chips uses TRAX
@@ -570,12 +597,12 @@ static int stub_flash_write_deflated(void *args)
 
 	while (total_cnt < wargs->size) {
 		uint32_t wr_sz = wargs->size - total_cnt;
-		STUB_LOGD("Req trace down buf %d bytes %d-%d [%d]\n",
+		STUB_LOGV("Req trace down buf %d bytes %d-%d\n",
 			wr_sz,
 			wargs->size,
-			total_cnt,
-			stub_get_time());
-		uint64_t start = stub_get_time();
+			total_cnt);
+
+		STUB_BENCH(start);
 		buf = esp_apptrace_down_buffer_get(ESP_APPTRACE_DEST_TRAX,
 			&wr_sz,
 			ESP_APPTRACE_TMO_INFINITE);
@@ -583,9 +610,8 @@ static int stub_flash_write_deflated(void *args)
 			STUB_LOGE("Failed to get trace down buf!\n");
 			return ESP_STUB_ERR_FAIL;
 		}
-
-		uint64_t end = stub_get_time();
-		STUB_LOGD("Got trace down buf %d bytes @ 0x%x in %d us\n", wr_sz, buf,
+		STUB_BENCH(end);
+		STUB_LOGV("Got trace down buf %d bytes @ 0x%x in %lld us\n", wr_sz, buf,
 			end - start);
 
 		if (stub_run_inflator(buf, wr_sz) != ESP_STUB_ERR_OK)
@@ -623,15 +649,16 @@ static int stub_flash_erase(uint32_t flash_addr, uint32_t size)
 		size = (size + (STUB_FLASH_SECTOR_SIZE - 1)) & ~(STUB_FLASH_SECTOR_SIZE - 1);
 
 	STUB_LOGD("erase flash @ 0x%x, sz %d\n", flash_addr, size);
-	uint64_t start = stub_get_time();
+
+	STUB_BENCH(start);
 	esp_rom_spiflash_result_t rc = esp_rom_spiflash_erase_area(flash_addr, size);
 	if (rc != ESP_ROM_SPIFLASH_RESULT_OK) {
 		STUB_LOGE("Failed to erase flash (%d)\n", rc);
 		return ESP_STUB_ERR_FAIL;
 	}
-	uint64_t end = stub_get_time();
+	STUB_BENCH(end);
 	STUB_LOGD("Erased %d bytes @ 0x%x in %lld ms\n", size, flash_addr,
-		end - start / 1000);
+		(end - start) / 1000);
 	return ret;
 }
 
@@ -678,16 +705,20 @@ static uint32_t stub_flash_get_size(void)
 
 	uint32_t id = stub_flash_get_id();
 	switch (id) {
-		case 0x12: size = 256 * 1024; break;
-		case 0x13: size = 512 * 1024; break;
-		case 0x14: size = 1 * 1024 * 1024; break;
-		case 0x15: size = 2 * 1024 * 1024; break;
-		case 0x16: size = 4 * 1024 * 1024; break;
-		case 0x17: size = 8 * 1024 * 1024; break;
-		case 0x18: size = 16 * 1024 * 1024; break;
-		case 0x39: size = 32 * 1024 * 1024; break;
-		default:
-			size = 0;
+	case 0x12: size = 256 * 1024; break;
+	case 0x13: size = 512 * 1024; break;
+	case 0x14: size = 1 * 1024 * 1024; break;
+	case 0x15: size = 2 * 1024 * 1024; break;
+	case 0x16: size = 4 * 1024 * 1024; break;
+	case 0x17: size = 8 * 1024 * 1024; break;
+	case 0x18: size = 16 * 1024 * 1024; break;
+	case 0x19: size = 32 * 1024 * 1024; break;
+	case 0x20: size = 64 * 1024 * 1024; break;
+	case 0x21: size = 128 * 1024 * 1024; break;
+	case 0x22: size = 256 * 1024 * 1024; break;
+	case 0x39: size = 32 * 1024 * 1024; break;
+	default:
+		size = 0;
 	}
 	STUB_LOGD("Flash ID %x, size %d KB\n", id, size / 1024);
 	return size;
@@ -712,7 +743,7 @@ static int stub_flash_get_app_mappings(uint32_t off, struct esp_flash_mapping *f
 	}
 	if (img_hdr.magic != ESP_IMAGE_HEADER_MAGIC) {
 		STUB_LOGE("Invalid magic number 0x%x in app image!\n", img_hdr.magic);
-		return ESP_STUB_ERR_FAIL;
+		return ESP_STUB_ERR_INVALID_APP_MAGIC;
 	}
 
 	STUB_LOGI("Found app image: magic 0x%x, %d segments, entry @ 0x%x\n",
@@ -742,8 +773,9 @@ static int stub_flash_get_app_mappings(uint32_t off, struct esp_flash_mapping *f
 				flash_map->maps[maps_num].load_addr = seg_hdr.load_addr;
 				flash_map->maps[maps_num].size = seg_hdr.data_len;
 				maps_num++;
-			} else
+			} else {
 				break;
+			}
 		}
 		flash_addr += sizeof(seg_hdr) + seg_hdr.data_len;
 	}
@@ -765,11 +797,11 @@ static int stub_flash_get_map(uint32_t app_off, uint32_t maps_addr)
 
 	for (uint32_t i = 0;; i++) {
 		rc = stub_flash_read_buff(
-			ESP_PARTITION_TABLE_OFFSET+i*sizeof(esp_partition_info_t),
+			ESP_PARTITION_TABLE_OFFSET + i * sizeof(esp_partition_info_t),
 			(uint32_t *)&part,
 			sizeof(part));
 		if (rc != ESP_ROM_SPIFLASH_RESULT_OK) {
-			STUB_LOGE("Failed to read partitions table entrt (%d)!\n", rc);
+			STUB_LOGE("Failed to read partitions table entry (%d)!\n", rc);
 			return ESP_STUB_ERR_FAIL;
 		}
 		if (part.magic != ESP_PARTITION_MAGIC) {
@@ -783,7 +815,7 @@ static int stub_flash_get_map(uint32_t app_off, uint32_t maps_addr)
 				part.pos.offset,
 				part.pos.size,
 				flash_size);
-			return ESP_STUB_ERR_FAIL;
+			return ESP_STUB_ERR_INVALID_PARTITION;
 		}
 		STUB_LOGD("Found partition %d, m 0x%x, t 0x%x, st 0x%x, l '%s'\n",
 			i,
@@ -857,7 +889,8 @@ static uint8_t stub_flash_set_bp(uint32_t bp_flash_addr, uint32_t insn_buf_addr,
 		insn_sect[(bp_flash_addr & (STUB_FLASH_SECTOR_SIZE - 1)) + 3] = break_insn.d8[3];
 	rc = stub_spiflash_write(bp_flash_addr & ~(STUB_FLASH_SECTOR_SIZE - 1),
 		(uint32_t *)insn_sect,
-		STUB_BP_INSN_SECT_BUF_SIZE);
+		STUB_BP_INSN_SECT_BUF_SIZE,
+		stub_get_flash_encryption_mode() != ESP_FLASH_ENC_MODE_DISABLED);
 	if (rc != ESP_ROM_SPIFLASH_RESULT_OK) {
 		STUB_LOGE("Failed to write break insn (%d)!\n", rc);
 		return 0;
@@ -865,25 +898,27 @@ static uint8_t stub_flash_set_bp(uint32_t bp_flash_addr, uint32_t insn_buf_addr,
 
 	stub_flash_cache_flush();
 
-#if STUB_LOG_LOCAL_LEVEL == STUB_LOG_VERBOSE
-	uint8_t tmp[8];
-	rc = stub_flash_read_buff(bp_flash_addr & ~0x3UL, (uint32_t *)tmp, sizeof(tmp));
-	if (rc != ESP_ROM_SPIFLASH_RESULT_OK) {
-		STUB_LOGE("Failed to read insn (%d)!\n", rc);
-		return ESP_STUB_ERR_FAIL;
+#if STUB_LOG_ENABLE == 1
+	if (stub_get_log_level() >= STUB_LOG_LEVEL_DEBUG) {
+		uint8_t tmp[8];
+		rc = stub_flash_read_buff(bp_flash_addr & ~0x3UL, (uint32_t *)tmp, sizeof(tmp));
+		if (rc != ESP_ROM_SPIFLASH_RESULT_OK) {
+			STUB_LOGE("Failed to read insn (%d)!\n", rc);
+			return ESP_STUB_ERR_FAIL;
+		}
+		STUB_LOGD("%s: WROTE 0x%x 0x%x [%02x %02x %02x %02x %02x %02x %02x %02x]\n",
+			__func__,
+			bp_flash_addr,
+			insn_buf_addr,
+			tmp[0],
+			tmp[1],
+			tmp[2],
+			tmp[3],
+			tmp[4],
+			tmp[5],
+			tmp[6],
+			tmp[7]);
 	}
-	STUB_LOGD("%s: WROTE 0x%x 0x%x [%02x %02x %02x %02x %02x %02x %02x %02x]\n",
-		__func__,
-		bp_flash_addr,
-		insn_buf_addr,
-		tmp[0],
-		tmp[1],
-		tmp[2],
-		tmp[3],
-		tmp[4],
-		tmp[5],
-		tmp[6],
-		tmp[7]);
 #endif
 	return insn_sz;
 }
@@ -925,7 +960,8 @@ static int stub_flash_clear_bp(uint32_t bp_flash_addr, uint32_t insn_buf_addr, u
 		insn_sect[(bp_flash_addr & (STUB_FLASH_SECTOR_SIZE - 1)) + 3] = insn[3];
 	rc = stub_spiflash_write(bp_flash_addr & ~(STUB_FLASH_SECTOR_SIZE - 1),
 		(uint32_t *)insn_sect,
-		STUB_BP_INSN_SECT_BUF_SIZE);
+		STUB_BP_INSN_SECT_BUF_SIZE,
+		stub_get_flash_encryption_mode() != ESP_FLASH_ENC_MODE_DISABLED);
 	if (rc != ESP_ROM_SPIFLASH_RESULT_OK) {
 		STUB_LOGE("Failed to restore insn (%d)!\n", rc);
 		return ESP_STUB_ERR_FAIL;
@@ -933,25 +969,27 @@ static int stub_flash_clear_bp(uint32_t bp_flash_addr, uint32_t insn_buf_addr, u
 
 	stub_flash_cache_flush();
 
-#if STUB_LOG_LOCAL_LEVEL == STUB_LOG_VERBOSE
-	uint8_t tmp[8];
-	rc = stub_flash_read_buff(bp_flash_addr & ~0x3UL, (uint32_t *)tmp, sizeof(tmp));
-	if (rc != ESP_ROM_SPIFLASH_RESULT_OK) {
-		STUB_LOGE("Failed to read insn (%d)!\n", rc);
-		return ESP_STUB_ERR_FAIL;
+#if STUB_LOG_ENABLE == 1
+	if (stub_get_log_level() >= STUB_LOG_LEVEL_DEBUG) {
+		uint8_t tmp[8];
+		rc = stub_flash_read_buff(bp_flash_addr & ~0x3UL, (uint32_t *)tmp, sizeof(tmp));
+		if (rc != ESP_ROM_SPIFLASH_RESULT_OK) {
+			STUB_LOGE("Failed to read insn (%d)!\n", rc);
+			return ESP_STUB_ERR_FAIL;
+		}
+		STUB_LOGD("%s: WROTE 0x%x 0x%x [%02x %02x %02x %02x %02x %02x %02x %02x]\n",
+			__func__,
+			bp_flash_addr,
+			insn_buf_addr,
+			tmp[0],
+			tmp[1],
+			tmp[2],
+			tmp[3],
+			tmp[4],
+			tmp[5],
+			tmp[6],
+			tmp[7]);
 	}
-	STUB_LOGD("%s: WROTE 0x%x 0x%x [%02x %02x %02x %02x %02x %02x %02x %02x]\n",
-		__func__,
-		bp_flash_addr,
-		insn_buf_addr,
-		tmp[0],
-		tmp[1],
-		tmp[2],
-		tmp[3],
-		tmp[4],
-		tmp[5],
-		tmp[6],
-		tmp[7]);
 #endif
 	return ESP_STUB_ERR_OK;
 }
@@ -993,46 +1031,45 @@ static int stub_flash_handler(int cmd, va_list ap)
 	}
 
 	switch (cmd) {
-		case ESP_STUB_CMD_FLASH_READ:
-			ret = stub_flash_read(arg1, arg2);
-			break;
-		case ESP_STUB_CMD_FLASH_ERASE:
-			ret = stub_flash_erase(arg1, arg2);
-			break;
-		case ESP_STUB_CMD_FLASH_ERASE_CHECK:
-			ret = stub_flash_erase_check(arg1, arg2, arg3);
-			break;
-		case ESP_STUB_CMD_FLASH_WRITE:
-			ret = stub_flash_write((void *)arg1);
-			break;
-		case ESP_STUB_CMD_FLASH_WRITE_DEFLATED:
-			ret = stub_flash_write_deflated((void *)arg1);
-			break;
-		case ESP_STUB_CMD_FLASH_CALC_HASH:
-			ret = stub_flash_calc_hash(arg1, arg2, arg3);
-			break;
-		case ESP_STUB_CMD_FLASH_MAP_GET:
-			ret = stub_flash_get_map(arg1, arg2);
-			break;
-		case ESP_STUB_CMD_FLASH_BP_SET:
-			ret = stub_flash_set_bp(arg1, arg2, arg3);
-			break;
-		case ESP_STUB_CMD_FLASH_BP_CLEAR:
-			ret = stub_flash_clear_bp(arg1, arg2, arg3);
-			break;
-		case ESP_STUB_CMD_CLOCK_CONFIGURE:
-			ret = stub_cpu_clock_configure(arg1);
-#if STUB_LOG_LOCAL_LEVEL > STUB_LOG_NONE
-			stub_uart_console_configure();
-#endif
-			break;
+	case ESP_STUB_CMD_FLASH_READ:
+		ret = stub_flash_read(arg1, arg2);
+		break;
+	case ESP_STUB_CMD_FLASH_ERASE:
+		ret = stub_flash_erase(arg1, arg2);
+		break;
+	case ESP_STUB_CMD_FLASH_ERASE_CHECK:
+		ret = stub_flash_erase_check(arg1, arg2, arg3);
+		break;
+	case ESP_STUB_CMD_FLASH_WRITE:
+		ret = stub_flash_write((void *)arg1);
+		break;
+	case ESP_STUB_CMD_FLASH_WRITE_DEFLATED:
+		ret = stub_flash_write_deflated((void *)arg1);
+		break;
+	case ESP_STUB_CMD_FLASH_CALC_HASH:
+		ret = stub_flash_calc_hash(arg1, arg2, arg3);
+		break;
+	case ESP_STUB_CMD_FLASH_MAP_GET:
+		ret = stub_flash_get_map(arg1, arg2);
+		break;
+	case ESP_STUB_CMD_FLASH_BP_SET:
+		ret = stub_flash_set_bp(arg1, arg2, arg3);
+		break;
+	case ESP_STUB_CMD_FLASH_BP_CLEAR:
+		ret = stub_flash_clear_bp(arg1, arg2, arg3);
+		break;
+	case ESP_STUB_CMD_CLOCK_CONFIGURE:
+		ret = stub_cpu_clock_configure(arg1);
+		if (stub_get_log_dest() == STUB_LOG_DEST_UART)
+			stub_uart_console_configure(stub_get_log_dest());
+		break;
 #if STUB_DEBUG
-		case ESP_STUB_CMD_FLASH_TEST:
-			ret = stub_flash_test();
-			break;
+	case ESP_STUB_CMD_FLASH_TEST:
+		ret = stub_flash_test();
+		break;
 #endif
-		default:
-			ret = ESP_STUB_ERR_NOT_SUPPORTED;
+	default:
+		ret = ESP_STUB_ERR_NOT_SUPPORTED;
 	}
 
 _flash_end:
@@ -1050,7 +1087,7 @@ __attribute__((weak)) int stub_cpu_clock_configure(int cpu_freq_mhz)
 	return 0;
 }
 
-__attribute__((weak)) void stub_uart_console_configure(void)
+__attribute__((weak)) void stub_uart_console_configure(int dest)
 {
 }
 
@@ -1062,6 +1099,31 @@ __attribute__((weak)) esp_flash_enc_mode_t stub_get_flash_encryption_mode(void)
 __attribute__((weak)) void stub_print_cache_mmu_registers(void)
 {
 }
+
+__attribute__((weak)) void stub_log_init(enum stub_log_levels level, enum stub_log_destination dest)
+{
+}
+
+#if STUB_LOG_ENABLE == 1
+const char *cmd_to_str(int cmd)
+{
+	switch (cmd) {
+	case ESP_STUB_CMD_FLASH_READ: return "FLASH_READ";
+	case ESP_STUB_CMD_FLASH_WRITE: return "FLASH_WRITE";
+	case ESP_STUB_CMD_FLASH_ERASE: return "FLASH_ERASE";
+	case ESP_STUB_CMD_FLASH_ERASE_CHECK: return "FLASH_ERASE_CHECK";
+	case ESP_STUB_CMD_FLASH_SIZE: return "FLASH_SIZE";
+	case ESP_STUB_CMD_FLASH_MAP_GET: return "FLASH_MAP_GET";
+	case ESP_STUB_CMD_FLASH_BP_SET: return "FLASH_BP_SET";
+	case ESP_STUB_CMD_FLASH_BP_CLEAR: return "FLASH_BP_CLEAR";
+	case ESP_STUB_CMD_FLASH_TEST: return "FLASH_TEST";
+	case ESP_STUB_CMD_FLASH_WRITE_DEFLATED: return "FLASH_WRITE_DEFLATED";
+	case ESP_STUB_CMD_FLASH_CALC_HASH: return "FLASH_CALC_HASH";
+	case ESP_STUB_CMD_CLOCK_CONFIGURE: return "CLOCK_CONFIGURE";
+	default: return "";
+	}
+}
+#endif
 
 int stub_main(int cmd, ...)
 {
@@ -1077,27 +1139,27 @@ int stub_main(int cmd, ...)
 	/* interrupts level in PS is set to 5 to allow high prio IRQs only (including Debug
 	 * Interrupt) */
 	/* We need Debug Interrupt Level to allow breakpoints handling by OpenOCD */
-	stub_cpu_clock_configure(-1);
-	stub_uart_console_configure();
-	STUB_LOGD("cpu_freq:%d Mhz\n", stub_esp_clk_cpu_freq()/MHZ);
+	stub_log_init(STUB_RESET_LOG_LEVEL, STUB_RESET_LOG_DEST);
+	STUB_LOGD("cpu_freq:%d Mhz\n", stub_esp_clk_cpu_freq() / MHZ);
 	stub_print_cache_mmu_registers();
 	STUB_LOGD("DATA 0x%x..0x%x\n", &_data_start, &_data_end);
 	STUB_LOGD("BSS 0x%x..0x%x\n", &_bss_start, &_bss_end);
-	STUB_LOGD("cmd %d\n", cmd);
+	STUB_LOGD("cmd %d:%s\n", cmd, cmd_to_str(cmd));
 
 	va_start(ap, cmd);
-	if (cmd <= ESP_STUB_CMD_FLASH_MAX_ID)
+	if (cmd <= ESP_STUB_CMD_FLASH_MAX_ID) {
 		ret = stub_flash_handler(cmd, ap);
-	else
+	} else {
 		switch (cmd) {
 #if STUB_DEBUG
-			case ESP_STUB_CMD_TEST:
-				STUB_LOGD("TEST %d\n", cmd);
-				break;
+		case ESP_STUB_CMD_TEST:
+			STUB_LOGD("TEST %d\n", cmd);
+			break;
 #endif
-			default:
-				ret = ESP_STUB_ERR_NOT_SUPPORTED;
+		default:
+			ret = ESP_STUB_ERR_NOT_SUPPORTED;
 		}
+	}
 	va_end(ap);
 
 	STUB_LOGD("exit %d\n", ret);

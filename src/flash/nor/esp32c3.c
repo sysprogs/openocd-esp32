@@ -1,33 +1,20 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+
 /***************************************************************************
  *   ESP32-C3 flash driver for OpenOCD                                     *
  *   Copyright (C) 2021 Espressif Systems Ltd.                             *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.           *
  ***************************************************************************/
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
 
-#include <target/esp32c3.h>
-#include <target/esp_riscv_algorithm.h>
+#include <target/espressif/esp32c3.h>
+#include <target/espressif/esp_riscv_algorithm.h>
 #include "imp.h"
 #include "esp_riscv.h"
 #include "contrib/loaders/flash/esp/esp32c3/stub_flasher_image.h"
-#include "contrib/loaders/flash/esp/esp32c3/sdkconfig.h"
+#include "contrib/loaders/flash/esp/esp32c3/stub_flasher_image_wlog.h"
 
 #define ESP32C3_FLASH_SECTOR_SIZE 4096
 
@@ -41,6 +28,12 @@ static const uint8_t s_esp32c3_flasher_stub_code[] = {
 static const uint8_t s_esp32c3_flasher_stub_data[] = {
 #include "contrib/loaders/flash/esp/esp32c3/stub_flasher_data.inc"
 };
+static const uint8_t s_esp32c3_flasher_stub_code_wlog[] = {
+#include "contrib/loaders/flash/esp/esp32c3/stub_flasher_code_wlog.inc"
+};
+static const uint8_t s_esp32c3_flasher_stub_data_wlog[] = {
+#include "contrib/loaders/flash/esp/esp32c3/stub_flasher_data_wlog.inc"
+};
 
 static const struct esp_flasher_stub_config s_esp32c3_stub_cfg = {
 	.code = s_esp32c3_flasher_stub_code,
@@ -51,21 +44,38 @@ static const struct esp_flasher_stub_config s_esp32c3_stub_cfg = {
 	.bss_sz = ESP32C3_STUB_BSS_SIZE,
 	.first_user_reg_param = ESP_RISCV_STUB_ARGS_FUNC_START,
 	.apptrace_ctrl_addr = ESP32C3_STUB_APPTRACE_CTRL_ADDR,
-	.stack_data_pool_sz = CONFIG_STUB_STACK_DATA_POOL_SIZE
+	.stack_data_pool_sz = ESP_RISCV_STACK_DATA_POOL_SIZE
+};
+
+static const struct esp_flasher_stub_config s_esp32c3_stub_cfg_wlog = {
+	.code = s_esp32c3_flasher_stub_code_wlog,
+	.code_sz = sizeof(s_esp32c3_flasher_stub_code_wlog),
+	.data = s_esp32c3_flasher_stub_data_wlog,
+	.data_sz = sizeof(s_esp32c3_flasher_stub_data_wlog),
+	.entry_addr = ESP32C3_STUB_WLOG_ENTRY_ADDR,
+	.bss_sz = ESP32C3_STUB_WLOG_BSS_SIZE,
+	.first_user_reg_param = ESP_RISCV_STUB_ARGS_FUNC_START,
+	.apptrace_ctrl_addr = ESP32C3_STUB_WLOG_APPTRACE_CTRL_ADDR,
+	.stack_data_pool_sz = ESP_RISCV_STACK_DATA_POOL_SIZE,
+	.log_buff_addr = ESP32C3_STUB_WLOG_LOG_ADDR,
+	.log_buff_size = ESP32C3_STUB_WLOG_LOG_SIZE
 };
 
 static bool esp32c3_is_irom_address(target_addr_t addr)
 {
-	return (addr >= ESP32C3_IROM_LOW && addr < ESP32C3_IROM_HIGH);
+	return addr >= ESP32C3_IROM_LOW && addr < ESP32C3_IROM_HIGH;
 }
 
 static bool esp32c3_is_drom_address(target_addr_t addr)
 {
-	return (addr >= ESP32C3_DROM_LOW && addr < ESP32C3_DROM_HIGH);
+	return addr >= ESP32C3_DROM_LOW && addr < ESP32C3_DROM_HIGH;
 }
 
 static const struct esp_flasher_stub_config *esp32c3_get_stub(struct flash_bank *bank)
 {
+	struct esp_flash_bank *esp_info = bank->driver_priv;
+	if (esp_info->stub_log_enabled)
+		return &s_esp32c3_stub_cfg_wlog;
 	return &s_esp32c3_stub_cfg;
 }
 
@@ -118,14 +128,14 @@ struct flash_driver esp32c3_flash = {
 	.name = "esp32c3",
 	.commands = esp32c3_command_handlers,
 	.flash_bank_command = esp32c3_flash_bank_command,
-	.erase = esp_flash_erase,
-	.protect = esp_flash_protect,
-	.write = esp_flash_write,
-	.read = esp_flash_read,
-	.probe = esp_flash_probe,
-	.auto_probe = esp_flash_auto_probe,
-	.erase_check = esp_flash_blank_check,
-	.protect_check = esp_flash_protect_check,
+	.erase = esp_algo_flash_erase,
+	.protect = esp_algo_flash_protect,
+	.write = esp_algo_flash_write,
+	.read = esp_algo_flash_read,
+	.probe = esp_algo_flash_probe,
+	.auto_probe = esp_algo_flash_auto_probe,
+	.erase_check = esp_algo_flash_blank_check,
+	.protect_check = esp_algo_flash_protect_check,
 	.info = esp32c3_get_info,
 	.free_driver_priv = default_flash_free_driver_priv,
 };

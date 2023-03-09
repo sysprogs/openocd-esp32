@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
 
 proc proc_exists { NAME } {
     set n [info commands $NAME]
@@ -74,10 +75,10 @@ proc show_mmr_bitfield { MSB LSB VAL FIELDNAME FIELDVALUES } {
 # Give: ADDR - address of the register.
 #       BIT - bit's number.
 
-proc mmr_get_bit { ADDR BIT } {
+proc get_mmr_bit { ADDR BIT } {
 	set val [memread32 $ADDR]
-    set bit_val [expr {$val & [expr {1 << $BIT}]}]
-    return $bit_val
+	set bit_val [expr {$val & [expr {1 << $BIT}]}]
+	return $bit_val
 }
 
 
@@ -85,7 +86,7 @@ proc mmr_get_bit { ADDR BIT } {
 #       MSB - MSB bit's number.
 #       LSB - LSB bit's number.
 
-proc mmr_get_bitfield { ADDR MSB LSB } {
+proc get_mmr_bitfield { ADDR MSB LSB } {
 	set rval [memread32 $ADDR]
-    return normalize_bitfield $rval $MSB $LSB
+	return normalize_bitfield $rval $MSB $LSB
 }

@@ -130,6 +130,8 @@
 /* 0 if you don't want ZY1000 JTAG master registers. */
 #define BUILD_ZY1000_MASTER 0
 
+#define BUILD_ESP_COMPRESSION 1
+
 /* Support FT232H with FTD2XX or libftdi. */
 #define HAS_ENUM_FT232H 1
 

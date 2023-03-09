@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+
 /***************************************************************************
  *   Copyright (C) 2005 by Dominic Rath                                    *
  *   Dominic.Rath@gmx.de                                                   *
@@ -7,19 +9,6 @@
  *                                                                         *
  *   Copyright (C) 2008 by Spencer Oliver                                  *
  *   spen@spen-soft.co.uk                                                  *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program.  If not, see <http://www.gnu.org/licenses/>. *
  ***************************************************************************/
 
 #ifndef OPENOCD_SERVER_SERVER_H
@@ -36,15 +25,6 @@
 #include <netinet/in.h>
 #endif
 
-enum shutdown_reason {
-	CONTINUE_MAIN_LOOP,			/* stay in main event loop */
-	SHUTDOWN_REQUESTED,			/* set by shutdown command; exit the event loop and quit the debugger */
-	SHUTDOWN_WITH_ERROR_CODE,	/* set by shutdown command; quit with non-zero return code */
-	SHUTDOWN_WITH_SIGNAL_CODE	/* set by sig_handler; exec shutdown then exit with signal as return code */
-};
-
-extern enum shutdown_reason shutdown_openocd;
-
 enum connection_type {
 	CONNECTION_TCP,
 	CONNECTION_PIPE,
@@ -57,6 +37,9 @@ struct connection {
 	int fd;
 	int fd_out;	/* When using pipes we're writing to a different fd */
 	struct sockaddr_in sin;
+#if IS_ESPIDF
+	uint8_t padding[16];
+#endif
 	struct command_context *cmd_ctx;
 	struct service *service;
 	bool input_pending;
@@ -91,6 +74,9 @@ struct service {
 	unsigned short portnumber;
 	int fd;
 	struct sockaddr_in sin;
+#if IS_ESPIDF
+	uint8_t padding[16];
+#endif
 	int max_connections;
 	struct connection *connections;
 	int (*new_connection_during_keep_alive)(struct connection *connection);
@@ -123,6 +109,8 @@ int server_register_commands(struct command_context *context);
 
 int connection_write(struct connection *connection, const void *data, int len);
 int connection_read(struct connection *connection, void *data, int len);
+
+bool openocd_is_shutdown_pending(void);
 
 /**
  * Defines an extended command handler function declaration to enable

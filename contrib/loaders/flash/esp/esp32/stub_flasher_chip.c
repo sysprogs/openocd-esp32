@@ -31,6 +31,7 @@
 #include "esp_spi_flash.h"
 #include "esp32/spiram.h"
 #include "stub_rom_chip.h"
+#include "stub_logger.h"
 #include "stub_flasher_int.h"
 #include "stub_flasher_chip.h"
 
@@ -55,8 +56,8 @@ uint32_t g_stub_cpu_freq_hz = CONFIG_ESP32_DEFAULT_CPU_FREQ_MHZ * MHZ;
 #define STUB_MMU_DROM_VADDR             SOC_MMU_VADDR0_START_ADDR
 #define STUB_MMU_DROM_PAGES_START       SOC_MMU_DROM0_PAGES_START	/* 0 */
 #define STUB_MMU_DROM_PAGES_END         SOC_MMU_DROM0_PAGES_END		/* 64 */
-#define STUB_PRO_MMU_TABLE              ((volatile uint32_t *) 0x3FF10000)
-#define STUB_APP_MMU_TABLE              ((volatile uint32_t *) 0x3FF12000)
+#define STUB_PRO_MMU_TABLE              ((volatile uint32_t *)0x3FF10000)
+#define STUB_APP_MMU_TABLE              ((volatile uint32_t *)0x3FF12000)
 #define STUB_MMU_INVALID_ENTRY_VAL      SOC_MMU_INVALID_ENTRY_VAL	/* 0x100 */
 
 /* SPI Flash map request data */
@@ -75,11 +76,10 @@ struct spiflash_map_req {
 	int core_id;
 };
 
-static volatile uint32_t *mmu_table_s[2] = {STUB_PRO_MMU_TABLE, STUB_APP_MMU_TABLE};
+static volatile uint32_t *mmu_table_s[2] = { STUB_PRO_MMU_TABLE, STUB_APP_MMU_TABLE };
 
 extern esp_rom_spiflash_chip_t g_rom_spiflash_chip;
 extern uint8_t g_rom_spiflash_dummy_len_plus[];
-
 
 void vPortEnterCritical(void *mux)
 {
@@ -94,7 +94,7 @@ bool ets_efuse_flash_octal_mode(void)
 	return false;
 }
 
-#if STUB_LOG_LOCAL_LEVEL > STUB_LOG_INFO
+#if STUB_LOG_ENABLE == 1
 void stub_print_cache_mmu_registers(void)
 {
 	uint32_t ctrl_reg = DPORT_READ_PERI_REG(DPORT_PRO_CACHE_CTRL_REG);
@@ -117,7 +117,7 @@ void stub_print_cache_mmu_registers(void)
 }
 #endif
 
-static const uint32_t cache_mask  = DPORT_APP_CACHE_MASK_OPSDRAM | DPORT_APP_CACHE_MASK_DROM0 |
+static const uint32_t cache_mask = DPORT_APP_CACHE_MASK_OPSDRAM | DPORT_APP_CACHE_MASK_DROM0 |
 	DPORT_APP_CACHE_MASK_DRAM1 | DPORT_APP_CACHE_MASK_IROM0 |
 	DPORT_APP_CACHE_MASK_IRAM1 | DPORT_APP_CACHE_MASK_IRAM0;
 
@@ -243,9 +243,9 @@ static uint32_t esp32_flash_spi_cmd_run(uint32_t cmd,
 
 	WRITE_PERI_REG(PERIPHS_SPI_FLASH_USRREG, flags);
 	WRITE_PERI_REG(PERIPHS_SPI_FLASH_USRREG2, (7 << SPI_USR2_DLEN_SHIFT) | cmd);
-	if (data_bits_num == 0)
+	if (data_bits_num == 0) {
 		WRITE_PERI_REG(PERIPHS_SPI_FLASH_C0, 0);
-	else {
+	} else {
 		for (uint32_t i = 0; i <= data_bits_num / 32; i += 32)
 			WRITE_PERI_REG(PERIPHS_SPI_FLASH_C0 + i / 8,
 				*((uint32_t *)&data_bits[i / 8]));
@@ -285,11 +285,11 @@ void stub_spiram_writeback_cache(void)
 	/* We need cache enabled for this to work. Re-enable it if needed; make sure we
 	 * disable it again on exit as well. */
 	if (DPORT_REG_GET_BIT(DPORT_PRO_CACHE_CTRL_REG, DPORT_PRO_CACHE_ENABLE) == 0) {
-		cache_was_disabled|= (1<<0);
+		cache_was_disabled |= (1 << 0);
 		DPORT_SET_PERI_REG_BITS(DPORT_PRO_CACHE_CTRL_REG, 1, 1, DPORT_PRO_CACHE_ENABLE_S);
 	}
 	if (DPORT_REG_GET_BIT(DPORT_APP_CACHE_CTRL_REG, DPORT_APP_CACHE_ENABLE) == 0) {
-		cache_was_disabled|= (1<<1);
+		cache_was_disabled |= (1 << 1);
 		DPORT_SET_PERI_REG_BITS(DPORT_APP_CACHE_CTRL_REG, 1, 1, DPORT_APP_CACHE_ENABLE_S);
 	}
 
@@ -297,17 +297,17 @@ void stub_spiram_writeback_cache(void)
 	Note: this assumes the amount of external RAM is >2M. If it is 2M or less, what this code does is undefined. If
 	we ever support external RAM chips of 2M or smaller, this may need adjusting.
 	*/
-	for (x= 0; x < 1024*64; x+= 32) {
-		i+= psram[x];
-		i+= psram[x+(1024*1024*2)];
+	for (x = 0; x < 1024 * 64; x += 32) {
+		i += psram[x];
+		i += psram[x + (1024 * 1024 * 2)];
 	}
 
-	if (cache_was_disabled&(1<<0)) {
+	if (cache_was_disabled & (1 << 0)) {
 		while (DPORT_GET_PERI_REG_BITS2(DPORT_PRO_DCACHE_DBUG0_REG, DPORT_PRO_CACHE_STATE,
 				DPORT_PRO_CACHE_STATE_S) != 1) ;
 		DPORT_SET_PERI_REG_BITS(DPORT_PRO_CACHE_CTRL_REG, 1, 0, DPORT_PRO_CACHE_ENABLE_S);
 	}
-	if (cache_was_disabled&(1<<1)) {
+	if (cache_was_disabled & (1 << 1)) {
 		while (DPORT_GET_PERI_REG_BITS2(DPORT_APP_DCACHE_DBUG0_REG, DPORT_APP_CACHE_STATE,
 				DPORT_APP_CACHE_STATE_S) != 1) ;
 		DPORT_SET_PERI_REG_BITS(DPORT_APP_CACHE_CTRL_REG, 1, 0, DPORT_APP_CACHE_ENABLE_S);
@@ -368,9 +368,10 @@ void stub_flash_state_prepare(struct stub_flash_state *state)
 	WRITE_PERI_REG(SPI_USER2_REG(1), ESP32_STUB_FLASH_STATE_SPI_USER2_REG_VAL);
 	WRITE_PERI_REG(SPI_SLAVE_REG(1), ESP32_STUB_FLASH_STATE_SPI_SLAVE_REG_VAL);
 
-	if ((READ_PERI_REG(SPI_CACHE_FCTRL_REG(0)) & SPI_CACHE_FLASH_USR_CMD) == 0)
+	if ((READ_PERI_REG(SPI_CACHE_FCTRL_REG(0)) & SPI_CACHE_FLASH_USR_CMD) == 0) {
+		STUB_LOGI("Attach spi flash...\n");
 		esp_rom_spiflash_attach(spiconfig, 0);
-	else {
+	} else {
 		WRITE_PERI_REG(SPI_CTRL_REG(1), 0x208000);
 		WRITE_PERI_REG(SPI_CLOCK_REG(1), 0x3043);
 		g_rom_spiflash_dummy_len_plus[1] = 0;
@@ -408,9 +409,8 @@ int stub_cpu_clock_configure(int cpu_freq_mhz)
 	rtc_cpu_freq_config_t old_config;
 	rtc_clk_cpu_freq_get_config(&old_config);
 
-#if STUB_LOG_LOCAL_LEVEL > STUB_LOG_NONE
-	uart_tx_wait_idle(CONFIG_CONSOLE_UART_NUM);
-#endif
+	if (stub_get_log_dest() == STUB_LOG_DEST_UART)
+		uart_tx_wait_idle(CONFIG_CONSOLE_UART_NUM);
 
 	/* set to maximum possible value */
 	if (cpu_freq_mhz == -1)
@@ -418,7 +418,6 @@ int stub_cpu_clock_configure(int cpu_freq_mhz)
 
 	/* Set CPU to configured value. Keep other clocks unmodified. */
 	if (cpu_freq_mhz > 0) {
-
 		/* On ESP32 rev 0, switching to 80MHz if clock was previously set to
 		 * 240 MHz may cause the chip to lock up (see section 3.5 of the errata
 		 * document). For rev. 0, switch to 240 instead if it was chosen in
@@ -443,8 +442,8 @@ int stub_cpu_clock_configure(int cpu_freq_mhz)
 	return old_config.freq_mhz;
 }
 
-#if STUB_LOG_LOCAL_LEVEL > STUB_LOG_NONE
-void stub_uart_console_configure(void)
+#if STUB_LOG_ENABLE == 1
+void stub_uart_console_configure(int dest)
 {
 	uartAttach();
 	ets_install_uart_printf();
@@ -504,14 +503,12 @@ esp_flash_enc_mode_t stub_get_flash_encryption_mode(void)
 				if (dis_dl_cache && dis_dl_enc && dis_dl_dec)
 					mode = ESP_FLASH_ENC_MODE_RELEASE;
 			}
-
-		} else
+		} else {
 			mode = ESP_FLASH_ENC_MODE_DISABLED;
-
+		}
 		first = false;
+		STUB_LOGD("flash encryption mode: %d\n", mode);
 	}
-
-	STUB_LOGD("flash encryption mode: %d\n", mode);
 
 	return mode;
 }

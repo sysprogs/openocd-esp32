@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+
 # not a GNU package. You can remove this line, if
 # have all needed files, that a GNU package needs
 AUTOMAKE_OPTIONS = gnu 1.6
@@ -52,9 +54,12 @@ EXTRA_DIST += \
 	$(EXTRA_DIST_NEWS) \
 	Doxyfile.in \
 	LICENSES/license-rules.txt \
+	LICENSES/exceptions/eCos-exception-2.0 \
 	LICENSES/preferred/BSD-1-Clause \
 	LICENSES/preferred/BSD-2-Clause \
+	LICENSES/preferred/BSD-2-Clause-Views \
 	LICENSES/preferred/BSD-3-Clause \
+	LICENSES/preferred/BSD-Source-Code \
 	LICENSES/preferred/GFDL-1.2 \
 	LICENSES/preferred/gfdl-1.2.texi.readme \
 	LICENSES/preferred/GPL-2.0 \
@@ -112,7 +117,11 @@ dist-hook:
 		$(INSTALL_DATA) $(srcdir)/$(TCL_PATH)/$$i $$j; \
 	done
 
+ESP_VERSION_CFG = $(srcdir)/$(TCL_PATH)/target/esp_version.cfg
+VER:=$(VERSION)$(shell $(srcdir)/guess-rev.sh | grep -o "^[^-]*-\?[^-]*-\?[^-]*")
 install-data-hook:
+	@printf "# SPDX-License-Identifier: GPL-2.0-or-later\n\n" > $(ESP_VERSION_CFG)
+	@echo "set EXPECTED_VER \"$(VER)\"" >> $(ESP_VERSION_CFG)
 	for i in $$($(TCL_FILES)); do \
 		j="$(DESTDIR)$(pkgdatadir)/scripts/$$i" && \
 		mkdir -p "$$(dirname $$j)" && \

@@ -77,6 +77,10 @@ add_library(ocdflashnor
 	sh_qspi.c
 	stmqspi.c
 	npcx.c
-	rp2040.c)
+	rp2040.c
+	esp32c2.c
+	esp32c6.c
+	esp32h2.c
+	rsl10.c)
 
 target_include_directories(ocdflashnor PRIVATE ../../..)

@@ -30,11 +30,12 @@
 #include "esp_spi_flash.h"
 #include "rtc_clk_common.h"
 #include "stub_rom_chip.h"
+#include "stub_logger.h"
 #include "stub_flasher_int.h"
 #include "stub_flasher_chip.h"
 
-#define ESP_FLASH_CHIP_MXIC_OCT     0xC2/*Supported Octal Flash chip vendor id*/
-#define SPI_BUFF_BYTE_WRITE_NUM         32
+#define ESP_FLASH_CHIP_MXIC_OCT     0xC2	/* Supported Octal Flash chip vendor id */
+#define SPI_BUFF_BYTE_WRITE_NUM     32
 #define SPI_BUFF_BYTE_READ_NUM      16
 
 #define EFUSE_WR_DIS_SPI_BOOT_CRYPT_CNT          (1 << 4)
@@ -46,7 +47,7 @@
 #define STUB_MMU_DROM_PAGES_START       SOC_MMU_DROM0_PAGES_START
 #define STUB_MMU_DROM_PAGES_END         SOC_MMU_DROM0_PAGES_END
 #define STUB_MMU_TABLE                  SOC_MMU_DPORT_PRO_FLASH_MMU_TABLE	/* 0x600c5000 */
-#define STUB_MMU_INVALID_ENTRY_VAL      SOC_MMU_INVALID_ENTRY_VAL	/* 0x100 */
+#define STUB_MMU_INVALID_ENTRY_VAL      SOC_MMU_INVALID_ENTRY_VAL	/* 0x4000 */
 
 /* SPI Flash map request data */
 struct spiflash_map_req {
@@ -74,7 +75,7 @@ void vPortExitCritical(void *mux)
 {
 }
 
-#if STUB_LOG_LOCAL_LEVEL > STUB_LOG_INFO
+#if STUB_LOG_ENABLE == 1
 void stub_print_cache_mmu_registers(void)
 {
 	uint32_t icache_ctrl1_reg = REG_READ(EXTMEM_DCACHE_CTRL1_REG);
@@ -96,15 +97,14 @@ uint32_t stub_flash_get_id(void)
 		rom_spiflash_legacy_data->chip.page_size,
 		rom_spiflash_legacy_data->chip.status_mask);
 
-	if (rom_spiflash_legacy_data->dummy_len_plus[1] == 0)
+	if (rom_spiflash_legacy_data->dummy_len_plus[1] == 0) {
 		REG_CLR_BIT(PERIPHS_SPI_FLASH_USRREG, SPI_MEM_USR_DUMMY);
-	else {
+	} else {
 		REG_SET_BIT(PERIPHS_SPI_FLASH_USRREG, SPI_MEM_USR_DUMMY);
 		REG_WRITE(
 			PERIPHS_SPI_FLASH_USRREG1,
 			(rom_spiflash_legacy_data->dummy_len_plus[1] -
 				1) << SPI_MEM_USR_DUMMY_CYCLELEN_S);
-
 	}
 	WRITE_PERI_REG(PERIPHS_SPI_FLASH_C0, 0);/* clear register */
 	WRITE_PERI_REG(PERIPHS_SPI_FLASH_CMD, SPI_MEM_FLASH_RDID);
@@ -170,13 +170,17 @@ void stub_flash_state_prepare(struct stub_flash_state *state)
 			.be_addr_bit_len = 24,
 			.pp_addr_bit_len = 24,
 			.rd_addr_bit_len = 24,
-			.read_sub_len  = SPI_BUFF_BYTE_READ_NUM,
+			.read_sub_len = SPI_BUFF_BYTE_READ_NUM,
 			.write_sub_len = SPI_BUFF_BYTE_WRITE_NUM,
 		};
 		rom_spiflash_legacy_funcs = &rom_default_spiflash_legacy_funcs;
 	}
 
-	esp_rom_spiflash_attach(spiconfig, 0);
+	/* Attach flash only if it has not been attached yet. Re-attaching it breaks PSRAM operation. */
+	if ((READ_PERI_REG(SPI_MEM_CACHE_FCTRL_REG(0)) & SPI_MEM_CACHE_FLASH_USR_CMD) == 0) {
+		STUB_LOGI("Attach spi flash...\n");
+		esp_rom_spiflash_attach(spiconfig, 0);
+	}
 
 	STUB_LOGI("Flash state prepared...\n");
 }
@@ -208,45 +212,45 @@ int stub_rtc_clk_cpu_freq_get_config(rtc_cpu_freq_config_t *out_config)
 	uint32_t freq_mhz;
 	uint32_t soc_clk_sel = REG_GET_FIELD(SYSTEM_SYSCLK_CONF_REG, SYSTEM_SOC_CLK_SEL);
 	switch (soc_clk_sel) {
-		case DPORT_SOC_CLK_SEL_XTAL: {
-			source = RTC_CPU_FREQ_SRC_XTAL;
-			div = REG_GET_FIELD(SYSTEM_SYSCLK_CONF_REG, SYSTEM_PRE_DIV_CNT) + 1;
-			source_freq_mhz = (uint32_t) stub_rtc_clk_xtal_freq_get();
-			freq_mhz = source_freq_mhz / div;
+	case DPORT_SOC_CLK_SEL_XTAL: {
+		source = RTC_CPU_FREQ_SRC_XTAL;
+		div = REG_GET_FIELD(SYSTEM_SYSCLK_CONF_REG, SYSTEM_PRE_DIV_CNT) + 1;
+		source_freq_mhz = (uint32_t)stub_rtc_clk_xtal_freq_get();
+		freq_mhz = source_freq_mhz / div;
+	}
+	break;
+	case DPORT_SOC_CLK_SEL_PLL: {
+		source = RTC_CPU_FREQ_SRC_PLL;
+		uint32_t cpuperiod_sel = REG_GET_FIELD(SYSTEM_CPU_PER_CONF_REG,
+				SYSTEM_CPUPERIOD_SEL);
+		uint32_t pllfreq_sel = REG_GET_FIELD(SYSTEM_CPU_PER_CONF_REG,
+				SYSTEM_PLL_FREQ_SEL);
+		source_freq_mhz = (pllfreq_sel) ? RTC_PLL_FREQ_480M : RTC_PLL_FREQ_320M;
+		if (cpuperiod_sel == DPORT_CPUPERIOD_SEL_80) {
+			div = (source_freq_mhz == RTC_PLL_FREQ_480M) ? 6 : 4;
+			freq_mhz = 80;
+		} else if (cpuperiod_sel == DPORT_CPUPERIOD_SEL_160) {
+			div = (source_freq_mhz == RTC_PLL_FREQ_480M) ? 3 : 2;
+			div = 3;
+			freq_mhz = 160;
+		} else if (cpuperiod_sel == DPORT_CPUPERIOD_SEL_240) {
+			div = 2;
+			freq_mhz = 240;
+		} else {
+			/* unsupported frequency configuration */
+			return -1;
 		}
 		break;
-		case DPORT_SOC_CLK_SEL_PLL: {
-			source = RTC_CPU_FREQ_SRC_PLL;
-			uint32_t cpuperiod_sel = REG_GET_FIELD(SYSTEM_CPU_PER_CONF_REG,
-				SYSTEM_CPUPERIOD_SEL);
-			uint32_t pllfreq_sel = REG_GET_FIELD(SYSTEM_CPU_PER_CONF_REG,
-				SYSTEM_PLL_FREQ_SEL);
-			source_freq_mhz = (pllfreq_sel) ? RTC_PLL_FREQ_480M : RTC_PLL_FREQ_320M;
-			if (cpuperiod_sel == DPORT_CPUPERIOD_SEL_80) {
-				div = (source_freq_mhz == RTC_PLL_FREQ_480M) ? 6 : 4;
-				freq_mhz = 80;
-			} else if (cpuperiod_sel == DPORT_CPUPERIOD_SEL_160) {
-				div = (source_freq_mhz == RTC_PLL_FREQ_480M) ? 3 : 2;
-				div = 3;
-				freq_mhz = 160;
-			} else if (cpuperiod_sel == DPORT_CPUPERIOD_SEL_240) {
-				div = 2;
-				freq_mhz = 240;
-			} else {
-				/* unsupported frequency configuration */
-				return -1;
-			}
-			break;
-		}
-		case DPORT_SOC_CLK_SEL_8M:
-			source = RTC_CPU_FREQ_SRC_8M;
-			source_freq_mhz = 8;
-			div = 1;
-			freq_mhz = source_freq_mhz;
-			break;
-		default:
-			/* unsupported frequency configuration */
-			return -2;
+	}
+	case DPORT_SOC_CLK_SEL_8M:
+		source = RTC_CPU_FREQ_SRC_8M;
+		source_freq_mhz = 8;
+		div = 1;
+		freq_mhz = source_freq_mhz;
+		break;
+	default:
+		/* unsupported frequency configuration */
+		return -2;
 	}
 	*out_config = (rtc_cpu_freq_config_t) {
 		.source = source,
@@ -269,8 +273,9 @@ int stub_cpu_clock_configure(int cpu_freq_mhz)
 		old_config.freq_mhz = 0;
 	}
 
-#if STUB_LOG_LOCAL_LEVEL > STUB_LOG_NONE
-	uart_tx_wait_idle(CONFIG_CONSOLE_UART_NUM);
+#if STUB_LOG_ENABLE == 1
+	if (stub_get_log_dest() == STUB_LOG_DEST_UART)
+		uart_tx_wait_idle(CONFIG_CONSOLE_UART_NUM);
 #endif
 
 	/* set to maximum possible value */
@@ -293,17 +298,17 @@ int stub_cpu_clock_configure(int cpu_freq_mhz)
 	return old_config.freq_mhz;
 }
 
-#if STUB_LOG_LOCAL_LEVEL > STUB_LOG_NONE
-void stub_uart_console_configure()
+#if STUB_LOG_ENABLE == 1
+void stub_uart_console_configure(int dest)
 {
 	extern bool g_uart_print;
 	/* set the default parameter to UART module, but don't enable RX interrupt */
 	uartAttach(NULL);
 	/* first enable uart0 as printf channel */
 	uint32_t clock = ets_get_apb_freq();
-	ets_update_cpu_frequency(clock/1000000);
+	ets_update_cpu_frequency(clock / 1000000);
 
-	Uart_Init(ets_efuse_get_uart_print_channel(), UART_CLK_FREQ_ROM);
+	Uart_Init(0, UART_CLK_FREQ_ROM);
 	/* install to print later
 	 * Non-Flash Boot can print
 	 * Flash Boot can print when RTC_CNTL_STORE4_REG bit0 is 0 (can be 1 after deep sleep, software reset) and printf boot.
@@ -431,14 +436,12 @@ esp_flash_enc_mode_t stub_get_flash_encryption_mode(void)
 				if (dis_dl_enc && dis_dl_icache)
 					s_mode = ESP_FLASH_ENC_MODE_RELEASE;
 			}
-
-		} else
+		} else {
 			s_mode = ESP_FLASH_ENC_MODE_DISABLED;
-
+		}
 		s_first = false;
+		STUB_LOGD("flash_encryption_mode: %d\n", s_mode);
 	}
-
-	STUB_LOGD("flash_encryption_mode: %d\n", s_mode);
 
 	return s_mode;
 }

@@ -1,5 +1,7 @@
-AC_PREREQ(2.64)
-AC_INIT([openocd], [ ],
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+AC_PREREQ(2.69)
+AC_INIT([openocd], [v0.12.0],
   [OpenOCD Mailing List <openocd-devel@lists.sourceforge.net>])
 AC_CONFIG_SRCDIR([src/openocd.c])
 AC_CONFIG_AUX_DIR([.])
@@ -24,6 +26,12 @@ AC_PROG_CC
 m4_version_prereq([2.70],[],[AC_PROG_CC_C99])
 AM_PROG_CC_C_O
 AC_PROG_RANLIB
+
+# If macro PKG_PROG_PKG_CONFIG is not available, Autoconf generates a misleading error message,
+# so check for existence first, and otherwise provide helpful advice.
+m4_ifndef([PKG_PROG_PKG_CONFIG], [m4_fatal(m4_normalize([
+  Macro PKG_PROG_PKG_CONFIG is not available.
+  It is usually defined in file pkg.m4 provided by package pkg-config.]))])
 PKG_PROG_PKG_CONFIG([0.23])
 
 dnl disable checks for C++, Fortran and GNU Java Compiler
@@ -41,8 +49,6 @@ AC_TYPE_LONG_LONG_INT
 AC_SEARCH_LIBS([ioperm], [ioperm])
 AC_SEARCH_LIBS([dlopen], [dl])
 AC_SEARCH_LIBS([openpty], [util])
-AC_SEARCH_LIBS([deflate], [z], [], [
-  AC_MSG_ERROR([libz library was not found])])
 
 AC_CHECK_HEADERS([sys/socket.h])
 AC_CHECK_HEADERS([elf.h])
@@ -54,8 +60,6 @@ AC_CHECK_HEADERS([fcntl.h])
 AC_CHECK_HEADERS([malloc.h])
 AC_CHECK_HEADERS([netdb.h])
 AC_CHECK_HEADERS([poll.h])
-AC_CHECK_HEADERS([pthread.h])
-AC_CHECK_HEADERS([zlib.h])
 AC_CHECK_HEADERS([strings.h])
 AC_CHECK_HEADERS([sys/ioctl.h])
 AC_CHECK_HEADERS([sys/param.h])
@@ -89,7 +93,6 @@ AC_CHECK_FUNCS([strndup])
 AC_CHECK_FUNCS([strnlen])
 AC_CHECK_FUNCS([gettimeofday])
 AC_CHECK_FUNCS([usleep])
-AC_CHECK_FUNCS([vasprintf])
 AC_CHECK_FUNCS([realpath])
 
 # guess-rev.sh only exists in the repository, not in the released archives
@@ -126,8 +129,7 @@ m4_define([USB1_ADAPTERS],
 	[[armjtagew], [Olimex ARM-JTAG-EW Programmer], [ARMJTAGEW]],
 	[[rlink], [Raisonance RLink JTAG Programmer], [RLINK]],
 	[[usbprog], [USBProg JTAG Programmer], [USBPROG]],
-	[[aice], [Andes JTAG Programmer], [AICE]],
-  [[esp_usb_jtag], [Espressif JTAG Programmer], [ESP_USB_JTAG]]])
+	[[esp_usb_jtag], [Espressif JTAG Programmer], [ESP_USB_JTAG]]])
 
 m4_define([HIDAPI_ADAPTERS],
 	[[[cmsis_dap], [CMSIS-DAP Compliant Debugger], [CMSIS_DAP_HID]],
@@ -298,10 +300,14 @@ AS_CASE(["${host_cpu}"],
     AC_ARG_ENABLE([imx_gpio],
       AS_HELP_STRING([--enable-imx_gpio], [Enable building support for bitbanging on NXP IMX processors]),
       [build_imx_gpio=$enableval], [build_imx_gpio=no])
+    AC_ARG_ENABLE([am335xgpio],
+      AS_HELP_STRING([--enable-am335xgpio], [Enable building support for bitbanging on AM335x (as found in Beaglebones)]),
+      [build_am335xgpio=$enableval], [build_am335xgpio=no])
   ],
   [
     build_bcm2835gpio=no
     build_imx_gpio=no
+    build_am335xgpio=no
 ])
 
 AS_CASE(["${host_cpu}"],
@@ -363,14 +369,19 @@ AC_ARG_ENABLE([jimtcl-maintainer],
   [use_internal_jimtcl_maintainer=$enableval], [use_internal_jimtcl_maintainer=no])
 
 AC_ARG_ENABLE([internal-libjaylink],
-  AS_HELP_STRING([--disable-internal-libjaylink],
-  [Disable building internal libjaylink]),
-  [use_internal_libjaylink=$enableval], [use_internal_libjaylink=yes])
+  AS_HELP_STRING([--enable-internal-libjaylink],
+  [Enable building internal libjaylink]),
+  [use_internal_libjaylink=$enableval], [use_internal_libjaylink=no])
 
 AC_ARG_ENABLE([esp-remote],
   AS_HELP_STRING([--disable-esp-remote],
   [Disable building support for the ESP remote protocol over TCP or USB]),
   [build_esp_remote=$enableval], [build_esp_remote=yes])
+
+AC_ARG_ENABLE([esp-compression],
+  AS_HELP_STRING([--disable-esp-compression],
+  [Disable compression support for the ESP devices]),
+  [build_esp_compression=$enableval], [build_esp_compression=yes])
 
 AC_ARG_ENABLE([build-gcov],
   AS_HELP_STRING([--enable-build-gcov],
@@ -469,6 +480,9 @@ AS_IF([test "x$is_darwin" = "xyes"], [
     AC_DEFINE([IS_DARWIN], [0], [0 if not building for Darwin.])
 ])
 
+AC_DEFINE([IS_ESPIDF], [0], [ESP-IDF platform only supported with CMake build system])
+AC_DEFINE([BUILD_ESP32_GPIO], [0], [ESP-IDF platform only supported with CMake build system])
+
 AS_IF([test "x$build_parport" = "xyes"], [
   build_bitbang=yes
   AC_DEFINE([BUILD_PARPORT], [1], [1 if you want parport.])
@@ -517,6 +531,13 @@ AS_IF([test "x$build_imx_gpio" = "xyes"], [
   AC_DEFINE([BUILD_IMX_GPIO], [0], [0 if you don't want imx_gpio.])
 ])
 
+AS_IF([test "x$build_am335xgpio" = "xyes"], [
+  build_bitbang=yes
+  AC_DEFINE([BUILD_AM335XGPIO], [1], [1 if you want am335xgpio.])
+], [
+  AC_DEFINE([BUILD_AM335XGPIO], [0], [0 if you don't want am335xgpio.])
+])
+
 AS_IF([test "x$parport_use_ppdev" = "xyes"], [
   AC_DEFINE([PARPORT_USE_PPDEV], [1], [1 if you want parport to use ppdev.])
 ], [
@@ -547,7 +568,6 @@ AS_IF([test "x$build_jtag_dpi" = "xyes"], [
   AC_DEFINE([BUILD_JTAG_DPI], [0], [0 if you don't want JTAG DPI.])
 ])
 
-
 AS_IF([test "x$build_amtjtagaccel" = "xyes"], [
   AC_DEFINE([BUILD_AMTJTAGACCEL], [1], [1 if you want the Amontec JTAG-Accelerator driver.])
 ], [
@@ -567,9 +587,9 @@ AS_IF([test "x$enable_buspirate" != "xno"], [
 ])
 
 AS_IF([test "x$use_internal_jimtcl" = "xyes"], [
-  AS_IF([test -f "$srcdir/jimtcl/configure.ac"], [
+  AS_IF([test -f "$srcdir/jimtcl/configure"], [
     AS_IF([test "x$use_internal_jimtcl_maintainer" = "xyes"], [
-      jimtcl_config_options="--disable-install-jim --maintainer"
+      jimtcl_config_options="--disable-install-jim --with-ext=json --maintainer"
     ], [
       jimtcl_config_options="--disable-install-jim --with-ext=json"
     ])
@@ -606,6 +626,15 @@ AS_IF([test "x$build_esp_remote" = "xyes"], [
   AC_DEFINE([BUILD_ESP_REMOTE], [0], [0 if you don't want ESP remote protocol support.])
 ])
 
+AS_IF([test "x$build_esp_compression" = "xyes"], [
+  AC_DEFINE([BUILD_ESP_COMPRESSION], [1], [1 if you want ESP compression support.])
+  AC_SEARCH_LIBS([deflate], [z], [], [
+    AC_MSG_ERROR([libz library was not found])])
+  AC_CHECK_HEADERS([zlib.h])
+], [
+  AC_DEFINE([BUILD_ESP_COMPRESSION], [0], [0 if you don't want ESP compression support.])
+])
+
 AS_IF([test "x$build_gcov" = "xyes"], [
   AC_DEFINE([BUILD_GCOV], [1], [1 if you want OpenOCD source code coverage support.])
   CFLAGS+=" -fprofile-arcs -ftest-coverage"
@@ -637,12 +666,15 @@ AS_IF([test "x$enable_capstone" != xno], [
 	PKG_CHECK_MODULES([CAPSTONE], [capstone], [
 		AC_DEFINE([HAVE_CAPSTONE], [1], [1 if you have Capstone disassembly framework.])
 	], [
-		AC_DEFINE([HAVE_CAPSTONE], [0], [0 if you don't have Capstone disassembly framework.])
 		if test "x$enable_capstone" != xauto; then
 			AC_MSG_ERROR([--with-capstone was given, but test for Capstone failed])
 		fi
 		enable_capstone=no
 	])
+])
+
+AS_IF([test "x$enable_capstone" == xno], [
+	AC_DEFINE([HAVE_CAPSTONE], [0], [0 if you don't have Capstone disassembly framework.])
 ])
 
 for hidapi_lib in hidapi hidapi-hidraw hidapi-libusb; do
@@ -715,7 +747,7 @@ AS_IF([test "x$enable_jlink" != "xno"], [
       AX_CONFIG_SUBDIR_OPTION([src/jtag/drivers/libjaylink],
 		[--enable-subproject-build])
     ], [
-      AC_MSG_ERROR([Internal libjaylink not found, run either 'git submodule init' and 'git submodule update' or disable internal libjaylink with --disable-internal-libjaylink.])
+      AC_MSG_ERROR([Internal libjaylink not found, run 'git submodule init' and 'git submodule update'.])
     ])
   ])
 ])
@@ -725,11 +757,10 @@ AS_IF([test "x$enable_presto" != "xno"], [
   build_bitq=yes
 ])
 
- # esp-usb-jtag also needs the bitq module
+# esp-usb-jtag also needs the bitq module
 AS_IF([test "x$enable_esp_usb_jtag" != "xno"], [
   build_bitq=yes
 ])
-
 
 AM_CONDITIONAL([RELEASE], [test "x$build_release" = "xyes"])
 AM_CONDITIONAL([PARPORT], [test "x$build_parport" = "xyes"])
@@ -739,6 +770,7 @@ AM_CONDITIONAL([EP93XX], [test "x$build_ep93xx" = "xyes"])
 AM_CONDITIONAL([AT91RM9200], [test "x$build_at91rm9200" = "xyes"])
 AM_CONDITIONAL([BCM2835GPIO], [test "x$build_bcm2835gpio" = "xyes"])
 AM_CONDITIONAL([IMX_GPIO], [test "x$build_imx_gpio" = "xyes"])
+AM_CONDITIONAL([AM335XGPIO], [test "x$build_am335xgpio" = "xyes"])
 AM_CONDITIONAL([BITBANG], [test "x$build_bitbang" = "xyes"])
 AM_CONDITIONAL([JTAG_VPI], [test "x$build_jtag_vpi" = "xyes"])
 AM_CONDITIONAL([VDEBUG], [test "x$build_vdebug" = "xyes"])
@@ -767,6 +799,7 @@ AM_CONDITIONAL([INTERNAL_JIMTCL], [test "x$use_internal_jimtcl" = "xyes"])
 AM_CONDITIONAL([INTERNAL_LIBJAYLINK], [test "x$use_internal_libjaylink" = "xyes"])
 
 AM_CONDITIONAL([BUILD_ESP_REMOTE], [test "x$build_esp_remote" = "xyes"])
+AM_CONDITIONAL([BUILD_ESP_COMPRESSION], [test "x$build_esp_compression" = "xyes"])
 
 AM_CONDITIONAL([BUILD_GCOV], [test "x$build_gcov" = "xyes"])
 
@@ -812,7 +845,6 @@ AS_IF([test "x${gcc_wextra}" = "xyes"], [
   GCC_WARNINGS="${GCC_WARNINGS} -Wredundant-decls"
   GCC_WARNINGS="${GCC_WARNINGS} -Wpointer-arith"
   GCC_WARNINGS="${GCC_WARNINGS} -Wundef"
-  GCC_WARNINGS="${GCC_WARNINGS} -Wno-error=deprecated-declarations"
 ])
 AS_IF([test "x${gcc_werror}" = "xyes"], [
   GCC_WARNINGS="${GCC_WARNINGS} -Werror"
@@ -829,6 +861,12 @@ AC_CONFIG_FILES([
   Makefile
 ])
 AC_OUTPUT
+
+AS_IF([test "x$enable_jlink" != "xno"], [
+  AS_IF([test "x$use_internal_libjaylink" = "xyes"], [
+    AC_MSG_WARN([Using the internal libjaylink is deprecated and will not be possible in the future.])
+  ]])
+)
 
 echo
 echo

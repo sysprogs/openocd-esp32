@@ -21,8 +21,8 @@
   mv ${ARCHIVE_NAME} ${DIST_ART_DIR}
   echo "${ARCHIVE_NAME}" > ${DIST_ART_DIR}/dist_name_${PLATFORM_NAME}
 
-.build_linux_arm_template: &build_linux_arm_template
-  stage: build
+.build_linux_arm_template:
+  stage: build_openocd
   image: $CI_DOCKER_REGISTRY/esp32-toolchain-arm-cross:3
   tags:
     - build
@@ -34,6 +34,8 @@
         - _build/*.log
     when: always
     expire_in: 2 weeks
+  needs:
+    - job: style_check
   script:
     - *get_release_name
     - !reference [.add_gitlab_key, script]
@@ -53,7 +55,7 @@
     - *dist_archive
 
 .build_macos_template: &build_macos_template
-  stage: build
+  stage: build_openocd
   image: $CI_DOCKER_REGISTRY/esp32-toolchain-macos-cross:4
   tags:
     - build
@@ -61,13 +63,15 @@
     paths:
       - ${DIST_ART_DIR}
     expire_in: 2 weeks
+  needs:
+    - job: style_check
   script:
     - *get_release_name
     - !reference [.add_gitlab_key, script]
     - !reference [.submodules_mirror_update, script]
 
     # Cross-compile libusb-1.0 for OSX
-    - export LIBUSB_VER=libusb-1.0.21
+    - export LIBUSB_VER=libusb-1.0.26
     - wget https://dl.espressif.com/dl/$LIBUSB_VER.tar.gz -O $LIBUSB_VER.tar.gz
     - tar xzf $LIBUSB_VER.tar.gz && rm $LIBUSB_VER.tar.gz
     - pushd $LIBUSB_VER
@@ -82,14 +86,14 @@
     - ./bootstrap
     - mkdir _build
     - pushd _build/
-    - ../configure --prefix=$PWD/../$DIST_INSTALLED_DIR --host=${CONF_HOST} $OPENOCD_CONFIGURE_OPTS LDFLAGS="-Wl,-framework,CoreFoundation -Wl,-framework,IOKit" CC=${CONF_HOST}-cc
+    - ../configure --prefix=$PWD/../$DIST_INSTALLED_DIR --host=${CONF_HOST} $OPENOCD_CONFIGURE_OPTS LDFLAGS="-Wl,-framework,CoreFoundation -Wl,-framework,IOKit -Wl,-framework,Security" CC=${CONF_HOST}-cc
     - make
     - MAKEFLAGS= make ${INSTALL_TARGET}
     - popd
     - *dist_archive
 
 build_linux:
-  stage: build
+  stage: build_openocd
   image: $CI_DOCKER_REGISTRY/esp32-toolchain
   tags:
     - build
@@ -99,6 +103,9 @@ build_linux:
     expire_in: 2 weeks
   variables:
     PLATFORM_NAME: "linux-amd64"
+    OPENOCD_CONFIGURE_OPTS: "--enable-remote-bitbang"
+  needs:
+    - job: style_check
   script:
     - *get_release_name
     - !reference [.add_gitlab_key, script]
@@ -113,8 +120,36 @@ build_linux:
     - popd
     - *dist_archive
 
+# do not distribute! Just for build error check with the latest gcc
+build_linux_gcc_latest:
+  stage: build_openocd
+  image: $CI_DOCKER_REGISTRY/openocd-ci-env:1
+  tags:
+    - build
+  allow_failure: true
+  needs:
+    - job: style_check
+  script:
+    - !reference [.add_gitlab_key, script]
+    - !reference [.submodules_mirror_update, script]
+    - ./bootstrap
+    - ./configure ${OPENOCD_CONFIGURE_OPTS}
+    - make -j8
+
 build_linux_armhf_test:
-  <<: *build_linux_arm_template
+  extends: .build_linux_arm_template
+  except:
+    refs:
+      - schedules
+  variables:
+    CONF_HOST: "arm-linux-gnueabihf"
+    PLATFORM_NAME: "linux-armhf-test"
+    TEST_CFLAGS: ""
+    GCOV_BUILD_OPTS: "--enable-build-gcov"
+    OPENOCD_CONFIGURE_OPTS: "--enable-remote-bitbang"
+
+build_linux_armhf_sanitizer_test:
+  extends: .build_linux_arm_template
   only:
     refs:
       - schedules
@@ -126,22 +161,31 @@ build_linux_armhf_test:
     TEST_CFLAGS: "-Wl,--no-as-needed -ldl -fsanitize=address -fsanitize=undefined -fsanitize-recover=address -ggdb3"
 
 build_linux_armhf:
-  <<: *build_linux_arm_template
+  extends: .build_linux_arm_template
   variables:
     CONF_HOST: "arm-linux-gnueabihf"
     PLATFORM_NAME: "linux-armhf"
     TEST_CFLAGS: ""
-    GCOV_BUILD_OPTS: "--enable-build-gcov"
+    OPENOCD_CONFIGURE_OPTS: "--enable-remote-bitbang"
+
+build_linux_armel:
+  extends: .build_linux_arm_template
+  variables:
+    CONF_HOST: "arm-linux-gnueabi"
+    PLATFORM_NAME: "linux-armel"
+    TEST_CFLAGS: ""
+    OPENOCD_CONFIGURE_OPTS: "--enable-remote-bitbang"
 
 build_linux_arm64:
-  <<: *build_linux_arm_template
+  extends: .build_linux_arm_template
   variables:
     CONF_HOST: "aarch64-linux-gnu"
     PLATFORM_NAME: "linux-arm64"
     TEST_CFLAGS: ""
+    OPENOCD_CONFIGURE_OPTS: "--enable-remote-bitbang"
 
 build_windows:
-  stage: build
+  stage: build_openocd
   image: $CI_DOCKER_REGISTRY/esp32-toolchain-win-cross
   tags:
     - build
@@ -154,12 +198,15 @@ build_windows:
     PLATFORM_NAME: "win32"
     ARCHIVE_TOOL: "zip -r"
     ARCHIVE_EXT: "zip"
+    OPENOCD_CONFIGURE_OPTS: "--enable-remote-bitbang"
+  needs:
+    - job: style_check
   script:
     - *get_release_name
     - !reference [.add_gitlab_key, script]
     - !reference [.submodules_mirror_update, script]
     # Build libusb-1.0
-    - export LIBUSB_VER=libusb-1.0.21
+    - export LIBUSB_VER=libusb-1.0.26
     - wget https://dl.espressif.com/dl/$LIBUSB_VER.tar.gz -O $LIBUSB_VER.tar.gz
     - tar xzf $LIBUSB_VER.tar.gz && rm $LIBUSB_VER.tar.gz
     - pushd $LIBUSB_VER
@@ -190,7 +237,6 @@ build_windows:
     - make
     - MAKEFLAGS= make install-strip
     - popd
-    - cp /usr/${CONF_HOST}/lib/libwinpthread-1.dll $DIST_INSTALLED_DIR/bin/
     - cp ${ZLIB_DIR}/zlib1.dll $DIST_INSTALLED_DIR/bin/
     - *dist_archive
 
@@ -200,6 +246,7 @@ build_macos:
     PLATFORM_NAME: "macos"
     CONF_HOST: "x86_64-apple-darwin21.1"
     INSTALL_TARGET: "install-strip"
+    OPENOCD_CONFIGURE_OPTS: "--enable-remote-bitbang"
 
 build_macos_arm64:
   <<: *build_macos_template
@@ -207,3 +254,81 @@ build_macos_arm64:
     PLATFORM_NAME: "macos-arm64"
     CONF_HOST: "aarch64-apple-darwin21.1"
     INSTALL_TARGET: "install"
+    OPENOCD_CONFIGURE_OPTS: "--enable-remote-bitbang"
+
+scan-build:
+  stage: scan_build
+  image: $CI_DOCKER_REGISTRY/openocd-ci-env:1
+  tags:
+    - build
+  allow_failure: true
+  variables:
+    SCAN_BUILD_OUTPUT: "report"
+  artifacts:
+    paths:
+      - ${SCAN_BUILD_OUTPUT}
+  script:
+    - !reference [.add_gitlab_key, script]
+    - !reference [.submodules_mirror_update, script]
+    - ./bootstrap
+    - mkdir build-scanbuild
+    - pushd build-scanbuild
+    - scan-build ../configure
+    - scan-build -o out make -j8 CFLAGS="-std=gnu99 -I. -I../../jimtcl"
+    - popd
+    - ${ARCHIVE_TOOL} scan_build.${ARCHIVE_EXT} build-scanbuild/out
+    - mkdir -p ${SCAN_BUILD_OUTPUT}
+    - mv scan_build.${ARCHIVE_EXT} ${SCAN_BUILD_OUTPUT}
+
+build_linux_cmake:
+  stage: build_openocd
+  image: $CI_DOCKER_REGISTRY/openocd-ci-env:1
+  tags:
+    - build
+  allow_failure: true
+  needs:
+    - job: style_check
+  variables:
+    OPENOCD_CMAKE_CONFIGURE_OPTS: ""
+  script:
+    - !reference [.add_gitlab_key, script]
+    - !reference [.submodules_mirror_update, script]
+    - mkdir build && cd build
+    - cmake .. -G Ninja
+    - ninja
+
+# TODO: enable after updating CMake version in the docker image
+.build_linux_armhf_cmake:
+  stage: build_openocd
+  image: $CI_DOCKER_REGISTRY/esp32-toolchain-arm-cross:3
+  tags:
+    - build
+  allow_failure: true
+  needs:
+    - job: style_check
+  variables:
+    OPENOCD_CMAKE_CONFIGURE_OPTS: ""
+  script:
+    - !reference [.add_gitlab_key, script]
+    - !reference [.submodules_mirror_update, script]
+    - mkdir build && cd build
+    - cmake .. -DCMAKE_TOOLCHAIN_FILE=cmake/cross/linux-armhf.cmake
+    - make
+
+# TODO: enable after updating CMake version in the docker image
+.build_windows_cmake:
+  stage: build_openocd
+  image: $CI_DOCKER_REGISTRY/esp32-toolchain-win-cross
+  tags:
+    - build
+  allow_failure: true
+  needs:
+    - job: style_check
+  variables:
+    OPENOCD_CMAKE_CONFIGURE_OPTS: ""
+  script:
+    - !reference [.add_gitlab_key, script]
+    - !reference [.submodules_mirror_update, script]
+    - mkdir build && cd build
+    - cmake .. -DCMAKE_TOOLCHAIN_FILE=cmake/cross/mingw32.cmake
+    - make

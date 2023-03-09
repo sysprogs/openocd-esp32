@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+
 noinst_LTLIBRARIES += %D%/libopenocd.la
 bin_PROGRAMS += %D%/openocd
 
@@ -18,8 +20,9 @@ else
 %C%_openocd_LDADD += -ljim
 endif
 
-%C%_openocd_LDADD += -lpthread
+if BUILD_ESP_COMPRESSION
 %C%_openocd_LDADD += -lz
+endif
 
 %C%_libopenocd_la_CPPFLAGS =
 

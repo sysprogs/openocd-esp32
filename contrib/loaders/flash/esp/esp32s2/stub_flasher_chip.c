@@ -32,6 +32,7 @@
 #include "rtc_clk_common.h"
 #include "soc/dport_access.h"
 #include "stub_rom_chip.h"
+#include "stub_logger.h"
 #include "stub_flasher_int.h"
 #include "stub_flasher_chip.h"
 #include "stub_xtensa_chips.h"
@@ -62,7 +63,6 @@ struct spiflash_map_req {
 
 extern esp_rom_spiflash_chip_t g_rom_spiflash_chip;
 
-
 void vPortEnterCritical(void *mux)
 {
 }
@@ -71,7 +71,7 @@ void vPortExitCritical(void *mux)
 {
 }
 
-#if STUB_LOG_LOCAL_LEVEL > STUB_LOG_INFO
+#if STUB_LOG_ENABLE == 1
 void stub_print_cache_mmu_registers(void)
 {
 	uint32_t icache_ctrl_reg = REG_READ(EXTMEM_PRO_ICACHE_CTRL_REG);
@@ -99,6 +99,14 @@ uint32_t stub_flash_get_id(void)
 		g_rom_spiflash_chip.sector_size,
 		g_rom_spiflash_chip.page_size,
 		g_rom_spiflash_chip.status_mask);
+
+	if (g_rom_spiflash_dummy_len_plus[1] == 0) {
+		REG_CLR_BIT(PERIPHS_SPI_FLASH_USRREG, SPI_MEM_USR_DUMMY);
+	} else {
+		REG_SET_BIT(PERIPHS_SPI_FLASH_USRREG, SPI_MEM_USR_DUMMY);
+		REG_WRITE(PERIPHS_SPI_FLASH_USRREG1,
+			(g_rom_spiflash_dummy_len_plus[1] - 1) << SPI_MEM_USR_DUMMY_CYCLELEN_S);
+	}
 	WRITE_PERI_REG(PERIPHS_SPI_FLASH_C0, 0);/* clear regisrter */
 	WRITE_PERI_REG(PERIPHS_SPI_FLASH_CMD, SPI_MEM_FLASH_RDID);
 	while (READ_PERI_REG(PERIPHS_SPI_FLASH_CMD) != 0) ;
@@ -111,7 +119,7 @@ void stub_flash_cache_flush(void)
 {
 	/* we do not know breakpoint program address here, so pass wrong addr to invalidate the
 	 * whole ICache */
-	Cache_Invalidate_ICache_Items(0, 4*1024*1024);
+	Cache_Invalidate_ICache_Items(0, 4 * 1024 * 1024);
 }
 
 void stub_cache_init(void)
@@ -152,7 +160,11 @@ void stub_flash_state_prepare(struct stub_flash_state *state)
 		stub_cache_init();
 	}
 
-	esp_rom_spiflash_attach(spiconfig, 0);
+	/* Attach flash only if it has not been attached yet. Re-attaching it breaks PSRAM operation. */
+	if ((READ_PERI_REG(SPI_MEM_CACHE_FCTRL_REG(0)) & SPI_MEM_CACHE_FLASH_USR_CMD) == 0) {
+		STUB_LOGI("Attach spi flash...\n");
+		esp_rom_spiflash_attach(spiconfig, 0);
+	}
 }
 
 void stub_flash_state_restore(struct stub_flash_state *state)
@@ -184,46 +196,46 @@ int stub_rtc_clk_cpu_freq_get_config(rtc_cpu_freq_config_t *out_config)
 	uint32_t freq_mhz;
 	uint32_t soc_clk_sel = REG_GET_FIELD(DPORT_SYSCLK_CONF_REG, DPORT_SOC_CLK_SEL);
 	switch (soc_clk_sel) {
-		case DPORT_SOC_CLK_SEL_XTAL: {
-			source = RTC_CPU_FREQ_SRC_XTAL;
-			div = REG_GET_FIELD(DPORT_SYSCLK_CONF_REG, DPORT_PRE_DIV_CNT) + 1;
-			source_freq_mhz = (uint32_t)stub_rtc_clk_xtal_freq_get();
-			freq_mhz = source_freq_mhz / div;
+	case DPORT_SOC_CLK_SEL_XTAL: {
+		source = RTC_CPU_FREQ_SRC_XTAL;
+		div = REG_GET_FIELD(DPORT_SYSCLK_CONF_REG, DPORT_PRE_DIV_CNT) + 1;
+		source_freq_mhz = (uint32_t)stub_rtc_clk_xtal_freq_get();
+		freq_mhz = source_freq_mhz / div;
+	}
+	break;
+	case DPORT_SOC_CLK_SEL_PLL: {
+		source = RTC_CPU_FREQ_SRC_PLL;
+		uint32_t cpuperiod_sel = DPORT_REG_GET_FIELD(DPORT_CPU_PER_CONF_REG,
+				DPORT_CPUPERIOD_SEL);
+		uint32_t pllfreq_sel = DPORT_REG_GET_FIELD(DPORT_CPU_PER_CONF_REG,
+				DPORT_PLL_FREQ_SEL);
+		source_freq_mhz = (pllfreq_sel) ? RTC_PLL_FREQ_480M : RTC_PLL_FREQ_320M;
+		if (cpuperiod_sel == DPORT_CPUPERIOD_SEL_80) {
+			div = (source_freq_mhz == RTC_PLL_FREQ_480M) ? 6 : 4;
+			freq_mhz = 80;
+		} else if (cpuperiod_sel == DPORT_CPUPERIOD_SEL_160) {
+			div = (source_freq_mhz == RTC_PLL_FREQ_480M) ? 3 : 2;
+			div = 3;
+			freq_mhz = 160;
+		} else if (cpuperiod_sel == DPORT_CPUPERIOD_SEL_240) {
+			div = 2;
+			freq_mhz = 240;
+		} else {
+			/* unsupported frequency configuration */
+			return -1;
 		}
 		break;
-		case DPORT_SOC_CLK_SEL_PLL: {
-			source = RTC_CPU_FREQ_SRC_PLL;
-			uint32_t cpuperiod_sel = DPORT_REG_GET_FIELD(DPORT_CPU_PER_CONF_REG,
-				DPORT_CPUPERIOD_SEL);
-			uint32_t pllfreq_sel = DPORT_REG_GET_FIELD(DPORT_CPU_PER_CONF_REG,
-				DPORT_PLL_FREQ_SEL);
-			source_freq_mhz = (pllfreq_sel) ? RTC_PLL_FREQ_480M : RTC_PLL_FREQ_320M;
-			if (cpuperiod_sel == DPORT_CPUPERIOD_SEL_80) {
-				div = (source_freq_mhz == RTC_PLL_FREQ_480M) ? 6 : 4;
-				freq_mhz = 80;
-			} else if (cpuperiod_sel == DPORT_CPUPERIOD_SEL_160) {
-				div = (source_freq_mhz == RTC_PLL_FREQ_480M) ? 3 : 2;
-				div = 3;
-				freq_mhz = 160;
-			} else if (cpuperiod_sel == DPORT_CPUPERIOD_SEL_240) {
-				div = 2;
-				freq_mhz = 240;
-			} else {
-				/* unsupported frequency configuration */
-				return -1;
-			}
-			break;
-		}
-		case DPORT_SOC_CLK_SEL_8M:
-			source = RTC_CPU_FREQ_SRC_8M;
-			source_freq_mhz = 8;
-			div = 1;
-			freq_mhz = source_freq_mhz;
-			break;
-		case DPORT_SOC_CLK_SEL_APLL:
-		default:
-			/* unsupported frequency configuration */
-			return -2;
+	}
+	case DPORT_SOC_CLK_SEL_8M:
+		source = RTC_CPU_FREQ_SRC_8M;
+		source_freq_mhz = 8;
+		div = 1;
+		freq_mhz = source_freq_mhz;
+		break;
+	case DPORT_SOC_CLK_SEL_APLL:
+	default:
+		/* unsupported frequency configuration */
+		return -2;
 	}
 	*out_config = (rtc_cpu_freq_config_t) {
 		.source = source,
@@ -245,8 +257,9 @@ int stub_cpu_clock_configure(int cpu_freq_mhz)
 		old_config.freq_mhz = 0;
 	}
 
-#if STUB_LOG_LOCAL_LEVEL > STUB_LOG_NONE
-	uart_tx_wait_idle(CONFIG_CONSOLE_UART_NUM);
+#if STUB_LOG_ENABLE == 1
+	if (stub_get_log_dest() == STUB_LOG_DEST_UART)
+		uart_tx_wait_idle(CONFIG_CONSOLE_UART_NUM);
 #endif
 
 	/* set to maximum possible value */
@@ -269,8 +282,8 @@ int stub_cpu_clock_configure(int cpu_freq_mhz)
 	return old_config.freq_mhz;
 }
 
-#if STUB_LOG_LOCAL_LEVEL > STUB_LOG_NONE
-void stub_uart_console_configure(void)
+#if STUB_LOG_ENABLE == 1
+void stub_uart_console_configure(int dest)
 {
 	uartAttach(NULL);
 	ets_install_uart_printf();
@@ -398,14 +411,12 @@ esp_flash_enc_mode_t stub_get_flash_encryption_mode(void)
 				if (dis_dl_enc && dis_dl_icache && dis_dl_dcache)
 					mode = ESP_FLASH_ENC_MODE_RELEASE;
 			}
-
-		} else
+		} else {
 			mode = ESP_FLASH_ENC_MODE_DISABLED;
-
+		}
 		first = false;
+		STUB_LOGD("flash_encryption_mode: %d\n", mode);
 	}
-
-	STUB_LOGD("flash_encryption_mode: %d\n", mode);
 
 	return mode;
 }

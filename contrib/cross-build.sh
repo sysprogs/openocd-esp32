@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
 
 # This is an example of how to do a cross-build of OpenOCD using pkg-config.
 # Cross-building with pkg-config is deceptively hard and most guides and
@@ -148,7 +149,7 @@ if [ -d $CAPSTONE_SRC ] ; then
   sed -i '1s;^;prefix=/usr \
 exec_prefix=${prefix} \
 libdir=${exec_prefix}/lib \
-includedir=${prefix}/include\n\n;' $CAPSTONE_PC_FILE
+includedir=${prefix}/include/capstone\n\n;' $CAPSTONE_PC_FILE
 fi
 
 

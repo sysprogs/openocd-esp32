@@ -1,25 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+
 /***************************************************************************
  *   Generic flash driver for Espressif RISCV chips                        *
  *   Copyright (C) 2021 Espressif Systems Ltd.                             *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.           *
  ***************************************************************************/
 
-#ifndef FLASH_ESP_RISCV_H
-#define FLASH_ESP_RISCV_H
+#ifndef OPENOCD_FLASH_NOR_ESP_RISCV_H
+#define OPENOCD_FLASH_NOR_ESP_RISCV_H
 
 #include "esp_flash.h"
 
@@ -37,5 +24,4 @@ int esp_riscv_flash_init(struct esp_riscv_flash_bank *esp_info, uint32_t sec_sz,
 	bool (*is_drom_address)(target_addr_t addr),
 	const struct esp_flasher_stub_config *(*get_stub)(struct flash_bank *bank));
 
-
-#endif	/*FLASH_ESP_RISCV_H*/
+#endif	/* OPENOCD_FLASH_NOR_ESP_RISCV_H */

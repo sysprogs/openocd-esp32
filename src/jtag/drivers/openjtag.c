@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 /*******************************************************************************
  *   Driver for OpenJTAG Project (www.openjtag.org)                            *
  *   Compatible with libftdi drivers.                                          *
@@ -18,19 +20,6 @@
  *   And jlink.c                                                               *
  *   Copyright (C) 2008 by Spencer Oliver                                      *
  *   spen@spen-soft.co.uk                                                      *
- *                                                                             *
- *   This program is free software; you can redistribute it and/or modify      *
- *   it under the terms of the GNU General Public License as published by      *
- *   the Free Software Foundation; either version 2 of the License, or         *
- *   (at your option) any later version.                                       *
- *                                                                             *
- *   This program is distributed in the hope that it will be useful,           *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of            *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the             *
- *   GNU General Public License for more details.                              *
- *                                                                             *
- *   You should have received a copy of the GNU General Public License         *
- *   along with this program.  If not, see <http://www.gnu.org/licenses/>.     *
  ***************************************************************************/
 
 /***************************************************************************
@@ -753,16 +742,18 @@ static void openjtag_execute_runtest(struct jtag_command *cmd)
 		tap_set_state(TAP_IDLE);
 	}
 
-	if (cmd->cmd.runtest->num_cycles > 16)
-		LOG_WARNING("num_cycles > 16 on run test");
-
 	if (openjtag_variant != OPENJTAG_VARIANT_CY7C65215 ||
 		cmd->cmd.runtest->num_cycles) {
 		uint8_t command;
-		command = 7;
-		command |= ((cmd->cmd.runtest->num_cycles - 1) & 0x0F) << 4;
+		int cycles = cmd->cmd.runtest->num_cycles;
 
-		openjtag_add_byte(command);
+		do {
+			command = 7;
+			command |= (((cycles > 16 ? 16 : cycles) - 1) & 0x0F) << 4;
+
+			openjtag_add_byte(command);
+			cycles -= 16;
+		} while (cycles > 0);
 	}
 
 	tap_set_end_state(end_state);

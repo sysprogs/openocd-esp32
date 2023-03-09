@@ -1,7 +1,7 @@
 # GDB + OpenOCD tests
 
 import time
-import os.path
+import os
 import logging
 import unittest
 import importlib
@@ -10,8 +10,8 @@ import re
 import debug_backend as dbg
 
 # TODO: fixed???
-ESP32C3_BLD_FLASH_OFF = 0x0
-ESP32_BLD_FLASH_OFF = 0x1000
+ESP_RISCV_BLD_FLASH_OFF = 0x0
+ESP_XTENSA_BLD_FLASH_OFF = 0x1000
 ESP32_PT_FLASH_OFF = 0x8000
 # TODO: get from partition table
 ESP32_APP_FLASH_OFF = 0x10000
@@ -21,6 +21,7 @@ ESP32_FLASH_SZ =  4*(1024*1024) # 4M
 
 test_apps_dir = ''
 
+xtensa_chips = ["esp32", "esp32s2", "esp32s3"]
 
 def get_logger():
     """ Returns logger for this module
@@ -71,6 +72,9 @@ class IdfVersion:
     def __lt__(self, other):
         return self._idf_ver < other._idf_ver
 
+    def __ge__(self, other):
+        return self._idf_ver >= other._idf_ver
+
     def __eq__(self, other):
         return self._idf_ver == other._idf_ver
 
@@ -91,11 +95,57 @@ class TesteeInfo:
     @chip.setter
     def chip(self, val):
         self.__chip = val
-        self.__arch = "riscv32" if val == "esp32c3" else "xtensa"
+        self.__arch = "xtensa" if val in xtensa_chips else "riscv32"
 
     @property
     def arch(self):
         return self.__arch
+
+class GDBUtils:
+
+    def get_pkill_arg(self):
+        if "xtensa" in testee_info.arch:
+            return "xtensa-esp*"
+        elif "riscv" in testee_info.arch:
+            return "riscv32-esp-elf"
+        return "Unknown target"
+
+    def gdb_kill(self):
+        pkill_arg = self.get_pkill_arg()
+        os.system('pkill %s' % pkill_arg)
+
+    def create_gdb(self, chip_name, target_triple, toolchain, log_level, log_stream, log_file, gdb_log, debug_oocd):
+        remote_tmo = 10
+        _gdb_inst = dbg.create_gdb(chip_name=chip_name,
+                            target_triple=target_triple,
+                            gdb_path='%sgdb' % toolchain,
+                            extended_remote_mode='127.0.0.1:%d' % dbg.Oocd.GDB_PORT,
+                            log_level=log_level,
+                            log_stream_handler=log_stream,
+                            log_file_handler=log_file)
+        if len(gdb_log):
+            _gdb_inst.gdb_set('remotelogfile', gdb_log)
+        if debug_oocd > 2:
+            _gdb_inst.tmo_scale_factor = 5
+        else:
+            _gdb_inst.tmo_scale_factor = 3
+        _gdb_inst.gdb_set('remotetimeout', '%d' % remote_tmo)
+
+        return _gdb_inst
+
+    def create_gdb_and_reconnect(self):
+        debug_oocd = self.args[0]
+        log_lev = self.args[1]
+        gdb_log_file = self.args[2]
+        ch = self.args[3]
+        fh = self.args[4]
+        connect_tmo = 15
+
+        _gdb_inst = self.create_gdb(testee_info.chip, self.toolchain[:-1], self.toolchain, log_lev,
+                                        ch, fh, gdb_log_file, debug_oocd)
+        _gdb_inst.connect(tmo=connect_tmo)
+        _gdb_inst.exec_file_set(self.test_app_cfg.build_app_elf_path())
+        self.gdb = _gdb_inst
 
 testee_info = TesteeInfo()
 
@@ -153,6 +203,13 @@ def idf_ver_min_for_arch(ver_str, archs_to_run):
     # do not skip if arch is not found
     return unittest.skipIf(False, "")
 
+def idf_ver_min_for_chip(ver_str, chips_to_skip):
+    for chip in chips_to_skip:
+        if chip == testee_info.chip:
+            return idf_ver_min(ver_str)
+    # do not skip if chip is not found
+    return unittest.skipIf(False, "")
+
 class DebuggerTestError(RuntimeError):
     """ Base class for debugger's test errors
     """
@@ -178,15 +235,19 @@ class DebuggerTestAppConfig:
         self.bld_path = None
         # App binary offeset in flash
         if testee_info.arch == "xtensa":
-            self.bld_off = ESP32_BLD_FLASH_OFF
+            self.bld_off = ESP_XTENSA_BLD_FLASH_OFF
         else: #riscv32
-            self.bld_off = ESP32C3_BLD_FLASH_OFF
+            self.bld_off = ESP_RISCV_BLD_FLASH_OFF
         # Path for partitions table binary, relative $test_apps_dir/$app_name/$bin_dir
         self.pt_path = None
         # App binary offeset in flash
         self.pt_off = ESP32_PT_FLASH_OFF
         # name of test app variable which selects sub-test to run
+        # used for number-based tests selection
         self.test_select_var = None
+        # name of test app variable which holds sub-test string ID (name) to run
+        # used for string-based tests selection
+        self.test_id_var = None
         # Program's entry point ("app_main" is IDF's default)
         self.entry_point = entry_point
         # File containing commands to execute at startup
@@ -248,7 +309,7 @@ class DebuggerTestsBunch(unittest.BaseTestSuite):
             self.modules[test.__module__] = importlib.import_module(test.__module__)
             # get_logger().debug('Modules: %s', self.modules)
 
-    def config_tests(self, oocd, gdb, toolchain, uart_reader, port_name):
+    def config_tests(self, oocd, gdb, toolchain, uart_reader, port_name, arg_list):
         self.oocd = oocd
         self.gdb = gdb
         for test in self:
@@ -259,6 +320,11 @@ class DebuggerTestsBunch(unittest.BaseTestSuite):
             test.toolchain = toolchain
             test.uart_reader = uart_reader
             test.port_name = port_name
+            test.args = arg_list
+
+    def change_gdb_in_tests(self, gdb):
+        for each_test in self:
+            each_test.gdb = gdb
 
     def run(self, result, debug=False):
         """ Runs tests
@@ -289,22 +355,33 @@ class DebuggerTestsBunch(unittest.BaseTestSuite):
                 if self._groupped_suites[app_cfg_id][0].startup_script != '':
                     self.gdb.set_prog_startup_script(self._groupped_suites[app_cfg_id][0].startup_script_path())
                     self.gdb.exec_run(only_startup=self._groupped_suites[app_cfg_id][0].only_startup)
-
-            self._groupped_suites[app_cfg_id][1]._run_tests(result, debug)
+            ret = self._groupped_suites[app_cfg_id][1]._run_tests(result, debug)
+            if ret is not None:
+                self.gdb = ret
+                for tmp_app_cfg_id in self._groupped_suites:
+                    self._groupped_suites[tmp_app_cfg_id][0].gdb = ret
+                    self._groupped_suites[tmp_app_cfg_id][1].gdb = ret
+                    self._groupped_suites[tmp_app_cfg_id][1].change_gdb_in_tests(ret)
         return result
 
     def _run_tests(self, result, debug=False):
         """ Runs groups of tests
         """
+        tmp_gdb = None
         for test in self:
             if result.shouldStop:
                 break
             get_logger().debug('<<<<<<<<< START %s >>>>>>>', test.id())
             if not debug:
                 test(result)
+                if "test_gdb_detach" in test.id() and test.gdb != self.gdb:
+                    tmp_gdb = test.gdb
+                    self.gdb = tmp_gdb
+                    self.change_gdb_in_tests(tmp_gdb)
             else:
                 test.debug()
             get_logger().debug('======= END %s =======', test.id())
+        return tmp_gdb
 
     def _group_tests(self, tests):
         """ Groups tests by target app
@@ -329,22 +406,12 @@ class DebuggerTestsBunch(unittest.BaseTestSuite):
         if state != dbg.TARGET_STATE_STOPPED:
             self.gdb.exec_interrupt()
             self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 5)
-        if testee_info.idf_ver < IdfVersion.fromstr('4.0'):
-            # write bootloader
-            self.gdb.target_program(app_cfg.build_bld_bin_path(), app_cfg.bld_off)
-            # write partition table
-            self.gdb.target_program(app_cfg.build_pt_bin_path(), app_cfg.pt_off)
-            # write application
-            # Currently we can not use GDB ELF loading facility for ESP32, so write binary image instead
-            # _gdb.target_download()
-            self.gdb.target_program(app_cfg.build_app_bin_path(), app_cfg.app_off)
-        else:
-            # flash using 'flasher_args.json'
-            self.gdb.target_program_bins(app_cfg.build_bins_dir())
+        # flash using 'flasher_args.json'
+        self.gdb.target_program_bins(app_cfg.build_bins_dir())
         self.gdb.target_reset()
 
 
-class DebuggerTestsBase(unittest.TestCase):
+class DebuggerTestsBase(unittest.TestCase, GDBUtils):
     """ Base class for all tests
     """
     def __init__(self, methodName):
@@ -372,7 +439,7 @@ class DebuggerTestsBase(unittest.TestCase):
         if state != dbg.TARGET_STATE_STOPPED:
             self.gdb.exec_interrupt()
             rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 10)
-            self.assertEqual(rsn, dbg.TARGET_STOP_REASON_SIGINT)
+            self.assertTrue(rsn == dbg.TARGET_STOP_REASON_SIGINT or rsn == dbg.TARGET_STOP_REASON_SIGTRAP)
 
     def resume_exec(self, loc=None):
         """ Resumes target execution and ensures that it is in RUNNING state
@@ -420,6 +487,8 @@ class DebuggerTestsBase(unittest.TestCase):
         rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 5 if tmo is None else tmo)
         self.assertEqual(rsn, dbg.TARGET_STOP_REASON_FN_FINISHED)
 
+
+
 class DebuggerTestAppTests(DebuggerTestsBase):
     """ Base class for tests which need special app running on target
     """
@@ -438,6 +507,7 @@ class DebuggerTestAppTests(DebuggerTestsBase):
         self.stop_exec()
         self.prepare_app_for_debugging(self.test_app_cfg.app_off)
         # ready to select and start test (should be done in test method)
+        self.select_sub_test(self.id())
 
     def tearDown(self):
         self.clear_bps()
@@ -482,10 +552,14 @@ class DebuggerTestAppTests(DebuggerTestsBase):
             self.gdb.delete_bp(wpn)
         self.wps = {}
 
-    def select_sub_test(self, sub_test_num):
+    def select_sub_test(self, sub_test_id):
         """ Selects sub test in app running on target
         """
-        self.gdb.data_eval_expr('%s=%d' % (self.test_app_cfg.test_select_var, sub_test_num))
+        if type(sub_test_id) is str:
+            self.gdb.data_eval_expr('%s=%d' % (self.test_app_cfg.test_select_var, -1))
+            self.gdb.data_eval_expr('%s=\\"%s\\"' % (self.test_app_cfg.test_id_var, sub_test_id))
+        else:
+            self.gdb.data_eval_expr('%s=%d' % (self.test_app_cfg.test_select_var, sub_test_id))
 
 
     def run_to_bp(self, exp_rsn, func_name, tmo=20):
@@ -507,9 +581,9 @@ class DebuggerTestAppTests(DebuggerTestsBase):
             raise e
         return cur_frame
 
-    def run_to_bp_and_check_basic(self, exp_rsn, func_name):
+    def run_to_bp_and_check_basic(self, exp_rsn, func_name, run_bt=False):
         cur_frame = self.run_to_bp(exp_rsn, func_name)
-        frames = self.gdb.get_backtrace()
+        frames = self.gdb.get_backtrace(run_bt)
         self.assertTrue(len(frames) > 0)
         self.assertEqual(frames[0]['func'], cur_frame['func'])
         self.assertEqual(frames[0]['line'], cur_frame['line'])
@@ -517,11 +591,8 @@ class DebuggerTestAppTests(DebuggerTestsBase):
 
     def run_to_bp_and_check(self, exp_rsn, func_name, lineno_var_prefs, outmost_func_name='blink_task'):
         frames = self.run_to_bp_and_check_basic(exp_rsn, func_name)
-        if testee_info.idf_ver < IdfVersion.fromstr('3.3'):
-            outmost_frame = len(frames) - 1
-        else:
-            # -2 because our task function is called by FreeRTOS task wrapper for Xtensa or 'prvTaskExitError' for RISCV
-            outmost_frame = len(frames) - 2
+        # -2 because our task function is called by FreeRTOS task wrapper for Xtensa or 'prvTaskExitError' for RISCV
+        outmost_frame = len(frames) - 2
         get_logger().debug('outmost_frame = %d', outmost_frame)
         self.assertGreaterEqual(outmost_frame, 0)
         # Sometimes GDB does not provide full backtrace. so check this
@@ -550,6 +621,14 @@ class DebuggerTestAppTests(DebuggerTestsBase):
         line = self.gdb.data_eval_expr('%s_break_ln' % lineno_var_pref)
         self.assertEqual(line, frames[0]['line'])
 
+    def run_to_bp_label(self, label):
+        self.resume_exec()
+        rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 5)
+        self.assertEqual(rsn, dbg.TARGET_STOP_REASON_BP)
+        pc = self.gdb.get_reg('pc')
+        faddr = self.gdb.extract_exec_addr(self.gdb.data_eval_expr('&%s' % label))
+        self.assertEqual(pc, faddr)
+
 class DebuggerGenericTestAppTests(DebuggerTestAppTests):
     """ Base class to run tests which use generic test app
     """
@@ -558,39 +637,41 @@ class DebuggerGenericTestAppTests(DebuggerTestAppTests):
         super(DebuggerGenericTestAppTests, self).__init__(methodName)
         self.test_app_cfg.app_name = 'gen_ut_app'
         self.test_app_cfg.bld_path = os.path.join('bootloader', 'bootloader.bin')
-        if testee_info.idf_ver < IdfVersion.fromstr('3.3'):
-            self.test_app_cfg.pt_path = 'partitions_singleapp.bin'
-        else:
-            # starting from IDF 3.3 test app supports cmake build system which uses another build dir structure
-            self.test_app_cfg.pt_path = os.path.join('partition_table', 'partition-table.bin')
+        self.test_app_cfg.pt_path = os.path.join('partition_table', 'partition-table.bin')
         self.test_app_cfg.test_select_var = 's_run_test'
+        self.test_app_cfg.test_id_var = 's_run_test_str'
 
 
 class DebuggerGenericTestAppTestsDual(DebuggerGenericTestAppTests):
     """ Base class to run tests which use generic test app in dual core mode
     """
     CORES_NUM = 2
+    ENCRYPTED = 0
     def __init__(self, methodName='runTest'):
         super(DebuggerGenericTestAppTestsDual, self).__init__(methodName)
         # use default config with modified path to binaries
         self.test_app_cfg.bin_dir = os.path.join('output', 'default')
         self.test_app_cfg.build_dir = os.path.join('builds', 'default')
+        self.args = []
 
 
 class DebuggerGenericTestAppTestsSingle(DebuggerGenericTestAppTests):
     """ Base class to run tests which use generic test app in single core mode
     """
     CORES_NUM = 1
+    ENCRYPTED = 0
     def __init__(self, methodName='runTest'):
         super(DebuggerGenericTestAppTestsSingle, self).__init__(methodName)
         # use default config with modified path to binaries
         self.test_app_cfg.bin_dir = os.path.join('output', 'single_core')
         self.test_app_cfg.build_dir = os.path.join('builds', 'single_core')
+        self.args = []
 
 class DebuggerGenericTestAppTestsDualEncrypted(DebuggerGenericTestAppTests):
     """ Base class to run tests which use generic test app in dual core encrypted mode
     """
     CORES_NUM = 2
+    ENCRYPTED = 1
     def __init__(self, methodName='runTest'):
         super(DebuggerGenericTestAppTestsDualEncrypted, self).__init__(methodName)
         # use default_encrypted config with modified path to binaries
@@ -598,11 +679,13 @@ class DebuggerGenericTestAppTestsDualEncrypted(DebuggerGenericTestAppTests):
         self.test_app_cfg.build_dir = os.path.join('builds', 'default_encrypted')
         self.test_app_cfg.pt_off = 0x10000
         self.test_app_cfg.app_off = 0x20000
+        self.args = []
 
 class DebuggerGenericTestAppTestsSingleEncrypted(DebuggerGenericTestAppTests):
     """ Base class to run tests which use generic test app in single core encrypted mode
     """
     CORES_NUM = 1
+    ENCRYPTED = 1
     def __init__(self, methodName='runTest'):
         super(DebuggerGenericTestAppTestsSingleEncrypted, self).__init__(methodName)
         # use single_core_encrypted config with modified path to binaries
@@ -610,4 +693,5 @@ class DebuggerGenericTestAppTestsSingleEncrypted(DebuggerGenericTestAppTests):
         self.test_app_cfg.build_dir = os.path.join('builds', 'single_core_encrypted')
         self.test_app_cfg.pt_off = 0x10000
         self.test_app_cfg.app_off = 0x20000
+        self.args = []
 

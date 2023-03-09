@@ -1,18 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 /***************************************************************************
  *   Copyright (C) 2009 Zachary T Welch <zw@superlucidity.net>             *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program.  If not, see <http://www.gnu.org/licenses/>. *
  ***************************************************************************/
 
 #ifdef HAVE_CONFIG_H
@@ -42,7 +31,10 @@ extern const struct flash_driver em357_flash;
 extern const struct flash_driver esirisc_flash;
 extern const struct flash_driver esp32_flash;
 extern const struct flash_driver esp32s2_flash;
+extern const struct flash_driver esp32c2_flash;
+extern const struct flash_driver esp32h2_flash;
 extern const struct flash_driver esp32c3_flash;
+extern const struct flash_driver esp32c6_flash;
 extern const struct flash_driver esp32s3_flash;
 extern const struct flash_driver faux_flash;
 extern const struct flash_driver fm3_flash;
@@ -93,6 +85,7 @@ extern const struct flash_driver w600_flash;
 extern const struct flash_driver xcf_flash;
 extern const struct flash_driver xmc1xxx_flash;
 extern const struct flash_driver xmc4xxx_flash;
+extern const struct flash_driver rsl10_flash;
 
 /**
  * The list of built-in flash drivers.
@@ -121,7 +114,10 @@ static const struct flash_driver * const flash_drivers[] = {
 	&esirisc_flash,
 	&esp32_flash,
 	&esp32s2_flash,
+	&esp32c2_flash,
+	&esp32h2_flash,
 	&esp32c3_flash,
+	&esp32c6_flash,
 	&esp32s3_flash,
 	&faux_flash,
 	&fm3_flash,
@@ -172,6 +168,7 @@ static const struct flash_driver * const flash_drivers[] = {
 	&xmc1xxx_flash,
 	&xmc4xxx_flash,
 	&w600_flash,
+	&rsl10_flash,
 	NULL,
 };
 

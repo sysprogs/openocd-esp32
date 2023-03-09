@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 /***************************************************************************
  *   Copyright (C) 2018 by Mickaël Thomas                                  *
  *   mickael9@gmail.com                                                    *
@@ -16,19 +18,6 @@
  *                                                                         *
  *   Copyright (C) 2013 by Spencer Oliver                                  *
  *   spen@spen-soft.co.uk                                                  *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program.  If not, see <http://www.gnu.org/licenses/>. *
  ***************************************************************************/
 
 #ifdef HAVE_CONFIG_H
@@ -273,8 +262,10 @@ static int cmsis_dap_usb_open(struct cmsis_dap *dap, uint16_t vids[], uint16_t p
 					/* If the interface is reliably identified
 					 * then we need not insist on setting USB class, subclass and protocol
 					 * exactly as the specification requires.
+					 * Just filter out the well known classes, mainly CDC and MSC.
 					 * At least KitProg3 uses class 0 contrary to the specification */
-					if (intf_identified_reliably) {
+					if (intf_identified_reliably &&
+							(intf_desc->bInterfaceClass == 0 || intf_desc->bInterfaceClass > 0x12)) {
 						LOG_WARNING("Using CMSIS-DAPv2 interface %d with wrong class %" PRId8
 								  " subclass %" PRId8 " or protocol %" PRId8,
 								  interface_num,
@@ -361,25 +352,17 @@ static int cmsis_dap_usb_open(struct cmsis_dap *dap, uint16_t vids[], uint16_t p
 				return ERROR_FAIL;
 			}
 
-			dap->packet_size = packet_size;
-			dap->packet_buffer_size = packet_size;
 			dap->bdata->usb_ctx = ctx;
 			dap->bdata->dev_handle = dev_handle;
 			dap->bdata->ep_out = ep_out;
 			dap->bdata->ep_in = ep_in;
 			dap->bdata->interface = interface_num;
 
-			dap->packet_buffer = malloc(dap->packet_buffer_size);
-			if (!dap->packet_buffer) {
-				LOG_ERROR("unable to allocate memory");
+			err = cmsis_dap_usb_alloc(dap, packet_size);
+			if (err != ERROR_OK)
 				cmsis_dap_usb_close(dap);
-				return ERROR_FAIL;
-			}
 
-			dap->command = dap->packet_buffer;
-			dap->response = dap->packet_buffer;
-
-			return ERROR_OK;
+			return err;
 		}
 
 		libusb_close(dev_handle);
@@ -454,6 +437,8 @@ static int cmsis_dap_usb_alloc(struct cmsis_dap *dap, unsigned int pkt_sz)
 	dap->packet_buffer = buf;
 	dap->packet_size = pkt_sz;
 	dap->packet_buffer_size = pkt_sz;
+	/* Prevent sending zero size USB packets */
+	dap->packet_usable_size = pkt_sz - 1;
 
 	dap->command = dap->packet_buffer;
 	dap->response = dap->packet_buffer;

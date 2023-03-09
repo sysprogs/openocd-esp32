@@ -15,11 +15,7 @@ static void IRAM_ATTR test_timer_isr_ram_func(void)
 #if LEGACY_TIMER_GROUP == 1
 #define TIMER_DIVIDER         16  //  Hardware timer clock divider
 #define TIMER_SCALE           (TIMER_BASE_CLK / TIMER_DIVIDER)  // convert counter value to seconds
-#if UT_IDF_VER <= MAKE_UT_IDF_VER(4,1,0,0)
-#define TIM_CLR(_tg_, _tn_) do{ TIMERG ## _tg_.int_clr_timers.t ## _tn_ = 1;}while(0)
-#else  
 #define TIM_CLR(_tg_, _tn_) do{  timer_group_clr_intr_status_in_isr(_tg_, _tn_); }while(0)
-#endif
 
 const static char *TAG = "test_timer";
 
@@ -30,7 +26,7 @@ void test_timer_rearm(int timer_group, int timer_idx)
             TIM_CLR(0, 0);
             timer_set_alarm(0, 0, TIMER_ALARM_EN);
         } else {
-#if !CONFIG_IDF_TARGET_ESP32C3
+#if !CONFIG_IDF_TARGET_ARCH_RISCV
             TIM_CLR(0, 1);
             timer_set_alarm(0, 1, TIMER_ALARM_EN);
 #endif
@@ -40,7 +36,7 @@ void test_timer_rearm(int timer_group, int timer_idx)
             TIM_CLR(1, 0);
             timer_set_alarm(1, 0, TIMER_ALARM_EN);
         } else {
-#if !CONFIG_IDF_TARGET_ESP32C3
+#if !CONFIG_IDF_TARGET_ARCH_RISCV
             TIM_CLR(1, 1);
             timer_set_alarm(1, 1, TIMER_ALARM_EN);
 #endif
@@ -76,10 +72,8 @@ int test_timer_init(struct timer_task_arg* arg)
     config.divider = 2;     //Range is 2 to 65536
     config.intr_type = TIMER_INTR_LEVEL;
     config.counter_en = TIMER_PAUSE;
-#if UT_IDF_VER >= MAKE_UT_IDF_VER(4,1,0,0)
 #if SOC_TIMER_GROUP_SUPPORT_XTAL
     config.clk_src = TIMER_SRC_CLK_APB;
-#endif
 #endif
     /*Configure timer*/
     timer_init(arg->tim_grp, arg->tim_id, &config);
@@ -130,7 +124,13 @@ int test_timer_init(struct timer_task_arg* arg)
 
     gptimer_handle_t gptimer = NULL;
     gptimer_config_t config = {
+#if CONFIG_SOC_TIMER_GROUP_SUPPORT_APB
         .clk_src = GPTIMER_CLK_SRC_APB,
+#elif CONFIG_SOC_TIMER_GROUP_SUPPORT_PLL_F40M
+        .clk_src = GPTIMER_CLK_SRC_PLL_F40M,
+#else
+        .clk_src = GPTIMER_CLK_SRC_XTAL,
+#endif
         .direction = GPTIMER_COUNT_UP,
         .resolution_hz = 2.5 * 1000 * 1000,
     };
@@ -146,7 +146,7 @@ int test_timer_init(struct timer_task_arg* arg)
         .on_alarm = arg->isr_func,
     };
     ESP_ERROR_CHECK(gptimer_register_event_callbacks(gptimer, &cbs, NULL));
-
+    ESP_ERROR_CHECK(gptimer_enable(gptimer));
     ESP_ERROR_CHECK(gptimer_set_alarm_action(gptimer, &alarm_config));
     ESP_ERROR_CHECK(gptimer_start(gptimer));
     

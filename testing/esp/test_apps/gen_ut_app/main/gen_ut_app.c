@@ -8,12 +8,16 @@
 */
 #include <stdio.h>
 #include <string.h>
+#include <fnmatch.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "gen_ut_app.h"
 #if CONFIG_IDF_TARGET_ARCH_XTENSA
 #include "freertos/xtensa_api.h"
 #include "xtensa/core-macros.h"
+#endif
+#if UT_IDF_VER >= MAKE_UT_IDF_VER(5,0,0,0)
+#include "esp_memory_utils.h"
 #endif
 #include "driver/gpio.h"
 #include "test_timer.h"
@@ -25,6 +29,7 @@ const static char *TAG = "ut_app";
 
 // test app algorithm selector
 volatile static int s_run_test = CONFIG_GEN_UT_APP_RUNTEST;
+volatile static char s_run_test_str[256];
 // vars for WP tests
 volatile static int s_count1 = 0;
 volatile static int s_count2 = 100;
@@ -79,6 +84,23 @@ static void blink_task(void *pvParameter)
     }
 }
 
+static void gdb_detach_task(void *pvParameter)
+{
+    ESP_LOGI(TAG, "Detach test started");
+    while(1) {
+        gpio_reset_pin(BLINK_GPIO);
+        LABEL_SYMBOL(gdb_detach0);
+        gpio_set_direction(BLINK_GPIO, GPIO_MODE_OUTPUT);
+        LABEL_SYMBOL(gdb_detach1);
+        vTaskDelay(100 / portTICK_PERIOD_MS);
+        gpio_set_level(BLINK_GPIO, 0);
+        LABEL_SYMBOL(gdb_detach2);
+        vTaskDelay(2000 / portTICK_PERIOD_MS);
+        gpio_set_level(BLINK_GPIO, 1);
+        LABEL_SYMBOL(gdb_detach3);
+    }
+}
+
 void unused_func0(void)
 {
     s_tmp_ln++;
@@ -103,6 +125,15 @@ void unused_func5(void)
 {
     s_tmp_ln++;
 }
+void unused_func6(void)
+{
+    s_tmp_ln++;
+}
+void unused_func7(void)
+{
+    s_tmp_ln++;
+}
+
 
 /* This test calls functions recursively many times, exhausting the
  * register space and triggering window overflow exceptions.
@@ -320,10 +351,23 @@ static void step_over_inst_changing_intlevel(void* arg)
 }
 #endif
 
+// match test string ID with pattern. See fnmatch for wildcard format description.
+bool test_id_match(const char *pattern, const char *id)
+{
+    if (esp_ptr_internal(id) && esp_ptr_byte_accessible(id)) {
+        return fnmatch(pattern, id, 0) == 0;
+    }
+    return false;
+}
 
 void app_main()
 {
-    ESP_LOGI(TAG, "Run test %d\n", s_run_test);
+    if (s_run_test == -1) {
+        ESP_LOGI(TAG, "Run test '%s'\n", s_run_test_str);
+        s_run_test = (int)s_run_test_str;
+    } else {
+        ESP_LOGI(TAG, "Run test %d\n", s_run_test);
+    }
     if (s_run_test == 100){
         static struct timer_task_arg task_arg = { .tim_grp = TEST_TIMER_GROUP_1, .tim_id = TEST_TIMER_0, .tim_period = 500000UL, .isr_func = test_timer_isr};
         xTaskCreate(&blink_task, "blink_task", 4096, &task_arg, 5, NULL);
@@ -338,6 +382,8 @@ void app_main()
         xTaskCreate(&step_over_bp_task, "step_over_bp_task", 2048, NULL, 5, NULL);
     } else if (s_run_test == 104){
         xTaskCreate(&fibonacci_calc, "fibonacci_calc", 2048, NULL, 5, NULL);
+    } else if (s_run_test == 105){
+        xTaskCreate(&gdb_detach_task, "gdb_detach_task", 4096, NULL, 5, NULL);
 #if CONFIG_IDF_TARGET_ARCH_XTENSA
     } else if (s_run_test == 120){
         xTaskCreate(&step_over_inst_changing_intlevel, "step_over_inst_changing_intlevel", 2048, NULL, 5, NULL);
@@ -358,12 +404,22 @@ void app_main()
                 break;
             }
         }
-        if (res == UT_UNSUPPORTED) {
-            ESP_LOGE(TAG, "Invalid test id (%d)!", s_run_test);
-        } else if (res != UT_OK) {
-            ESP_LOGE(TAG, "Test %d failed (%d)!", s_run_test, res);
+        if (s_run_test != -1) {
+            if (res == UT_UNSUPPORTED) {
+                ESP_LOGE(TAG, "Invalid test id (%d)!", s_run_test);
+            } else if (res != UT_OK) {
+                ESP_LOGE(TAG, "Test %d failed (%d)!", s_run_test, res);
+            } else {
+                ESP_LOGI(TAG, "Test %d completed!", s_run_test);
+            }
         } else {
-            ESP_LOGI(TAG, "Test %d completed!", s_run_test);
+            if (res == UT_UNSUPPORTED) {
+                ESP_LOGE(TAG, "Invalid test id (%s)!", s_run_test_str);
+            } else if (res != UT_OK) {
+                ESP_LOGE(TAG, "Test '%s' failed (%d)!", s_run_test_str, res);
+            } else {
+                ESP_LOGI(TAG, "Test '%s' completed!", s_run_test_str);
+            }
         }
         // wait forever
         ulTaskNotifyTake(pdFALSE, portMAX_DELAY);

@@ -56,16 +56,6 @@ add_library(target
 	mips32_pracc.c
 	mips_ejtag.c
 	mips_m4k.c
-	nds32.c
-	nds32_aice.c
-	nds32_cmd.c
-	nds32_disassembler.c
-	nds32_reg.c
-	nds32_tlb.c
-	nds32_v2.c
-	nds32_v3.c
-	nds32_v3m.c
-	nds32_v3_common.c
 	quark_d20xx.c
 	quark_x10xx.c
 	register.c
@@ -76,10 +66,6 @@ add_library(target
 	trace.c
 	x86_32_common.c
 	xscale.c
-	esp32.c
-	esp32_apptrace.c
-	esp32s2.c
-	xtensa_debug_module.c
 	arm_cti.c
 	arm_dap.c
 	armv7a_mmu.c
@@ -99,17 +85,6 @@ add_library(target
 	riscv/riscv_semihosting.c
 	riscv/riscv-011.c
 	riscv/riscv-013.c
-	xtensa.c
-	xtensa_algorithm.c
-	esp_xtensa.c
-	esp_xtensa_apptrace.c
-	esp_xtensa_semihosting.c
-	esp_xtensa_semihosting.c
-	esp_xtensa_smp.c
-	esp32s3.c
-	esp_riscv_apptrace.c
-	esp32_sysview.c
-	esp32c3.c
 	a64_disassembler.c
 	adi_v5_dapdirect.c
 	arc.c
@@ -118,15 +93,32 @@ add_library(target
 	arc_mem.c
 	mips64.c
 	mips64_pracc.c
-	esp.c
 	rtt.c
-	esp_riscv.c
 	aarch64.c
 	mips_mips64.c
 	arm_tpiu_swo.c
-	esp_algorithm.c
-	esp_semihosting.c
-	esp_riscv_algorithm.c)
+	espressif/esp.c
+	espressif/esp_algorithm.c
+	espressif/esp_riscv.c
+	espressif/esp_riscv_algorithm.c
+	espressif/esp_riscv_apptrace.c
+	espressif/esp_semihosting.c
+	espressif/esp_xtensa.c
+	espressif/esp_xtensa_apptrace.c
+	espressif/esp_xtensa_semihosting.c
+	espressif/esp_xtensa_smp.c
+	espressif/esp32.c
+	espressif/esp32_apptrace.c
+	espressif/esp32_sysview.c
+	espressif/esp32c2.c
+	espressif/esp32c3.c
+	espressif/esp32c6.c
+	espressif/esp32h2.c
+	espressif/esp32s2.c
+	espressif/esp32s3.c
+	xtensa/xtensa.c
+	xtensa/xtensa_algorithm.c
+	xtensa/xtensa_debug_module.c)
 target_include_directories(target PRIVATE ../..)
 	
 SET_TARGET_PROPERTIES(target PROPERTIES COMPILE_FLAGS -I${CMAKE_CURRENT_BINARY_DIR})
