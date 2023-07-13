@@ -21,6 +21,73 @@
   mv ${ARCHIVE_NAME} ${DIST_ART_DIR}
   echo "${ARCHIVE_NAME}" > ${DIST_ART_DIR}/dist_name_${PLATFORM_NAME}
 
+.buildx_libusb: &buildx_libusb |
+  export LIBUSB_VER=libusb-1.0.26
+  wget https://dl.espressif.com/dl/$LIBUSB_VER.tar.gz -O $LIBUSB_VER.tar.gz
+  tar xzf $LIBUSB_VER.tar.gz && rm $LIBUSB_VER.tar.gz
+  pushd $LIBUSB_VER
+  ./bootstrap.sh
+  ./configure --prefix=$PWD/dist --host=${CONF_HOST} --enable-shared=no --enable-static=yes CC=${HOST_CC}
+  make
+  MAKEFLAGS= make ${INSTALL_TARGET}
+  export LIBUSB_INCLUDE_DIR=$PWD/dist/include/libusb-1.0
+  export LIBUSB_LIBRARIES=$PWD/dist/lib/libusb-1.0.a
+  popd
+
+.buildx_hidapi: &buildx_hidapi |
+  export HIDAPI_VER=hidapi-0.13.1
+  wget https://dl.espressif.com/dl/hidapi-$HIDAPI_VER.tar.gz -O $HIDAPI_VER.tar.gz
+  tar xzf $HIDAPI_VER.tar.gz && rm $HIDAPI_VER.tar.gz
+  pushd hidapi-$HIDAPI_VER
+  ./bootstrap
+  ./configure --prefix=$PWD/dist --host=${CONF_HOST} --enable-shared=no --enable-static=yes --disable-testgui CC=${HOST_CC} CFLAGS=-std=gnu99
+  make
+  MAKEFLAGS= make install
+  popd
+
+# TODO: just for boilerplate. Not tested on windows and macos yet.
+.buildx_libftdi: &buildx_libftdi |
+  export LIBFTDI_VER=libftdi1-1.5
+  wget https://dl.espressif.com/dl/${LIBFTDI_VER}.tar.bz2
+  tar -xjf ${LIBFTDI_VER}.tar.bz2 && rm ${LIBFTDI_VER}.tar.bz2
+  pushd $LIBFTDI_VER
+  DIST_PATH=$(printf '%s\n' "$PWD/dist" | sed -e 's/[\/&]/\\&/g')
+  sed -i -E "s/(SET\(CMAKE_FIND_ROOT_PATH\s+).+\)/\1${DIST_PATH})/" cmake/Toolchain-${CONF_HOST}.cmake
+  export LIBFTDI_CONFIG="-DSTATICLIBS=OFF -DEXAMPLES=OFF -DFTDI_EEPROM=OFF"
+  cmake $LIBFTDI_CONFIG -DLIBUSB_INCLUDE_DIR=$LIBUSB_INCLUDE_DIR -DLIBUSB_LIBRARIES=$LIBUSB_LIBRARIES -DCMAKE_TOOLCHAIN_FILE=cmake/Toolchain-${CONF_HOST}.cmake -DCMAKE_INSTALL_PREFIX=${PWD}/dist
+  make
+  make install
+  popd
+
+.buildx_zlib: &buildx_zlib |
+  export ZLIB_VER=zlib-1.2.11
+  wget https://dl.espressif.com/dl/$ZLIB_VER.tar.xz -O $ZLIB_VER.tar.xz
+  tar xf $ZLIB_VER.tar.xz && rm $ZLIB_VER.tar.xz
+  pushd $ZLIB_VER
+  make -f win32/Makefile.gcc BINARY_PATH=$PWD/dist/bin INCLUDE_PATH=$PWD/dist/include LIBRARY_PATH=$PWD/dist/lib SHARED_MODE=1 PREFIX=${CONF_HOST}- install
+  export CPPFLAGS="-I$PWD/dist/include"
+  export ZLIB_LDFLAGS="-L$PWD/dist/lib"
+  popd
+
+.buildx_libjaylink: &buildx_libjaylink |
+  export LIBJAYLINK_VER=libjaylink-0.3.1
+  wget https://dl.espressif.com/dl/$LIBJAYLINK_VER.tar.gz -O $LIBJAYLINK_VER.tar.gz
+  tar xzf $LIBJAYLINK_VER.tar.gz && rm $LIBJAYLINK_VER.tar.gz
+  pushd $LIBJAYLINK_VER
+  ./autogen.sh
+  ./configure --prefix=$PWD/dist --host=${CONF_HOST} --disable-shared CC=${HOST_CC}
+  make
+  make install
+  popd
+
+.buildx_openocd: &buildx_openocd |
+  ./bootstrap
+  mkdir _build && pushd _build/
+  ../configure --prefix=$PWD/../$DIST_INSTALLED_DIR --host=${CONF_HOST} $OPENOCD_CONFIGURE_OPTS CC=${HOST_CC}
+  make -j `nproc`
+  MAKEFLAGS= make ${INSTALL_TARGET}
+  popd
+
 .build_linux_arm_template:
   stage: build_openocd
   image: $CI_DOCKER_REGISTRY/esp32-toolchain-arm-cross:3
@@ -41,10 +108,9 @@
     - !reference [.add_gitlab_key, script]
     - !reference [.submodules_mirror_update, script]
     - ./bootstrap
-    - mkdir _build
-    - pushd _build/
+    - mkdir _build && pushd _build/
     - ../configure CFLAGS="${TEST_CFLAGS}" --prefix=$PWD/../$DIST_INSTALLED_DIR --host=${CONF_HOST}  $OPENOCD_CONFIGURE_OPTS $GCOV_BUILD_OPTS
-    - make
+    - make -j `nproc`
     - MAKEFLAGS= make install-strip
     - popd
     - >
@@ -69,27 +135,13 @@
     - *get_release_name
     - !reference [.add_gitlab_key, script]
     - !reference [.submodules_mirror_update, script]
-
-    # Cross-compile libusb-1.0 for OSX
-    - export LIBUSB_VER=libusb-1.0.26
-    - wget https://dl.espressif.com/dl/$LIBUSB_VER.tar.gz -O $LIBUSB_VER.tar.gz
-    - tar xzf $LIBUSB_VER.tar.gz && rm $LIBUSB_VER.tar.gz
-    - pushd $LIBUSB_VER
-    - ./bootstrap.sh
-    - ./configure --prefix=$PWD/dist --host=${CONF_HOST} --enable-shared=no --enable-static=yes CC=${CONF_HOST}-cc
-    - make
-    - make install
-    - popd
-
-    # Finally, cross-compile OpenOCD
+    - *buildx_libusb
     - export OSXCROSS_PKG_CONFIG_PATH=$PWD/$LIBUSB_VER/dist/lib/pkgconfig
-    - ./bootstrap
-    - mkdir _build
-    - pushd _build/
-    - ../configure --prefix=$PWD/../$DIST_INSTALLED_DIR --host=${CONF_HOST} $OPENOCD_CONFIGURE_OPTS LDFLAGS="-Wl,-framework,CoreFoundation -Wl,-framework,IOKit -Wl,-framework,Security" CC=${CONF_HOST}-cc
-    - make
-    - MAKEFLAGS= make ${INSTALL_TARGET}
-    - popd
+    - *buildx_hidapi
+    - *buildx_libjaylink
+    - export OSXCROSS_PKG_CONFIG_PATH=$PWD/hidapi-$HIDAPI_VER/dist/lib/pkgconfig/:$PWD/$LIBJAYLINK_VER/dist/lib/pkgconfig:$OSXCROSS_PKG_CONFIG_PATH
+    - export LDFLAGS="-Wl,-framework,CoreFoundation -Wl,-framework,IOKit -Wl,-framework,Security"
+    - *buildx_openocd
     - *dist_archive
 
 build_linux:
@@ -103,24 +155,30 @@ build_linux:
     expire_in: 2 weeks
   variables:
     PLATFORM_NAME: "linux-amd64"
-    OPENOCD_CONFIGURE_OPTS: "--enable-remote-bitbang"
+    CONF_HOST: "x86_64-linux-gnu"
+    HOST_CC: ${CONF_HOST}-gcc
   needs:
     - job: style_check
   script:
     - *get_release_name
     - !reference [.add_gitlab_key, script]
     - !reference [.submodules_mirror_update, script]
+    - apt-get update || true
+    - apt-get install systemd libudev-dev --force-yes -y # needed for hidapi build
+    - *buildx_hidapi
+    - *buildx_libjaylink
+    - export PKG_CONFIG_PATH=$PWD/hidapi-$HIDAPI_VER/dist/lib/pkgconfig/:$PWD/$LIBJAYLINK_VER/dist/lib/pkgconfig
     - ./bootstrap
     - mkdir _build
     - pushd _build/
     - ../configure --prefix=$PWD/../$DIST_INSTALLED_DIR $OPENOCD_CONFIGURE_OPTS
-    - make
+    - make -j `nproc`
     - src/openocd --version 2>&1 | { ! grep 'dirty'; }
     - MAKEFLAGS= make install-strip
     - popd
     - *dist_archive
 
-# do not distribute! Just for build error check with the latest gcc
+# Just to test build with latest gcc.
 build_linux_gcc_latest:
   stage: build_openocd
   image: $CI_DOCKER_REGISTRY/openocd-ci-env:1
@@ -134,7 +192,7 @@ build_linux_gcc_latest:
     - !reference [.submodules_mirror_update, script]
     - ./bootstrap
     - ./configure ${OPENOCD_CONFIGURE_OPTS}
-    - make -j8
+    - make -j`nproc`
 
 build_linux_armhf_test:
   extends: .build_linux_arm_template
@@ -146,7 +204,6 @@ build_linux_armhf_test:
     PLATFORM_NAME: "linux-armhf-test"
     TEST_CFLAGS: ""
     GCOV_BUILD_OPTS: "--enable-build-gcov"
-    OPENOCD_CONFIGURE_OPTS: "--enable-remote-bitbang"
 
 build_linux_armhf_sanitizer_test:
   extends: .build_linux_arm_template
@@ -166,7 +223,6 @@ build_linux_armhf:
     CONF_HOST: "arm-linux-gnueabihf"
     PLATFORM_NAME: "linux-armhf"
     TEST_CFLAGS: ""
-    OPENOCD_CONFIGURE_OPTS: "--enable-remote-bitbang"
 
 build_linux_armel:
   extends: .build_linux_arm_template
@@ -174,7 +230,6 @@ build_linux_armel:
     CONF_HOST: "arm-linux-gnueabi"
     PLATFORM_NAME: "linux-armel"
     TEST_CFLAGS: ""
-    OPENOCD_CONFIGURE_OPTS: "--enable-remote-bitbang"
 
 build_linux_arm64:
   extends: .build_linux_arm_template
@@ -182,7 +237,6 @@ build_linux_arm64:
     CONF_HOST: "aarch64-linux-gnu"
     PLATFORM_NAME: "linux-arm64"
     TEST_CFLAGS: ""
-    OPENOCD_CONFIGURE_OPTS: "--enable-remote-bitbang"
 
 build_windows:
   stage: build_openocd
@@ -198,46 +252,23 @@ build_windows:
     PLATFORM_NAME: "win32"
     ARCHIVE_TOOL: "zip -r"
     ARCHIVE_EXT: "zip"
-    OPENOCD_CONFIGURE_OPTS: "--enable-remote-bitbang"
+    INSTALL_TARGET: "install-strip"
+    HOST_CC: ${CONF_HOST}-gcc
   needs:
     - job: style_check
   script:
     - *get_release_name
     - !reference [.add_gitlab_key, script]
     - !reference [.submodules_mirror_update, script]
-    # Build libusb-1.0
-    - export LIBUSB_VER=libusb-1.0.26
-    - wget https://dl.espressif.com/dl/$LIBUSB_VER.tar.gz -O $LIBUSB_VER.tar.gz
-    - tar xzf $LIBUSB_VER.tar.gz && rm $LIBUSB_VER.tar.gz
-    - pushd $LIBUSB_VER
-    - ./bootstrap.sh
-    - ./configure --prefix=$PWD/dist --host=${CONF_HOST} --enable-shared=no --enable-static=yes
-    - make
-    - make install-strip
-    - export PKG_CONFIG_PATH=$PWD/dist/lib/pkgconfig
-    - popd
-    # Build zlib-1.2.11
-    - export ZLIB_VER=zlib-1.2.11
-    - wget https://dl.espressif.com/dl/$ZLIB_VER.tar.xz -O $ZLIB_VER.tar.xz
-    - tar xf $ZLIB_VER.tar.xz && rm $ZLIB_VER.tar.xz
-    - pushd $ZLIB_VER
-    - mkdir _build
-    - INSTALLDIR=_build
-    - make -f win32/Makefile.gcc BINARY_PATH=$INSTALLDIR/bin INCLUDE_PATH=$INSTALLDIR/include LIBRARY_PATH=$INSTALLDIR/lib SHARED_MODE=1 PREFIX=${CONF_HOST}- install
-    - export CPPFLAGS="-I$PWD/$INSTALLDIR/include"
-    - export LDFLAGS="-L$PWD/$INSTALLDIR/lib"
-    - export ZLIB_DIR=$PWD/$INSTALLDIR/bin
-    - popd
-    # Build OpenOCD
-    - git submodule update --init
-    - ./bootstrap
-    - mkdir _build
-    - pushd _build/
-    - ../configure --prefix=$PWD/../$DIST_INSTALLED_DIR --host=${CONF_HOST} $OPENOCD_CONFIGURE_OPTS
-    - make
-    - MAKEFLAGS= make install-strip
-    - popd
-    - cp ${ZLIB_DIR}/zlib1.dll $DIST_INSTALLED_DIR/bin/
+    - *buildx_libusb
+    - export PKG_CONFIG_PATH=$PWD/$LIBUSB_VER/dist/lib/pkgconfig
+    - *buildx_hidapi
+    - *buildx_libjaylink
+    - *buildx_zlib
+    - export PKG_CONFIG_PATH=$PWD/hidapi-$HIDAPI_VER/dist/lib/pkgconfig/:$PWD/$LIBJAYLINK_VER/dist/lib/pkgconfig:$PKG_CONFIG_PATH
+    - export LDFLAGS=$ZLIB_LDFLAGS
+    - *buildx_openocd
+    - cp $PWD/${ZLIB_VER}/dist/bin/zlib1.dll $DIST_INSTALLED_DIR/bin/
     - *dist_archive
 
 build_macos:
@@ -246,7 +277,7 @@ build_macos:
     PLATFORM_NAME: "macos"
     CONF_HOST: "x86_64-apple-darwin21.1"
     INSTALL_TARGET: "install-strip"
-    OPENOCD_CONFIGURE_OPTS: "--enable-remote-bitbang"
+    HOST_CC: ${CONF_HOST}-cc
 
 build_macos_arm64:
   <<: *build_macos_template
@@ -254,7 +285,7 @@ build_macos_arm64:
     PLATFORM_NAME: "macos-arm64"
     CONF_HOST: "aarch64-apple-darwin21.1"
     INSTALL_TARGET: "install"
-    OPENOCD_CONFIGURE_OPTS: "--enable-remote-bitbang"
+    HOST_CC: ${CONF_HOST}-cc
 
 scan-build:
   stage: scan_build
@@ -274,7 +305,7 @@ scan-build:
     - mkdir build-scanbuild
     - pushd build-scanbuild
     - scan-build ../configure
-    - scan-build -o out make -j8 CFLAGS="-std=gnu99 -I. -I../../jimtcl"
+    - scan-build -o out make -j`nproc` CFLAGS="-std=gnu99 -I. -I../../jimtcl"
     - popd
     - ${ARCHIVE_TOOL} scan_build.${ARCHIVE_EXT} build-scanbuild/out
     - mkdir -p ${SCAN_BUILD_OUTPUT}

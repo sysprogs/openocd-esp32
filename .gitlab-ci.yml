@@ -9,7 +9,7 @@ stages:
   - test_idf4.x
   - test_idf5.x
   - test_idf_master
-  - test_windows
+  - test_host
   - test_nuttx
   - coverage
   - sanitizer_tests
@@ -34,7 +34,7 @@ variables:
   GCOV_BUILD_OPTS: ""
 
   # OpenOCD configuration options
-  OPENOCD_CONFIGURE_OPTS: "--disable-doxygen-html --disable-doxygen-pdf --enable-ftdi --enable-jlink --enable-ulink"
+  OPENOCD_CONFIGURE_OPTS: "--disable-doxygen-html --enable-remote-bitbang"
 
   # GitHub Tool options
   GITHUB_USER: "${GH_USER}"
@@ -217,6 +217,22 @@ test_idf_master_examples:
       artifacts: true
   trigger:
     project: espressif/esp-idf
+    strategy: depend
+
+test_idf5.x_examples:
+  stage: pre_release
+  when: manual
+  only:
+    - master
+  allow_failure: true
+  variables:
+    OOCD_DISTRO_URL: ${NEW_OOCD_DISTRO_URL}
+  needs:
+    - job: upload_to_http
+      artifacts: true
+  trigger:
+    project: espressif/esp-idf
+    branch: ${TEST_APP_IDF5_X_RELEASE_BRANCH}
     strategy: depend
 
 test_idf4.x_examples:
