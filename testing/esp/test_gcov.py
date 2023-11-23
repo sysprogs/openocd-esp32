@@ -103,7 +103,7 @@ class GcovDataFile:
                 out = subprocess.check_output(['%sgcov' % toolchain, '-j', path], stderr=subprocess.STDOUT)
                 get_logger().debug('GCOV: %s', out)
                 #TODO check toolchain version, not IDF
-                if testee_info.idf_ver < IdfVersion.fromstr('latest'):
+                if testee_info.idf_ver < IdfVersion.fromstr('5.1'):
                     gcov_gz_file = file_name
                 else:
                     gcov_gz_file = os.path.splitext(file_name)[0] # remove .gcda extension.
@@ -223,7 +223,7 @@ class GcovTestsImpl:
         # TODO check toolchain version, not IDF
         if testee_info.idf_ver < IdfVersion.fromstr('5.0'):
             ref_data_path = os.path.join(self.test_app_cfg.build_src_dir(), 'main', 'gcov_tests.gcda.gcov')
-        elif testee_info.idf_ver < IdfVersion.fromstr('latest'):
+        elif testee_info.idf_ver < IdfVersion.fromstr('5.1'):
             ref_data_path = os.path.join(self.test_app_cfg.build_src_dir(), 'main', 'gcov_tests.c.gcda.gcov.json')
         else:
             ref_data_path = os.path.join(self.test_app_cfg.build_src_dir(), 'main', 'gcov_tests.c.gcov.json')
@@ -241,7 +241,7 @@ class GcovTestsImpl:
         data_path = os.path.join(self.test_app_cfg.build_obj_dir(), 'esp-idf', 'main', 'CMakeFiles', MAIN_COMP_BUILD_DIR_NAME, 'helper_funcs.c.gcda')
         if testee_info.idf_ver < IdfVersion.fromstr('5.0'):
             ref_data_path = os.path.join(self.test_app_cfg.build_src_dir(), 'main', 'helper_funcs.gcda.gcov')
-        elif testee_info.idf_ver < IdfVersion.fromstr('latest'):
+        elif testee_info.idf_ver < IdfVersion.fromstr('5.1'):
             ref_data_path = os.path.join(self.test_app_cfg.build_src_dir(), 'main', 'helper_funcs.c.gcda.gcov.json')
         else:
             ref_data_path = os.path.join(self.test_app_cfg.build_src_dir(), 'main', 'helper_funcs.c.gcov.json')
@@ -275,7 +275,6 @@ class GcovTestsImpl:
             7) Repeat steps 3-6 several times.
             8) Finally delete breakpoint
         """
-        self.select_sub_test(300)
         bp = self.gdb.add_bp('esp_gcov_dump')
         for i in range(5):
             self.resume_exec()
@@ -291,7 +290,7 @@ class GcovTestsImpl:
                 gcov_data_files.append(GcovDataFile(self.toolchain, f['data_path'], self.src_dirs,
                                         self.proj_path, self.test_app_cfg.build_obj_dir()))
             if i == 0:
-                # after first test iteration gcov data should be equal to reference ones
+                # after the first test iteration gcov data should be equal to reference ones
                 for k in range(len(gcov_data_files)):
                     self.assertEqual(gcov_data_files[k], self.gcov_files[k]['ref_data'])
             else:
@@ -326,7 +325,6 @@ class GcovTestsImpl:
             5) Run 'esp32 gcov dump'.
             6) Compare collected data with the reference one.
         """
-        self.select_sub_test(300)
         self.resume_exec()
         # TODO: better way to ensure that test app called esp_gcov_dump
         time.sleep(3)
@@ -336,7 +334,7 @@ class GcovTestsImpl:
         data_path = os.path.join(self.test_app_cfg.build_obj_dir(), 'esp-idf', 'main', 'CMakeFiles', MAIN_COMP_BUILD_DIR_NAME, 'gcov_tests.c.gcda')
         if testee_info.idf_ver < IdfVersion.fromstr('5.0'):
             ref_data_path = os.path.join(self.test_app_cfg.build_src_dir(), 'main', 'gcov_tests.gcda.gcov')
-        elif testee_info.idf_ver < IdfVersion.fromstr('latest'):
+        elif testee_info.idf_ver < IdfVersion.fromstr('5.1'):
             ref_data_path = os.path.join(self.test_app_cfg.build_src_dir(), 'main', 'gcov_tests.c.gcda.gcov.json')
         else:
             ref_data_path = os.path.join(self.test_app_cfg.build_src_dir(), 'main', 'gcov_tests.c.gcov.json')
@@ -347,7 +345,7 @@ class GcovTestsImpl:
         data_path = os.path.join(self.test_app_cfg.build_obj_dir(), 'esp-idf', 'main', 'CMakeFiles', MAIN_COMP_BUILD_DIR_NAME, 'helper_funcs.c.gcda')
         if testee_info.idf_ver < IdfVersion.fromstr('5.0'):
             ref_data_path = os.path.join(self.test_app_cfg.build_src_dir(), 'main', 'helper_funcs.gcda.gcov')
-        elif testee_info.idf_ver < IdfVersion.fromstr('latest'):
+        elif testee_info.idf_ver < IdfVersion.fromstr('5.1'):
             ref_data_path = os.path.join(self.test_app_cfg.build_src_dir(), 'main', 'helper_funcs.c.gcda.gcov.json')
         else:
             ref_data_path = os.path.join(self.test_app_cfg.build_src_dir(), 'main', 'helper_funcs.c.gcov.json')
@@ -367,7 +365,6 @@ class GcovTestsImpl:
             6) Run 'mon esp32 gcov'.
             7) Compare collected data with the reference one.
         """
-        self.select_sub_test(301)
         self.resume_exec()
         # wait some time to let app run and generate gcov data
         time.sleep(3)
@@ -393,7 +390,6 @@ class GcovTestsImpl:
             5) Run 'esp32 gcov'.
             6) Compare collected data with the reference one.
         """
-        self.select_sub_test(301)
         self.resume_exec()
         # wait some time to let app run and generate gcov data
         time.sleep(3)
@@ -431,7 +427,7 @@ class GcovTestAppTestsSingle(DebuggerGenericTestAppTests):
         self.test_app_cfg.bin_dir = os.path.join('output', 'apptrace_gcov_single')
         self.test_app_cfg.build_dir = os.path.join('builds', 'apptrace_gcov_single')
 
-
+@idf_ver_min_for_chip('5.0', ['esp32s3'])
 class GcovTestsDual(GcovTestAppTestsDual, GcovTestsImpl):
     """ Test cases via GDB in dual core mode
     """
@@ -439,7 +435,7 @@ class GcovTestsDual(GcovTestAppTestsDual, GcovTestsImpl):
         GcovTestAppTestsDual.setUp(self)
         GcovTestsImpl.setUp(self)
 
-
+@idf_ver_min_for_chip('5.0', ['esp32s3'])
 class GcovTestsSingle(GcovTestAppTestsSingle, GcovTestsImpl):
     """ Test cases via GDB in single core mode
     """

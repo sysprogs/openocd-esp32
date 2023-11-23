@@ -67,6 +67,8 @@
  * to the target. Afterwards use cache_get... to read results.
  */
 
+static int handle_halt(struct target *target, bool announce);
+
 #define get_field(reg, mask) (((reg) & (mask)) / ((mask) & ~((mask) << 1)))
 #define set_field(reg, mask, val) (((reg) & ~(mask)) | (((val) * ((mask) & ~((mask) << 1))) & (mask)))
 
@@ -161,15 +163,6 @@ typedef enum slot {
 
 #define DRAM_CACHE_SIZE		16
 
-struct trigger {
-	uint64_t address;
-	uint32_t length;
-	uint64_t mask;
-	uint64_t value;
-	bool read, write, execute;
-	int unique_id;
-};
-
 struct memory_cache_line {
 	uint32_t data;
 	bool valid;
@@ -219,7 +212,8 @@ typedef struct {
 
 static int poll_target(struct target *target, bool announce);
 static int riscv011_poll(struct target *target);
-static int get_register(struct target *target, riscv_reg_t *value, int regid);
+static int get_register(struct target *target, riscv_reg_t *value,
+		enum gdb_regno regid);
 
 /*** Utility functions. ***/
 
@@ -432,7 +426,10 @@ static dbus_status_t dbus_scan(struct target *target, uint16_t *address_in,
 		.in_value = in
 	};
 
-	assert(info->addrbits != 0);
+	if (info->addrbits == 0) {
+		LOG_TARGET_ERROR(target, "Can't access DMI because addrbits=0.");
+		return DBUS_STATUS_FAILED;
+	}
 
 	buf_set_u64(out, DBUS_OP_START, DBUS_OP_SIZE, op);
 	buf_set_u64(out, DBUS_DATA_START, DBUS_DATA_SIZE, data_out);
@@ -686,17 +683,12 @@ static void dram_write32(struct target *target, unsigned int index, uint32_t val
 }
 
 /** Read the haltnot and interrupt bits. */
-static bits_t read_bits(struct target *target)
+static int read_bits(struct target *target, bits_t *result)
 {
 	uint64_t value;
 	dbus_status_t status;
 	uint16_t address_in;
 	riscv011_info_t *info = get_info(target);
-
-	bits_t err_result = {
-		.haltnot = 0,
-		.interrupt = 0
-	};
 
 	do {
 		unsigned i = 0;
@@ -706,26 +698,23 @@ static bits_t read_bits(struct target *target)
 				if (address_in == (1<<info->addrbits) - 1 &&
 						value == (1ULL<<DBUS_DATA_SIZE) - 1) {
 					LOG_ERROR("TDO seems to be stuck high.");
-					return err_result;
+					return ERROR_FAIL;
 				}
 				increase_dbus_busy_delay(target);
-			} else if (status == DBUS_STATUS_FAILED) {
-				/* TODO: return an actual error */
-				return err_result;
 			}
 		} while (status == DBUS_STATUS_BUSY && i++ < 256);
 
-		if (i >= 256) {
+		if (status != DBUS_STATUS_SUCCESS) {
 			LOG_ERROR("Failed to read from 0x%x; status=%d", address_in, status);
-			return err_result;
+			return ERROR_FAIL;
 		}
 	} while (address_in > 0x10 && address_in != DMCONTROL);
 
-	bits_t result = {
-		.haltnot = get_field(value, DMCONTROL_HALTNOT),
-		.interrupt = get_field(value, DMCONTROL_INTERRUPT)
-	};
-	return result;
+	if (result) {
+		result->haltnot = get_field(value, DMCONTROL_HALTNOT);
+		result->interrupt = get_field(value, DMCONTROL_INTERRUPT);
+	}
+	return ERROR_OK;
 }
 
 static int wait_for_debugint_clear(struct target *target, bool ignore_first)
@@ -736,10 +725,16 @@ static int wait_for_debugint_clear(struct target *target, bool ignore_first)
 		 * result of the read that happened just before debugint was set.
 		 * (Assuming the last scan before calling this function was one that
 		 * sets debugint.) */
-		read_bits(target);
+		read_bits(target, NULL);
 	}
 	while (1) {
-		bits_t bits = read_bits(target);
+		bits_t bits = {
+			.haltnot = 0,
+			.interrupt = 0
+		};
+		if (read_bits(target, &bits) != ERROR_OK)
+			return ERROR_FAIL;
+
 		if (!bits.interrupt)
 			return ERROR_OK;
 		if (time(NULL) - start > riscv_command_timeout_sec) {
@@ -1113,6 +1108,9 @@ static int execute_resume(struct target *target, bool step)
 
 	LOG_DEBUG("step=%d", step);
 
+	if (riscv_flush_registers(target) != ERROR_OK)
+		return ERROR_FAIL;
+
 	maybe_write_tselect(target);
 
 	/* TODO: check if dpc is dirty (which also is true if an exception was hit
@@ -1189,17 +1187,7 @@ static int full_step(struct target *target, bool announce)
 			return ERROR_FAIL;
 		}
 	}
-	return ERROR_OK;
-}
-
-static int resume(struct target *target, int debug_execution, bool step)
-{
-	if (debug_execution) {
-		LOG_ERROR("TODO: debug_execution is true");
-		return ERROR_FAIL;
-	}
-
-	return execute_resume(target, step);
+	return handle_halt(target, announce);
 }
 
 static uint64_t reg_cache_get(struct target *target, unsigned int number)
@@ -1338,7 +1326,8 @@ static int register_write(struct target *target, unsigned int number,
 	return ERROR_OK;
 }
 
-static int get_register(struct target *target, riscv_reg_t *value, int regid)
+static int get_register(struct target *target, riscv_reg_t *value,
+		enum gdb_regno regid)
 {
 	riscv011_info_t *info = get_info(target);
 
@@ -1382,7 +1371,8 @@ static int get_register(struct target *target, riscv_reg_t *value, int regid)
 	return ERROR_OK;
 }
 
-static int set_register(struct target *target, int regid, uint64_t value)
+static int set_register(struct target *target, enum gdb_regno regid,
+		riscv_reg_t value)
 {
 	return register_write(target, regid, value);
 }
@@ -1590,7 +1580,6 @@ static int examine(struct target *target)
 		return result;
 
 	target_set_examined(target);
-	riscv_set_current_hartid(target, 0);
 	for (size_t i = 0; i < 32; ++i)
 		reg_cache_set(target, i, -1);
 	LOG_INFO("Examined RISCV core; XLEN=%d, misa=0x%" PRIx64,
@@ -1905,7 +1894,13 @@ static int poll_target(struct target *target, bool announce)
 	int old_debug_level = debug_level;
 	if (debug_level >= LOG_LVL_DEBUG)
 		debug_level = LOG_LVL_INFO;
-	bits_t bits = read_bits(target);
+	bits_t bits = {
+		.haltnot = 0,
+		.interrupt = 0
+	};
+	if (read_bits(target, &bits) != ERROR_OK)
+		return ERROR_FAIL;
+
 	debug_level = old_debug_level;
 
 	if (bits.haltnot && bits.interrupt) {
@@ -1936,7 +1931,7 @@ static int riscv011_resume(struct target *target, int current,
 	jtag_add_ir_scan(target->tap, &select_dbus, TAP_IDLE);
 
 	r->prepped = false;
-	return resume(target, debug_execution, false);
+	return execute_resume(target, false);
 }
 
 static int assert_reset(struct target *target)

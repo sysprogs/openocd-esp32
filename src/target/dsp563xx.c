@@ -18,6 +18,7 @@
 #include "register.h"
 #include "dsp563xx.h"
 #include "dsp563xx_once.h"
+#include "openocd.h"
 
 #define ASM_REG_W_R0    0x60F400
 #define ASM_REG_W_R1    0x61F400
@@ -1296,7 +1297,7 @@ static int dsp563xx_step(struct target *target,
 	struct dsp563xx_common *dsp563xx = target_to_dsp563xx(target);
 
 	if (target->state != TARGET_HALTED) {
-		LOG_WARNING("target not halted");
+		LOG_TARGET_ERROR(target, "not halted");
 		return ERROR_TARGET_NOT_HALTED;
 	}
 
@@ -1374,14 +1375,14 @@ static int dsp563xx_run_algorithm(struct target *target,
 	int num_mem_params, struct mem_param *mem_params,
 	int num_reg_params, struct reg_param *reg_params,
 	target_addr_t entry_point, target_addr_t exit_point,
-	int timeout_ms, void *arch_info)
+	unsigned int timeout_ms, void *arch_info)
 {
 	int i;
 	int retval = ERROR_OK;
 	struct dsp563xx_common *dsp563xx = target_to_dsp563xx(target);
 
 	if (target->state != TARGET_HALTED) {
-		LOG_WARNING("target not halted");
+		LOG_TARGET_ERROR(target, "not halted (run target algo)");
 		return ERROR_TARGET_NOT_HALTED;
 	}
 
@@ -1461,9 +1462,6 @@ static int dsp563xx_run_algorithm(struct target *target,
 
 	return ERROR_OK;
 }
-
-/* global command context from openocd.c */
-extern struct command_context *global_cmd_ctx;
 
 static int dsp563xx_get_default_memory(void)
 {
@@ -1705,7 +1703,7 @@ static int dsp563xx_write_memory_core(struct target *target,
 		count);
 
 	if (target->state != TARGET_HALTED) {
-		LOG_WARNING("target not halted");
+		LOG_TARGET_ERROR(target, "not halted");
 		return ERROR_TARGET_NOT_HALTED;
 	}
 
@@ -2146,7 +2144,7 @@ COMMAND_HANDLER(dsp563xx_mem_command)
 		err = dsp563xx_read_memory(target, mem_type, address, sizeof(uint32_t),
 				count, buffer);
 		if (err == ERROR_OK)
-			target_handle_md_output(CMD, target, address, sizeof(uint32_t), count, buffer);
+			target_handle_md_output(CMD, target, address, sizeof(uint32_t), count, buffer, true);
 
 	} else {
 		b = buffer;

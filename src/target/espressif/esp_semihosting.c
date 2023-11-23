@@ -249,6 +249,8 @@ int esp_semihosting_common(struct target *target)
 		return ERROR_OK;
 	}
 
+	struct gdb_fileio_info *fileio_info = target->fileio_info;
+
 	int retval = ERROR_NOT_IMPLEMENTED;
 
 	/* Enough space to hold 4 long words. */
@@ -261,7 +263,8 @@ int esp_semihosting_common(struct target *target)
 	semihosting->result = -1;
 	semihosting->sys_errno = EIO;
 
-	LOG_TARGET_DEBUG(target, "op=0x%x, param=0x%" PRIx64, semihosting->op, semihosting->param);
+	LOG_TARGET_DEBUG(target, "op=0x%x (%s), param=0x%" PRIx64,
+		semihosting->op, semihosting_opcode_to_str(semihosting->op), semihosting->param);
 
 	switch (semihosting->op) {
 	case ESP_SEMIHOSTING_SYS_DRV_INFO:
@@ -279,7 +282,15 @@ int esp_semihosting_common(struct target *target)
 			uint64_t fd = semihosting_get_field(target, 0, fields);
 			uint32_t pos = semihosting_get_field(target, 1, fields);
 			size_t whence = semihosting_get_field(target, 2, fields);
-			retval = esp_semihosting_sys_seek(target, fd, pos, whence);
+			if (semihosting->is_fileio) {
+				semihosting->hit_fileio = true;
+				fileio_info->identifier = "lseek";
+				fileio_info->param_1 = fd;
+				fileio_info->param_2 = pos;
+				fileio_info->param_3 = whence;
+			} else {
+				retval = esp_semihosting_sys_seek(target, fd, pos, whence);
+			}
 		}
 		break;
 
@@ -290,8 +301,24 @@ int esp_semihosting_common(struct target *target)
 		/* For the time being only riscv chips support these commands */
 		return esp_riscv_semihosting(target);
 
+	case ESP_SEMIHOSTING_SYS_PANIC_REASON:		/* 0x116 */
+		/* Read pseudo exception string */
+		retval = semihosting_read_fields(target, 2, fields);
+		if (retval == ERROR_OK) {
+			struct esp_common *esp = target_to_esp_common(target);
+			if (esp) {
+				esp->panic_reason.addr = semihosting_get_field(target, 0, fields);
+				esp->panic_reason.len = semihosting_get_field(target, 1, fields);
+			}
+		}
+		break;
+
 	case ESP_SEMIHOSTING_SYS_MKDIR:			/* 0x106 */
 		/* Attempts to create a directory to the given path. */
+		if (semihosting->is_fileio) {
+			LOG_ERROR("SYS_MKDIR not supported by semihosting fileio");
+			return ERROR_FAIL;
+		}
 		retval = semihosting_read_fields(target, 3, fields);
 		if (retval == ERROR_OK) {
 			int addr = semihosting_get_field(target, 0, fields);
@@ -313,6 +340,10 @@ int esp_semihosting_common(struct target *target)
 
 	case ESP_SEMIHOSTING_SYS_OPENDIR:		/* 0x107 */
 		/* Opens a directory stream corresponding to the given path. */
+		if (semihosting->is_fileio) {
+			LOG_ERROR("SYS_OPENDIR not supported by semihosting fileio");
+			return ERROR_FAIL;
+		}
 		retval = semihosting_read_fields(target, 3, fields);
 		if (retval == ERROR_OK) {
 			int addr = semihosting_get_field(target, 0, fields);
@@ -356,6 +387,10 @@ int esp_semihosting_common(struct target *target)
 
 	case ESP_SEMIHOSTING_SYS_READDIR:		/* 0x108 */
 		/* Reads the next directory entry to the given path. */
+		if (semihosting->is_fileio) {
+			LOG_ERROR("SYS_READDIR not supported by semihosting fileio");
+			return ERROR_FAIL;
+		}
 		retval = semihosting_read_fields(target, 4, fields);
 		if (retval == ERROR_OK) {
 			int ret_addr = semihosting_get_field(target, 0, fields);
@@ -385,6 +420,10 @@ int esp_semihosting_common(struct target *target)
 
 	case ESP_SEMIHOSTING_SYS_SEEKDIR:		/* 0x10A */
 		/* Function sets the location of the directory stream dirp. */
+		if (semihosting->is_fileio) {
+			LOG_ERROR("SYS_SEEKDIR not supported by semihosting fileio");
+			return ERROR_FAIL;
+		}
 		retval = semihosting_read_fields(target, 2, fields);
 		if (retval == ERROR_OK) {
 			int id = semihosting_get_field(target, 0, fields);
@@ -405,6 +444,10 @@ int esp_semihosting_common(struct target *target)
 
 	case ESP_SEMIHOSTING_SYS_TELLDIR:		/* 0x10B */
 		/* Returns the current location of the directory stream dirp. */
+		if (semihosting->is_fileio) {
+			LOG_ERROR("SYS_TELLDIR not supported by semihosting fileio");
+			return ERROR_FAIL;
+		}
 		retval = semihosting_read_fields(target, 1, fields);
 		if (retval == ERROR_OK) {
 			int id = semihosting_get_field(target, 0, fields);
@@ -422,6 +465,10 @@ int esp_semihosting_common(struct target *target)
 		break;
 
 	case ESP_SEMIHOSTING_SYS_CLOSEDIR:		/* 0x10C */
+		if (semihosting->is_fileio) {
+			LOG_ERROR("SYS_CLOSEDIR not supported by semihosting fileio");
+			return ERROR_FAIL;
+		}
 		retval = semihosting_read_fields(target, 1, fields);
 		if (retval == ERROR_OK) {
 			int id = semihosting_get_field(target, 0, fields);
@@ -441,6 +488,10 @@ int esp_semihosting_common(struct target *target)
 
 	case ESP_SEMIHOSTING_SYS_RMDIR:			/* 0x10D */
 		/* Removes the folder to the given path. */
+		if (semihosting->is_fileio) {
+			LOG_ERROR("SYS_RMDIR not supported by semihosting fileio");
+			return ERROR_FAIL;
+		}
 		retval = semihosting_read_fields(target, 2, fields);
 		if (retval == ERROR_OK) {
 			int addr = semihosting_get_field(target, 0, fields);
@@ -461,6 +512,10 @@ int esp_semihosting_common(struct target *target)
 
 	case ESP_SEMIHOSTING_SYS_ACCESS:		/* 0x10E */
 		/* Checks user's permission in the given path. */
+		if (semihosting->is_fileio) {
+			LOG_ERROR("SYS_ACCESS not supported by semihosting fileio");
+			return ERROR_FAIL;
+		}
 		retval = semihosting_read_fields(target, 3, fields);
 		if (retval == ERROR_OK) {
 			int addr = semihosting_get_field(target, 0, fields);
@@ -482,6 +537,10 @@ int esp_semihosting_common(struct target *target)
 
 	case ESP_SEMIHOSTING_SYS_TRUNCATE:		/* 0x10F */
 		/* Truncates the file given bytes long. */
+		if (semihosting->is_fileio) {
+			LOG_ERROR("SYS_TRUNCATE not supported by semihosting fileio");
+			return ERROR_FAIL;
+		}
 		retval = semihosting_read_fields(target, 3, fields);
 		if (retval == ERROR_OK) {
 			int addr = semihosting_get_field(target, 0, fields);
@@ -503,6 +562,10 @@ int esp_semihosting_common(struct target *target)
 
 	case ESP_SEMIHOSTING_SYS_UTIME:			/* 0x110 */
 		/* Changes last access and modification time information with given file path. */
+		if (semihosting->is_fileio) {
+			LOG_ERROR("SYS_UTIME not supported by semihosting fileio");
+			return ERROR_FAIL;
+		}
 		retval = semihosting_read_fields(target, 4, fields);
 		if (retval == ERROR_OK) {
 			int addr = semihosting_get_field(target, 0, fields);
@@ -534,20 +597,27 @@ int esp_semihosting_common(struct target *target)
 			struct stat statbuf;
 			struct stat_ret stat_ret;
 
-			semihosting->result = fstat(addr, &statbuf);
-			semihosting->sys_errno = errno;
-			if (semihosting->result >= 0) {
-				fill_stat_struct(&stat_ret, &statbuf);
-				retval =
-					target_write_buffer(target, ret_addr, sizeof(struct stat_ret),
-					(uint8_t *)(&stat_ret));
-				if (retval != ERROR_OK) {
-					semihosting->result = -1;
-					semihosting->sys_errno = EIO;
-					return retval;
+			if (semihosting->is_fileio) {
+				semihosting->hit_fileio = true;
+				fileio_info->identifier = "fstat";
+				fileio_info->param_1 = addr;
+				fileio_info->param_2 = ret_addr;
+			} else {
+				semihosting->result = fstat(addr, &statbuf);
+				semihosting->sys_errno = errno;
+				if (semihosting->result >= 0) {
+					fill_stat_struct(&stat_ret, &statbuf);
+					retval =
+						target_write_buffer(target, ret_addr, sizeof(struct stat_ret),
+						(uint8_t *)(&stat_ret));
+					if (retval != ERROR_OK) {
+						semihosting->result = -1;
+						semihosting->sys_errno = EIO;
+						return retval;
+					}
 				}
+				LOG_DEBUG("fstat('%d')=%" PRId64, addr, semihosting->result);
 			}
-			LOG_DEBUG("fstat('%d')=%" PRId64, addr, semihosting->result);
 		}
 		break;
 
@@ -559,37 +629,47 @@ int esp_semihosting_common(struct target *target)
 			int len = semihosting_get_field(target, 1, fields);
 			int ret_addr = semihosting_get_field(target, 2, fields);
 			char *fn;
+			if (semihosting->is_fileio) {
+				semihosting->hit_fileio = true;
+				fileio_info->identifier = "stat";
+				fileio_info->param_1 = addr;
+				fileio_info->param_2 = len;
+				fileio_info->param_3 = ret_addr;
+			} else {
+				retval = semihosting_get_file_name(target, addr, len, &fn);
+				if (retval != ERROR_OK)
+					return retval;
+				if (fn) {
+					struct stat statbuf;
+					struct stat_ret stat_ret;
+					semihosting->result = stat(fn, &statbuf);
+					semihosting->sys_errno = errno;
 
-			retval = semihosting_get_file_name(target, addr, len, &fn);
-			if (retval != ERROR_OK)
-				return retval;
-			if (fn) {
-				struct stat statbuf;
-				struct stat_ret stat_ret;
-
-				semihosting->result = stat(fn, &statbuf);
-				semihosting->sys_errno = errno;
-
-				if (semihosting->result >= 0) {
-					fill_stat_struct(&stat_ret, &statbuf);
-					/* FIXME: endiannes issue */
-					uint8_t *buff = (uint8_t *)(&stat_ret);
-					retval = target_write_buffer(target, ret_addr, sizeof(struct stat_ret), buff);
-					if (retval != ERROR_OK) {
-						semihosting->result = -1;
-						semihosting->sys_errno = EIO;
-						free(fn);
-						return retval;
+					if (semihosting->result >= 0) {
+						fill_stat_struct(&stat_ret, &statbuf);
+						/* FIXME: endiannes issue */
+						uint8_t *buff = (uint8_t *)(&stat_ret);
+						retval = target_write_buffer(target, ret_addr, sizeof(struct stat_ret), buff);
+						if (retval != ERROR_OK) {
+							semihosting->result = -1;
+							semihosting->sys_errno = EIO;
+							free(fn);
+							return retval;
+						}
 					}
+					LOG_DEBUG("stat('%s')=%" PRId64, fn, semihosting->result);
+					free(fn);
 				}
-				LOG_DEBUG("stat('%s')=%" PRId64, fn, semihosting->result);
-				free(fn);
 			}
 		}
 		break;
 
 	case ESP_SEMIHOSTING_SYS_FSYNC:			/* 0x113 */
 		/* Synchronizes file between in-core state and storage device with given file number. */
+		if (semihosting->is_fileio) {
+			LOG_ERROR("SYS_FSYNC not supported by semihosting fileio");
+			return ERROR_FAIL;
+		}
 		retval = semihosting_read_fields(target, 1, fields);
 		if (retval == ERROR_OK) {
 			int fd = semihosting_get_field(target, 0, fields);
@@ -601,6 +681,10 @@ int esp_semihosting_common(struct target *target)
 
 	case ESP_SEMIHOSTING_SYS_LINK:			/* 0x114 */
 		/* Creates a new link to an existing file between given paths. */
+		if (semihosting->is_fileio) {
+			LOG_ERROR("SYS_LINK not supported by semihosting fileio");
+			return ERROR_FAIL;
+		}
 		retval = semihosting_read_fields(target, 4, fields);
 		if (retval == ERROR_OK) {
 			int source_addr = semihosting_get_field(target, 0, fields);
@@ -634,57 +718,25 @@ int esp_semihosting_common(struct target *target)
 			int addr = semihosting_get_field(target, 0, fields);
 			int len = semihosting_get_field(target, 1, fields);
 			char *fn;
-
-			retval = semihosting_get_file_name(target, addr, len, &fn);
-			if (retval != ERROR_OK)
-				return retval;
-			if (fn) {
-				semihosting->result = unlink(fn);
-				semihosting->sys_errno = errno;
-				LOG_DEBUG("unlink('%s')=%" PRId64, fn, semihosting->result);
-				free(fn);
+			if (semihosting->is_fileio) {
+				semihosting->hit_fileio = true;
+				fileio_info->identifier = "unlink";
+				fileio_info->param_1 = addr;
+				fileio_info->param_2 = len;
+			} else {
+				retval = semihosting_get_file_name(target, addr, len, &fn);
+				if (retval != ERROR_OK)
+					return retval;
+				if (fn) {
+					semihosting->result = unlink(fn);
+					semihosting->sys_errno = errno;
+					LOG_DEBUG("unlink('%s')=%" PRId64, fn, semihosting->result);
+					free(fn);
+				}
 			}
 		}
 		break;
 	}
 
 	return retval;
-}
-
-int esp_semihosting_basedir_command(struct command_invocation *cmd)
-{
-	struct target *target = get_current_target(CMD_CTX);
-
-	if (!target) {
-		LOG_ERROR("No target selected");
-		return ERROR_FAIL;
-	}
-
-	struct semihosting *semihosting = target->semihosting;
-	if (!semihosting) {
-		command_print(CMD, "semihosting not supported for current target");
-		return ERROR_FAIL;
-	}
-
-	if (!semihosting->is_active) {
-		if (semihosting->setup(target, true) != ERROR_OK) {
-			LOG_ERROR("Failed to Configure semihosting");
-			return ERROR_FAIL;
-		}
-		semihosting->is_active = true;
-	}
-
-	if (CMD_ARGC > 0) {
-		free(semihosting->basedir);
-		semihosting->basedir = strdup(CMD_ARGV[0]);
-		if (!semihosting->basedir) {
-			command_print(CMD, "semihosting failed to allocate memory for basedir!");
-			return ERROR_FAIL;
-		}
-	}
-
-	command_print(CMD, "DEPRECATED! semihosting base dir: %s",
-		semihosting->basedir ? semihosting->basedir : "");
-
-	return ERROR_OK;
 }

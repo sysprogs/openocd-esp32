@@ -29,6 +29,17 @@ struct esp_riscv_common {
 	target_addr_t *target_wp_addr;
 	uint8_t max_bp_num;
 	uint8_t max_wp_num;
+	uint32_t assist_debug_cpu0_mon_reg; /* cpu 0 monitor register address */
+	uint32_t assist_debug_cpu_offset;   /* address offset to register of next cpu id */
+	target_addr_t gpio_strap_reg;		/* to read flash boot moode */
+	target_addr_t rtccntl_reset_state_reg;	/* to read reset cause */
+	unsigned long reset_cause_mask;
+	const char *(*get_reset_reason)(int reset_number);
+	bool (*is_flash_boot)(uint32_t strap_reg);
+	int (*wdt_disable)(struct target *target);
+	bool was_reset;
+	const char **existent_regs;
+	size_t existent_regs_size;
 };
 
 static inline struct esp_riscv_common *target_to_esp_riscv(const struct target *target)
@@ -36,12 +47,20 @@ static inline struct esp_riscv_common *target_to_esp_riscv(const struct target *
 	return target->arch_info;
 }
 
+static inline int esp_riscv_on_reset(struct target *target)
+{
+	LOG_TARGET_DEBUG(target, "on reset!");
+	struct esp_riscv_common *esp_riscv = target_to_esp_riscv(target);
+	esp_riscv->was_reset = true;
+	return ERROR_OK;
+}
+
 static inline int esp_riscv_init_arch_info(struct command_context *cmd_ctx, struct target *target,
-	struct esp_riscv_common *esp_riscv, int (*on_reset)(struct target *),
+	struct esp_riscv_common *esp_riscv,
 	const struct esp_flash_breakpoint_ops *flash_brps_ops,
 	const struct esp_semihost_ops *semi_ops)
 {
-	esp_riscv->riscv.on_reset = on_reset;
+	esp_riscv->riscv.on_reset = esp_riscv_on_reset;
 
 	INIT_LIST_HEAD(&esp_riscv->semihost.dir_map_list);
 
@@ -55,10 +74,15 @@ static inline int esp_riscv_init_arch_info(struct command_context *cmd_ctx, stru
 	return ERROR_OK;
 }
 
+int esp_riscv_examine(struct target *target);
+int esp_riscv_poll(struct target *target);
 int esp_riscv_alloc_trigger_addr(struct target *target);
 int esp_riscv_semihosting(struct target *target);
 int esp_riscv_breakpoint_add(struct target *target, struct breakpoint *breakpoint);
 int esp_riscv_breakpoint_remove(struct target *target, struct breakpoint *breakpoint);
+int esp_riscv_hit_watchpoint(struct target *target, struct watchpoint **hit_watchpoint);
+int esp_riscv_resume(struct target *target, int current, target_addr_t address,
+		int handle_breakpoints, int debug_execution);
 int esp_riscv_start_algorithm(struct target *target,
 	int num_mem_params, struct mem_param *mem_params,
 	int num_reg_params, struct reg_param *reg_params,
@@ -67,44 +91,17 @@ int esp_riscv_start_algorithm(struct target *target,
 int esp_riscv_wait_algorithm(struct target *target,
 	int num_mem_params, struct mem_param *mem_params,
 	int num_reg_params, struct reg_param *reg_params,
-	target_addr_t exit_point, int timeout_ms,
+	target_addr_t exit_point, unsigned int timeout_ms,
 	void *arch_info);
 int esp_riscv_run_algorithm(struct target *target, int num_mem_params,
 	struct mem_param *mem_params, int num_reg_params,
 	struct reg_param *reg_params, target_addr_t entry_point,
-	target_addr_t exit_point, int timeout_ms, void *arch_info);
+	target_addr_t exit_point, unsigned int timeout_ms, void *arch_info);
 int esp_riscv_read_memory(struct target *target, target_addr_t address,
 	uint32_t size, uint32_t count, uint8_t *buffer);
 int esp_riscv_write_memory(struct target *target, target_addr_t address,
 	uint32_t size, uint32_t count, const uint8_t *buffer);
-int esp_riscv_poll(struct target *target);
-int esp_riscv_halt(struct target *target);
-int esp_riscv_resume(struct target *target, int current, target_addr_t address,
-	int handle_breakpoints, int debug_execution);
-int esp_riscv_step(
-	struct target *target,
-	int current,
-	target_addr_t address,
-	int handle_breakpoints);
-int esp_riscv_assert_reset(struct target *target);
-int esp_riscv_deassert_reset(struct target *target);
-int esp_riscv_checksum_memory(struct target *target,
-	target_addr_t address, uint32_t count,
-	uint32_t *checksum);
-int esp_riscv_get_gdb_reg_list_noread(struct target *target,
-	struct reg **reg_list[], int *reg_list_size,
-	enum target_register_class reg_class);
-int esp_riscv_get_gdb_reg_list(struct target *target,
-	struct reg **reg_list[], int *reg_list_size,
-	enum target_register_class reg_class);
-const char *esp_riscv_get_gdb_arch(struct target *target);
-int esp_riscv_arch_state(struct target *target);
-int esp_riscv_add_watchpoint(struct target *target, struct watchpoint *watchpoint);
-int esp_riscv_remove_watchpoint(struct target *target,
-	struct watchpoint *watchpoint);
-int esp_riscv_hit_watchpoint(struct target *target, struct watchpoint **hit_watchpoint);
-unsigned int esp_riscv_address_bits(struct target *target);
-bool esp_riscv_core_is_halted(struct target *target);
+
 int esp_riscv_core_halt(struct target *target);
 int esp_riscv_core_resume(struct target *target);
 int esp_riscv_core_ebreaks_enable(struct target *target);

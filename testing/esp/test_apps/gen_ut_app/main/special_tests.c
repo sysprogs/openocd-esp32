@@ -19,14 +19,14 @@
 
 const static char *TAG = "special_test";
 
-static void crash_task(void *pvParameter)
+TEST_DECL(restart_debug_from_crash, "test_special.DebuggerSpecialTests*.test_restart_debug_from_crash")
 {
     ESP_LOGI(TAG, "Start crash task on core %d", xPortGetCoreID());
     int *p = 0;
     *p = 0; TEST_BREAK_LOC(crash);
 }
 
-static void cache_check_task(void *pvParameter)
+TEST_DECL(cache_handling, "test_flasher.FlasherTests*.test_cache_handling")
 {
     int count = 0;
     gpio_reset_pin(BLINK_GPIO);
@@ -53,7 +53,7 @@ static void cache_check_task(void *pvParameter)
 #if CONFIG_IDF_TARGET_ARCH_XTENSA
 #define SPIRAM_TEST_ARRAY_SZ    100
 
-static void psram_check_task(void *pvParameter)
+TEST_DECL(psram_with_flash_breakpoints, "test_special.PsramTests*.test_psram_with_flash_breakpoints")
 {
     uint32_t *mem = (uint32_t *)heap_caps_malloc(sizeof(uint32_t)*SPIRAM_TEST_ARRAY_SZ, MALLOC_CAP_DEFAULT|MALLOC_CAP_SPIRAM);
     for (int i = 0, k = 0x20; i < SPIRAM_TEST_ARRAY_SZ; i++, k++) {
@@ -84,10 +84,8 @@ static void psram_check_task(void *pvParameter)
     }
 }
 
-static void illegal_instruction_exc(void *pvParameter)
+TEST_DECL(illegal_instruction_ex, "test_special.DebuggerSpecialTests*.test_exception_illegal_instruction")
 {
-    int core_id = xPortGetCoreID();
-    ESP_LOGI(TAG, "CPU[%d]: Illegal instruction exception test started", core_id);
     __asm__ __volatile__ (
         ".global exception_bp\n" \
         ".type   exception_bp,@function\n" \
@@ -96,10 +94,8 @@ static void illegal_instruction_exc(void *pvParameter)
     );
 }
 
-static void load_prohibited_exc(void *pvParameter)
+TEST_DECL(load_prohibited_ex, "test_special.DebuggerSpecialTests*.test_exception_load_prohibited")
 {
-    int core_id = xPortGetCoreID();
-    ESP_LOGI(TAG, "CPU[%d]: Load prohibited exception test started", core_id);
     register long a2 asm ("a2") = 0;
     register long a3 asm ("a3") = 0;
     __asm__ __volatile__ (
@@ -111,10 +107,8 @@ static void load_prohibited_exc(void *pvParameter)
     );
 }
 
-static void store_prohibited_exc(void *pvParameter)
+TEST_DECL(store_prohibited_ex, "test_special.DebuggerSpecialTests*.test_exception_store_prohibited")
 {
-    int core_id = xPortGetCoreID();
-    ESP_LOGI(TAG, "CPU[%d]: Store prohibited exception test started", core_id);
     register long a2 asm ("a2") = 0;
     register long a3 asm ("a3") = 0;
     __asm__ __volatile__ (
@@ -126,10 +120,8 @@ static void store_prohibited_exc(void *pvParameter)
     );
 }
 
-static void divide_by_zero_exc(void *pvParameter)
+TEST_DECL(divide_by_zero_ex, "test_special.DebuggerSpecialTests*.test_exception_divide_by_zero")
 {
-    int core_id = xPortGetCoreID();
-    ESP_LOGI(TAG, "CPU[%d]: Divide by zero exception test started", core_id);
     register long a2 asm ("a2") = 0;
     register long a3 asm ("a3") = 0;
     __asm__ __volatile__ (
@@ -138,6 +130,28 @@ static void divide_by_zero_exc(void *pvParameter)
         "exception_bp_4:\n" \
         "QUOS a2, a2, a3\n" \
         : "+r"(a2) : "r"(a3)
+    );
+}
+
+TEST_DECL(pseudo_debug_ex, "test_special.DebuggerSpecialTests*.test_exception_pseudo_debug")
+{
+    __asm__ __volatile__ (
+        ".global exception_bp_5\n" \
+        ".type   exception_bp_5,@function\n" \
+        "exception_bp_5:\n" \
+        "call0 _DebugExceptionVector\n" \
+    );
+}
+
+TEST_DECL(pseudo_coprocessor_ex, "test_special.DebuggerSpecialTests*.test_exception_pseudo_coprocessor")
+{
+    __asm__ __volatile__ (
+        ".global exception_bp_6\n" \
+        ".type   exception_bp_6,@function\n" \
+        "exception_bp_6:\n" \
+        "movi    a0,4\n" \
+        "wsr     a0,EXCCAUSE\n" \
+        "call0   _xt_panic \n" \
     );
 }
 
@@ -205,14 +219,14 @@ static void target_bp_func1()
     s_var1 = 0x12345; TEST_BREAK_LOC(target_wp_var1_1);
     ESP_LOGI(TAG, "Target BP func '%s' on core %d.", __func__,  xPortGetCoreID());
     volatile int tmp = s_var1; (void)tmp; TEST_BREAK_LOC(target_wp_var1_2);
-    /* we've just resumed from WP on previous line, deugger could modify breakpoints config, so set next BP here */
+    /* we've just resumed from WP on previous line, debugger could modify breakpoints config, so set next BP here */
     SET_BP(1, target_bp_func2);
     target_bp_func2();
 }
 
-static void target_bp_task(void *pvParameter)
+TEST_DECL(target_bp_wp, "test_special.DebuggerSpecialTest*.test_bp_and_wp_set_by_program")
 {
-    ESP_LOGI(TAG, "Start target BP task on core %d", xPortGetCoreID());
+    ESP_LOGI(TAG, "Start target BP and WP task on core %d", xPortGetCoreID());
 
     SET_BP(0, target_bp_func1);
     SET_WP(0, (void *)&s_var1, sizeof(s_var1), WATCHPOINT_TRIGGER_ON_RW);
@@ -221,8 +235,7 @@ static void target_bp_task(void *pvParameter)
     target_bp_func1();
 }
 
-#if CONFIG_IDF_TARGET_ARCH_RISCV
-static void target_wp_reconf_task(void *pvParameter)
+TEST_DECL(wp_reconfigure_by_program, "test_special.DebuggerSpecialTests*.test_wp_reconfigure_by_program")
 {
     ESP_LOGI(TAG, "Start target WP reconfigure task on core %d", xPortGetCoreID());
 
@@ -243,71 +256,100 @@ static void target_wp_reconf_task(void *pvParameter)
 
     target_bp_func1();
 }
-#endif
+
+#if CONFIG_IDF_TARGET_ARCH_RISCV
+TEST_DECL(illegal_instruction_ex, "test_special.DebuggerSpecialTests*.test_exception_illegal_instruction")
+{
+    __asm__ __volatile__ (
+        ".global exception_bp\n" \
+        ".type   exception_bp,@function\n" \
+        "exception_bp_1:\n" \
+        "unimp\n" \
+    );
+}
+
+TEST_DECL(load_access_fault_ex, "test_special.DebuggerSpecialTests*.test_exception_load_access_fault")
+{
+    int value;
+
+    __asm__ __volatile__ (
+		".global exception_bp_2\n" \
+        ".type   exception_bp_2,@function\n" \
+        "exception_bp_2:\n" \
+        "lw %0, 0(%1)\n" \
+        : "=r"(value) : "r"(0x1000)
+    );
+}
+
+TEST_DECL(store_access_fault_ex, "test_special.DebuggerSpecialTests*.test_exception_store_access_fault")
+{
+    int value = 42;
+
+    asm __volatile__ (
+		".global exception_bp_3\n" \
+		".type   exception_bp_3,@function\n" \
+		"exception_bp_3:\n" \
+        "sw %0, 0(%1)"
+        :
+        : "r"(0x1000),
+          "r"(value)
+    );
+}
+#endif /* CONFIG_IDF_TARGET_ARCH_RISCV */
+
+TEST_DECL(assert_failure_ex, "test_special.DebuggerSpecialTests*.test_exception_assert_failure")
+{
+	TEST_BREAK_LBL(assert_failure_bp);
+	assert(0);
+}
+
+TEST_DECL(abort_ex, "test_special.DebuggerSpecialTests*.test_exception_abort")
+{
+	TEST_BREAK_LBL(abort_bp);
+	abort();
+}
 
 ut_result_t special_test_do(int test_num)
 {
-    switch (test_num) {
-        case 800:
-        {
-            xTaskCreatePinnedToCore(&crash_task, "crash_task", 2048, NULL, 5, NULL, portNUM_PROCESSORS-1);
-            break;
-        }
-        case 801:
-        {
-            xTaskCreatePinnedToCore(&cache_check_task, "cache_check_task", 4096, NULL, 5, NULL, portNUM_PROCESSORS-1);
-            break;
-        }
-#if CONFIG_IDF_TARGET_ARCH_XTENSA
-        case 802:
-        {
-            xTaskCreatePinnedToCore(&psram_check_task, "psram_task", 4096, NULL, 5, NULL, portNUM_PROCESSORS-1);
-            break;
-        }
-        case 804:
-        {
-            xTaskCreatePinnedToCore(&illegal_instruction_exc, "illegal_instruction_exc", 4096, NULL, 5, NULL, portNUM_PROCESSORS-1);
-            break;
-        }
-        case 805:
-        {
-            xTaskCreatePinnedToCore(&load_prohibited_exc, "load_prohibited_exc", 4096, NULL, 5, NULL, portNUM_PROCESSORS-1);
-            break;
-        }
-        case 806:
-        {
-            xTaskCreatePinnedToCore(&store_prohibited_exc, "store_prohibited_exc", 4096, NULL, 5, NULL, portNUM_PROCESSORS-1);
-            break;
-        }
-        case 807:
-        {
-            xTaskCreatePinnedToCore(&divide_by_zero_exc, "divide_by_zero_exc", 4096, NULL, 5, NULL, portNUM_PROCESSORS-1);
-            break;
-        }
-#endif
-        case 803:
-        {
-            xTaskCreatePinnedToCore(&target_bp_task, "target_bp_task", 4096, NULL, 5, NULL, portNUM_PROCESSORS-1);
-            break;
-        }
+    if (TEST_ID_MATCH(TEST_ID_PATTERN(target_bp_wp), test_num)) {
+        xTaskCreatePinnedToCore(TEST_ENTRY(target_bp_wp), "target_bp_wp_task", 4096, NULL, 5, NULL, portNUM_PROCESSORS-1);
+    } else if (TEST_ID_MATCH(TEST_ID_PATTERN(restart_debug_from_crash), test_num)) {
+        xTaskCreatePinnedToCore(TEST_ENTRY(restart_debug_from_crash), "crash_task", 2048, NULL, 5, NULL, portNUM_PROCESSORS-1);
+    } else if (TEST_ID_MATCH(TEST_ID_PATTERN(cache_handling), test_num)) {
+        xTaskCreatePinnedToCore(TEST_ENTRY(cache_handling), "cache_check_task", 4096, NULL, 5, NULL, portNUM_PROCESSORS-1);
+    } else if (TEST_ID_MATCH(TEST_ID_PATTERN(wp_reconfigure_by_program), test_num)) {
+        xTaskCreatePinnedToCore(TEST_ENTRY(wp_reconfigure_by_program), "target_wp_reconf_task", 2048, NULL, 5, NULL, portNUM_PROCESSORS-1);
 #if CONFIG_IDF_TARGET_ARCH_RISCV
-        /* we have two different tests for Xtensa and RISCV with the same ID. See above.
-           TODO: switch to string test IDs like 'test_bp.DebuggerBreakpointTestsDual.test_bp_add_remove_run', 'test_bp.DebuggerBreakpointTests*.test_bp_add_remove_run' */
-        case 804:
-        {
-            xTaskCreatePinnedToCore(&target_wp_reconf_task, "target_wp_reconf_task", 2048, NULL, 5, NULL, portNUM_PROCESSORS-1);
-            break;
-        }
+    } else if (TEST_ID_MATCH(TEST_ID_PATTERN(illegal_instruction_ex), test_num)) {
+        xTaskCreatePinnedToCore(TEST_ENTRY(illegal_instruction_ex), "illegal_instruction_ex", 2048, NULL, 5, NULL, portNUM_PROCESSORS-1);
+    } else if (TEST_ID_MATCH(TEST_ID_PATTERN(load_access_fault_ex), test_num)) {
+        xTaskCreatePinnedToCore(TEST_ENTRY(load_access_fault_ex), "load_access_fault_ex", 2048, NULL, 5, NULL, portNUM_PROCESSORS-1);
+    } else if (TEST_ID_MATCH(TEST_ID_PATTERN(store_access_fault_ex), test_num)) {
+        xTaskCreatePinnedToCore(TEST_ENTRY(store_access_fault_ex), "store_access_fault_ex", 2048, NULL, 5, NULL, portNUM_PROCESSORS-1);
+#else /* CONFIG_IDF_TARGET_ARCH_XTENSA */
+    } else if (TEST_ID_MATCH(TEST_ID_PATTERN(gh264_psram_check), test_num)) {
+        xTaskCreatePinnedToCore(TEST_ENTRY(gh264_psram_check), "gh264_psram_check_task", 4096, NULL, 5, NULL, portNUM_PROCESSORS-1);
+    } else if (TEST_ID_MATCH(TEST_ID_PATTERN(psram_with_flash_breakpoints), test_num)) {
+        xTaskCreatePinnedToCore(TEST_ENTRY(psram_with_flash_breakpoints), "psram_task", 4096, NULL, 5, NULL, portNUM_PROCESSORS-1);
+    } else if (TEST_ID_MATCH(TEST_ID_PATTERN(illegal_instruction_ex), test_num)) {
+        xTaskCreatePinnedToCore(TEST_ENTRY(illegal_instruction_ex), "illegal_instruction_ex", 2048, NULL, 5, NULL, portNUM_PROCESSORS-1);
+    } else if (TEST_ID_MATCH(TEST_ID_PATTERN(load_prohibited_ex), test_num)) {
+        xTaskCreatePinnedToCore(TEST_ENTRY(load_prohibited_ex), "load_prohibited_ex", 2048, NULL, 5, NULL, portNUM_PROCESSORS-1);
+    } else if (TEST_ID_MATCH(TEST_ID_PATTERN(store_prohibited_ex), test_num)) {
+        xTaskCreatePinnedToCore(TEST_ENTRY(store_prohibited_ex), "store_prohibited_ex", 2048, NULL, 5, NULL, portNUM_PROCESSORS-1);
+    } else if (TEST_ID_MATCH(TEST_ID_PATTERN(divide_by_zero_ex), test_num)) {
+        xTaskCreatePinnedToCore(TEST_ENTRY(divide_by_zero_ex), "divide_by_zero_ex", 2048, NULL, 5, NULL, portNUM_PROCESSORS-1);
+	} else if (TEST_ID_MATCH(TEST_ID_PATTERN(pseudo_debug_ex), test_num)) {
+        xTaskCreatePinnedToCore(TEST_ENTRY(pseudo_debug_ex), "pseudo_debug_ex", 2048, NULL, 5, NULL, portNUM_PROCESSORS-1);
+    } else if (TEST_ID_MATCH(TEST_ID_PATTERN(pseudo_coprocessor_ex), test_num)) {
+        xTaskCreatePinnedToCore(TEST_ENTRY(pseudo_coprocessor_ex), "pseudo_coprocessor_ex", 2048, NULL, 5, NULL, portNUM_PROCESSORS-1);
 #endif
-        default:
-#if CONFIG_IDF_TARGET_ARCH_XTENSA
-            if (TEST_ID_MATCH(TEST_ID_PATTERN(gh264_psram_check), test_num))
-            {
-                xTaskCreatePinnedToCore(TEST_ENTRY(gh264_psram_check), "gh264_psram_check_task", 4096, NULL, 5, NULL, portNUM_PROCESSORS-1);
-                break;
-            }
-#endif
-            return UT_UNSUPPORTED;
+	} else if (TEST_ID_MATCH(TEST_ID_PATTERN(assert_failure_ex), test_num)) {
+        xTaskCreatePinnedToCore(TEST_ENTRY(assert_failure_ex), "assert_failure_ex", 2048, NULL, 5, NULL, portNUM_PROCESSORS-1);
+    } else if (TEST_ID_MATCH(TEST_ID_PATTERN(abort_ex), test_num)) {
+        xTaskCreatePinnedToCore(TEST_ENTRY(abort_ex), "abort_ex", 2048, NULL, 5, NULL, portNUM_PROCESSORS-1);
+    } else {
+        return UT_UNSUPPORTED;
     }
     return UT_OK;
 }

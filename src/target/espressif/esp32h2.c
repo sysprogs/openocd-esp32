@@ -9,16 +9,17 @@
 #include "config.h"
 #endif
 
-#include "esp32h2.h"
 #include <helper/command.h>
 #include <helper/bits.h>
+#include <target/target.h>
 #include <target/target_type.h>
 #include <target/register.h>
 #include <target/semihosting_common.h>
-#include "esp_semihosting.h"
 #include <target/riscv/debug_defines.h>
-#include "esp32_apptrace.h"
-#include "rtos/rtos.h"
+
+#include "esp_semihosting.h"
+#include "esp_riscv_apptrace.h"
+#include "esp_riscv.h"
 
 /* ESP32-H2 WDT */
 #define ESP32H2_WDT_WKEY_VALUE                  0x50d83aa1
@@ -43,17 +44,16 @@
 #define ESP32H2_GPIO_BASE                       0x60091000
 #define ESP32H2_GPIO_STRAP_REG_OFF              0x0038
 #define ESP32H2_GPIO_STRAP_REG                  (ESP32H2_GPIO_BASE + ESP32H2_GPIO_STRAP_REG_OFF)
-#define IS_1XXX(v)                              (((v) & 0x08) == 0x08)
-#define IS_0100(v)                              (((v) & 0x0f) == 0x04)
-#define ESP32H2_IS_FLASH_BOOT(_r_)              (IS_1XXX(_r_) || IS_0100(_r_))
-#define ESP32H2_FLASH_BOOT_MODE                 0x08
 
 #define ESP32H2_RTCCNTL_RESET_CAUSE_MASK        (BIT(5) - 1)
 #define ESP32H2_RESET_CAUSE(reg_val)            ((reg_val) & ESP32H2_RTCCNTL_RESET_CAUSE_MASK)
 
 /* max supported hw breakpoint and watchpoint count */
-#define ESP32H2_BP_NUM          4
-#define ESP32H2_WP_NUM          4
+#define ESP32H2_BP_NUM                          4
+#define ESP32H2_WP_NUM                          4
+
+/* ASSIST_DEBUG registers */
+#define ESP32H2_ASSIST_DEBUG_CPU0_MON_REG       0x600C2000
 
 enum esp32h2_reset_reason {
 	ESP32H2_CHIP_POWER_ON_RESET     = 0x01,	/* Vbat power on reset */
@@ -78,7 +78,7 @@ enum esp32h2_reset_reason {
 	ESP32H2_JTAG_CPU_RESET          = 0x18,	/* Jtag reset CPU*/
 };
 
-static const char *esp32h2_get_reset_reason(enum esp32h2_reset_reason reset_number)
+static const char *esp32h2_get_reset_reason(int reset_number)
 {
 	switch (ESP32H2_RESET_CAUSE(reset_number)) {
 	case ESP32H2_CHIP_POWER_ON_RESET:
@@ -125,11 +125,6 @@ static const char *esp32h2_get_reset_reason(enum esp32h2_reset_reason reset_numb
 	}
 	return "Unknown reset cause";
 }
-
-extern struct target_type riscv_target;
-extern const struct command_registration riscv_command_handlers[];
-
-static int esp32h2_on_reset(struct target *target);
 
 static int esp32h2_wdt_disable(struct target *target)
 {
@@ -192,21 +187,52 @@ static const struct esp_flash_breakpoint_ops esp32h2_flash_brp_ops = {
 	.breakpoint_remove = esp_algo_flash_breakpoint_remove
 };
 
+static const char *esp32h2_existent_regs[] = {
+	"zero", "ra", "sp", "gp", "tp", "t0", "t1", "t2", "t3", "t4", "t5", "t6",
+	"fp", "pc", "mstatus", "misa", "mtvec", "mscratch", "mepc", "mcause", "mtval", "priv",
+	"s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11",
+	"a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7",
+	"pmpcfg0", "pmpcfg1", "pmpcfg2", "pmpcfg3",
+	"pmpaddr0", "pmpaddr1", "pmpaddr2", "pmpaddr3", "pmpaddr4", "pmpaddr5", "pmpaddr6", "pmpaddr7",
+	"pmpaddr8", "pmpaddr9", "pmpaddr10", "pmpaddr11", "pmpaddr12", "pmpaddr13", "pmpaddr14", "pmpaddr15",
+	"tselect", "tdata1", "tdata2", "tcontrol", "dcsr", "dpc", "dscratch0", "dscratch1", "hpmcounter16",
+	/* custom exposed CSRs will start with 'csr_' prefix*/
+	"csr_mpcer", "csr_mpcmr", "csr_mpccr", "csr_cpu_gpio_oen", "csr_cpu_gpio_in", "csr_cpu_gpio_out",
+	"csr_pma_cfg0", "csr_pma_cfg1", "csr_pma_cfg2", "csr_pma_cfg3", "csr_pma_cfg4", "csr_pma_cfg5",
+	"csr_pma_cfg6", "csr_pma_cfg7", "csr_pma_cfg8", "csr_pma_cfg9", "csr_pma_cfg10", "csr_pma_cfg11",
+	"csr_pma_cfg12", "csr_pma_cfg13", "csr_pma_cfg14", "csr_pma_cfg15", "csr_pma_addr0", "csr_pma_addr1",
+	"csr_pma_addr2", "csr_pma_addr3", "csr_pma_addr4", "csr_pma_addr5", "csr_pma_addr6", "csr_pma_addr7",
+	"csr_pma_addr8", "csr_pma_addr9", "csr_pma_addr10", "csr_pma_addr11", "csr_pma_addr12", "csr_pma_addr13",
+	"csr_pma_addr14", "csr_pma_addr15",
+};
+
 static int esp32h2_target_create(struct target *target, Jim_Interp *interp)
 {
-	struct esp32h2_common *esp32h2 = calloc(1, sizeof(*esp32h2));
-	if (!esp32h2)
+	struct esp_riscv_common *esp_riscv = calloc(1, sizeof(*esp_riscv));
+	if (!esp_riscv)
 		return ERROR_FAIL;
 
-	target->arch_info = esp32h2;
+	target->arch_info = esp_riscv;
 
-	esp32h2->esp_riscv.max_bp_num = ESP32H2_BP_NUM;
-	esp32h2->esp_riscv.max_wp_num = ESP32H2_WP_NUM;
+	esp_riscv->assist_debug_cpu0_mon_reg = ESP32H2_ASSIST_DEBUG_CPU0_MON_REG;
+	esp_riscv->assist_debug_cpu_offset = 0;
+
+	esp_riscv->max_bp_num = ESP32H2_BP_NUM;
+	esp_riscv->max_wp_num = ESP32H2_WP_NUM;
+
+	esp_riscv->gpio_strap_reg = ESP32H2_GPIO_STRAP_REG;
+	esp_riscv->rtccntl_reset_state_reg = ESP32H2_RTCCNTL_RESET_STATE_REG;
+	esp_riscv->reset_cause_mask = ESP32H2_RTCCNTL_RESET_CAUSE_MASK;
+	esp_riscv->get_reset_reason = &esp32h2_get_reset_reason;
+	esp_riscv->is_flash_boot = &esp_is_flash_boot;
+	esp_riscv->wdt_disable = &esp32h2_wdt_disable;
+	esp_riscv->existent_regs = esp32h2_existent_regs;
+	esp_riscv->existent_regs_size = ARRAY_SIZE(esp32h2_existent_regs);
 
 	if (esp_riscv_alloc_trigger_addr(target) != ERROR_OK)
 		return ERROR_FAIL;
 
-	riscv_info_init(target, &esp32h2->esp_riscv.riscv);
+	riscv_info_init(target, &esp_riscv->riscv);
 
 	return ERROR_OK;
 }
@@ -220,131 +246,17 @@ static int esp32h2_init_target(struct command_context *cmd_ctx,
 
 	target->semihosting->user_command_extension = esp_semihosting_common;
 
-	struct esp32h2_common *esp32h2 = esp32h2_common(target);
+	struct esp_riscv_common *esp_riscv = target_to_esp_riscv(target);
 
 	ret = esp_riscv_init_arch_info(cmd_ctx,
 		target,
-		&esp32h2->esp_riscv,
-		esp32h2_on_reset,
+		esp_riscv,
 		&esp32h2_flash_brp_ops,
 		&esp32h2_semihost_ops);
 	if (ret != ERROR_OK)
 		return ret;
 
 	return ERROR_OK;
-}
-
-static const char *const s_existent_regs[] = {
-	"zero", "ra", "sp", "gp", "tp", "t0", "t1", "t2", "t3", "t4", "t5", "t6",
-	"fp", "pc", "mstatus", "misa", "mtvec", "mscratch", "mepc", "mcause", "mtval", "priv",
-	"s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11",
-	"a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7",
-	"pmpcfg0", "pmpcfg1", "pmpcfg2", "pmpcfg3",
-	"pmpaddr0", "pmpaddr1", "pmpaddr2", "pmpaddr3", "pmpaddr4", "pmpaddr5", "pmpaddr6", "pmpaddr7",
-	"pmpaddr8", "pmpaddr9", "pmpaddr10", "pmpaddr11", "pmpaddr12", "pmpaddr13", "pmpaddr14", "pmpaddr15",
-	"tselect", "tdata1", "tdata2", "tcontrol", "dcsr", "dpc", "dscratch0", "dscratch1", "hpmcounter16",
-};
-
-static int esp32h2_examine(struct target *target)
-{
-	int ret = riscv_target.examine(target);
-	if (ret != ERROR_OK)
-		return ret;
-	/* RISCV code initializes registers upon target examination.
-	   disable some registers because their reading or writing causes exception. Not supported in ESP32-H2??? */
-	for (unsigned int i = 0; i < target->reg_cache->num_regs; i++) {
-		if (target->reg_cache->reg_list[i].exist) {
-			target->reg_cache->reg_list[i].exist = false;
-			for (unsigned int j = 0; j < ARRAY_SIZE(s_existent_regs); j++)
-				if (!strcmp(target->reg_cache->reg_list[i].name, s_existent_regs[j])) {
-					target->reg_cache->reg_list[i].exist = true;
-					break;
-				}
-		}
-	}
-	return ERROR_OK;
-}
-
-static int esp32h2_on_reset(struct target *target)
-{
-	LOG_DEBUG("esp32h2_on_reset!");
-	struct esp32h2_common *esp32h2 = esp32h2_common(target);
-	esp32h2->was_reset = true;
-	return ERROR_OK;
-}
-
-static int esp32h2_poll(struct target *target)
-{
-	struct esp32h2_common *esp32h2 = esp32h2_common(target);
-	int res = ERROR_OK;
-
-	RISCV_INFO(r);
-	if (esp32h2->was_reset && r->dmi_read && r->dmi_write) {
-		uint32_t dmstatus;
-		res = r->dmi_read(target, &dmstatus, DM_DMSTATUS);
-		if (res != ERROR_OK) {
-			LOG_ERROR("Failed to read DMSTATUS (%d)!", res);
-		} else {
-			uint32_t strap_reg;
-			LOG_DEBUG("Core is out of reset: dmstatus 0x%x", dmstatus);
-			esp32h2->was_reset = false;
-			res = target_read_u32(target, ESP32H2_GPIO_STRAP_REG, &strap_reg);
-			if (res != ERROR_OK) {
-				LOG_WARNING("Failed to read ESP32H2_GPIO_STRAP_REG (%d)!", res);
-				strap_reg = ESP32H2_FLASH_BOOT_MODE;
-			}
-			uint32_t reset_buffer = 0;
-			res = target_read_u32(target,
-				ESP32H2_RTCCNTL_RESET_STATE_REG,
-				&reset_buffer);
-			if (res != ERROR_OK) {
-				LOG_WARNING("Failed to read read reset cause register (%d)!", res);
-			} else {
-				LOG_INFO("Reset cause (%ld) - (%s)",
-					(ESP32H2_RESET_CAUSE(reset_buffer)),
-					esp32h2_get_reset_reason((reset_buffer)));
-			}
-
-			if (ESP32H2_IS_FLASH_BOOT(strap_reg) &&
-				get_field(dmstatus, DM_DMSTATUS_ALLHALTED) == 0) {
-				LOG_DEBUG("Halt core");
-				res = esp_riscv_core_halt(target);
-				if (res == ERROR_OK) {
-					res = esp32h2_wdt_disable(target);
-					if (res != ERROR_OK)
-						LOG_ERROR("Failed to disable WDTs (%d)!", res);
-				} else {
-					LOG_ERROR("Failed to halt core (%d)!", res);
-				}
-			}
-			if (esp32h2->esp_riscv.semi_ops->post_reset)
-				esp32h2->esp_riscv.semi_ops->post_reset(target);
-			/* Clear memory which is used by RTOS layer to get the task count */
-			if (target->rtos && target->rtos->type->post_reset_cleanup) {
-				res = (*target->rtos->type->post_reset_cleanup)(target);
-				if (res != ERROR_OK)
-					LOG_WARNING("Failed to do rtos-specific cleanup (%d)", res);
-			}
-			/* clear previous apptrace ctrl_addr to avoid invalid tracing control block usage in the long
-			 * run */
-			esp32h2->esp_riscv.apptrace.ctrl_addr = 0;
-
-			if (ESP32H2_IS_FLASH_BOOT(strap_reg)) {
-				/* enable ebreaks */
-				res = esp_riscv_core_ebreaks_enable(target);
-				if (res != ERROR_OK)
-					LOG_ERROR("Failed to enable EBREAKS handling (%d)!", res);
-				if (get_field(dmstatus, DM_DMSTATUS_ALLHALTED) == 0) {
-					LOG_DEBUG("Resume core");
-					res = esp_riscv_core_resume(target);
-					if (res != ERROR_OK)
-						LOG_ERROR("Failed to resume core (%d)!", res);
-					LOG_DEBUG("resumed core");
-				}
-			}
-		}
-	}
-	return esp_riscv_poll(target);
 }
 
 static const struct command_registration esp32h2_command_handlers[] = {
@@ -371,35 +283,35 @@ struct target_type esp32h2_target = {
 	.target_create = esp32h2_target_create,
 	.init_target = esp32h2_init_target,
 	.deinit_target = esp_riscv_deinit_target,
-	.examine = esp32h2_examine,
+	.examine = esp_riscv_examine,
 
 	/* poll current target status */
-	.poll = esp32h2_poll,
+	.poll = esp_riscv_poll,
 
-	.halt = esp_riscv_halt,
+	.halt = riscv_halt,
 	.resume = esp_riscv_resume,
-	.step = esp_riscv_step,
+	.step = riscv_openocd_step,
 
-	.assert_reset = esp_riscv_assert_reset,
-	.deassert_reset = esp_riscv_deassert_reset,
+	.assert_reset = riscv_assert_reset,
+	.deassert_reset = riscv_deassert_reset,
 
 	.read_memory = esp_riscv_read_memory,
 	.write_memory = esp_riscv_write_memory,
 
-	.checksum_memory = esp_riscv_checksum_memory,
+	.checksum_memory = riscv_checksum_memory,
 
-	.get_gdb_arch = esp_riscv_get_gdb_arch,
-	.get_gdb_reg_list = esp_riscv_get_gdb_reg_list,
-	.get_gdb_reg_list_noread = esp_riscv_get_gdb_reg_list_noread,
+	.get_gdb_arch = riscv_get_gdb_arch,
+	.get_gdb_reg_list = riscv_get_gdb_reg_list,
+	.get_gdb_reg_list_noread = riscv_get_gdb_reg_list_noread,
 
 	.add_breakpoint = esp_riscv_breakpoint_add,
 	.remove_breakpoint = esp_riscv_breakpoint_remove,
 
-	.add_watchpoint = esp_riscv_add_watchpoint,
-	.remove_watchpoint = esp_riscv_remove_watchpoint,
+	.add_watchpoint = riscv_add_watchpoint,
+	.remove_watchpoint = riscv_remove_watchpoint,
 	.hit_watchpoint = esp_riscv_hit_watchpoint,
 
-	.arch_state = esp_riscv_arch_state,
+	.arch_state = riscv_arch_state,
 
 	.run_algorithm = esp_riscv_run_algorithm,
 	.start_algorithm = esp_riscv_start_algorithm,
@@ -407,5 +319,5 @@ struct target_type esp32h2_target = {
 
 	.commands = esp32h2_command_handlers,
 
-	.address_bits = esp_riscv_address_bits,
+	.address_bits = riscv_xlen_nonconst,
 };

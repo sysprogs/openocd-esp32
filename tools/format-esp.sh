@@ -4,7 +4,7 @@
 # Gcov related files
 ./tools/uncrustify1.sh src/jtag/drivers/jtag_esp_remote.c
 ./tools/uncrustify1.sh src/jtag/drivers/esp_usb_jtag.c
-./tools/uncrustify1.sh src/jtag/drivers/esp32gpio.c
+./tools/uncrustify1.sh src/jtag/drivers/esp_gpio.c
 ./tools/uncrustify1.sh src/target/xtensa/xtensa.c
 ./tools/uncrustify1.sh src/target/xtensa/xtensa.h
 ./tools/uncrustify1.sh src/target/xtensa/xtensa_regs.h
@@ -37,10 +37,6 @@
 ./tools/uncrustify1.sh src/target/espressif/esp_xtensa_semihosting.h
 ./tools/uncrustify1.sh src/target/espressif/esp_xtensa_smp.h
 ./tools/uncrustify1.sh src/target/espressif/esp_riscv_apptrace.h
-./tools/uncrustify1.sh src/target/espressif/esp32c2.h
-./tools/uncrustify1.sh src/target/espressif/esp32h2.h
-./tools/uncrustify1.sh src/target/espressif/esp32c3.h
-./tools/uncrustify1.sh src/target/espressif/esp32c6.h
 ./tools/uncrustify1.sh src/target/espressif/esp32_apptrace.h
 ./tools/uncrustify1.sh src/target/espressif/esp32_sysview.h
 ./tools/uncrustify1.sh src/target/espressif/esp_algorithm.c

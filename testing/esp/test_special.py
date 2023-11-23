@@ -1,6 +1,7 @@
 import logging
 import unittest
 import subprocess
+import re
 import debug_backend as dbg
 from debug_backend_tests import *
 
@@ -19,8 +20,7 @@ class DebuggerSpecialTestsImpl:
     """ Special test cases generic for dual and single core modes
     """
 
-    @idf_ver_min_for_arch('latest', ['riscv32'])
-    @skip_for_chip(['esp32c2'])
+    @idf_ver_min_for_arch('5.0', ['riscv32'])
     def test_restart_debug_from_crash(self):
         """
             This test checks that debugger can operate correctly after SW reset with stalled CPU.
@@ -28,13 +28,12 @@ class DebuggerSpecialTestsImpl:
             2) Resume target, wait for the program to crash (in dual core mode one CPU will be stalled).
             3) Re-start debugging (SW reset, set break to app_main(), resume and wait for the stop).
         """
-        self.select_sub_test(800)
         # under OOCD panic handler sets BP on instruction which generated the exception and stops execution there
-        self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_SIGTRAP, 'crash_task', ['crash'], outmost_func_name='crash_task')
+        self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_SIGTRAP, 'restart_debug_from_crash_task', ['crash'], outmost_func_name='restart_debug_from_crash_task')
         self.prepare_app_for_debugging(self.test_app_cfg.app_off)
 
     def _debug_image(self):
-        self.select_sub_test(100)
+        self.select_sub_test("blink")
         bps = ['app_main', 'gpio_set_direction', 'gpio_set_level', 'vTaskDelay']
         for f in bps:
             self.add_bp(f)
@@ -58,7 +57,7 @@ class DebuggerSpecialTestsImpl:
         """
         # avoid simultaneous access to UART with SerialReader
         self.assertIsNone(self.uart_reader, "Can not run this test with UART logging enabled!")
-        self.select_sub_test(100)
+        self.select_sub_test("blink")
         self.resume_exec()
         time.sleep(2.0)
         if self.port_name:
@@ -79,49 +78,72 @@ class DebuggerSpecialTestsImpl:
         self.run_to_bp_and_check_location(dbg.TARGET_STOP_REASON_SIGTRAP, 'target_bp_func1', 'target_wp_var1_1')
         # watchpoint hit on read var in 'target_bp_func1'
         self.run_to_bp_and_check_location(dbg.TARGET_STOP_REASON_SIGTRAP, 'target_bp_func1', 'target_wp_var1_2')
-        # breakpoint at 'target_bp_func2' entry
-        self.run_to_bp_and_check_location(dbg.TARGET_STOP_REASON_SIGTRAP, 'target_bp_func2', 'target_bp_func2')
-        # watchpoint hit on write var in 'target_bp_func2'
-        self.run_to_bp_and_check_location(dbg.TARGET_STOP_REASON_SIGTRAP, 'target_bp_func2', 'target_wp_var2_1')
-        # watchpoint hit on read var in 'target_bp_func2'
-        self.run_to_bp_and_check_location(dbg.TARGET_STOP_REASON_SIGTRAP, 'target_bp_func2', 'target_wp_var2_2')
+        # esp32c2 has only 2 hw triggers
+        if testee_info.chip != "esp32c2":
+            # breakpoint at 'target_bp_func2' entry
+            self.run_to_bp_and_check_location(dbg.TARGET_STOP_REASON_SIGTRAP, 'target_bp_func2', 'target_bp_func2')
+            # watchpoint hit on write var in 'target_bp_func2'
+            self.run_to_bp_and_check_location(dbg.TARGET_STOP_REASON_SIGTRAP, 'target_bp_func2', 'target_wp_var2_1')
+            # watchpoint hit on read var in 'target_bp_func2'
+            self.run_to_bp_and_check_location(dbg.TARGET_STOP_REASON_SIGTRAP, 'target_bp_func2', 'target_wp_var2_2')
 
-    # FIXME: OCD-607. Should work in all RISCV chips
-    @skip_for_arch(['riscv32'])
     def test_bp_and_wp_set_by_program(self):
         """
             This test checks that breakpoints and watchpoints set by program on target work.
             1) Select appropriate sub-test number on target.
             2) Resume target, wait for the program to hit breakpoints.
         """
-        self.select_sub_test(803)
         self._do_test_bp_and_wp_set_by_program()
 
-    # FIXME: OCD-724 Should work in all RISCV chips
-    # @skip_for_arch(['riscv32'])
-    @unittest.skip('enable only for riscv after fix')
     def test_wp_reconfigure_by_program(self):
         """
             This test checks that watchpoints can be reconfigured by target w/o removing them.
             1) Select appropriate sub-test number on target.
             2) Resume target, wait for the program to hit breakpoints.
         """
-        self.select_sub_test(804)
         self._do_test_bp_and_wp_set_by_program()
 
-    @only_for_arch(['xtensa'])
-    def test_exception_xtensa(self):
+    def test_exception(self):
         """
         This test checks that expected exception cause string equal to the OpenOCD output.
         """
-        bps = ["exception_bp_1", "exception_bp_2", "exception_bp_3", "exception_bp_4"]
-        expected_strings = ["Halt cause (0) - (Illegal instruction)",
+        bps = ["exception_bp_1", "exception_bp_2", "exception_bp_3"]
+        if testee_info.arch == "xtensa":
+            bps.append("exception_bp_4");
+            sub_tests = ["illegal_instruction", "load_prohibited", "store_prohibited", "divide_by_zero"]
+            expected_strings = ["Halt cause (0) - (Illegal instruction)",
                             "Halt cause (28) - (Load prohibited)",
                             "Halt cause (29) - (Store prohibited)",
                             "Halt cause (6) - (Integer divide by zero)"]
+        else: 
+            sub_tests = ["illegal_instruction", "load_access_fault", "store_access_fault"]
+            expected_strings = ["Halt cause (2) - (Illegal Instruction)",
+                                "Halt cause (5) - (PMP Load access fault)",
+                                "Halt cause (7) - (PMP Store access fault)"]
+
+        #TODO: enable after IDF MR(25708) merged
+        if 0:
+        #if testee_info.idf_ver >= IdfVersion.fromstr('latest'):
+            # Pseudo exeption tests only implemented for xtensa
+            if testee_info.arch == "xtensa":
+                bps.append("exception_bp_5");
+                bps.append("exception_bp_6");
+                sub_tests.append("pseudo_debug")
+                sub_tests.append("pseudo_coprocessor")
+                expected_strings.append("Halt cause (Unhandled debug exception)")
+                expected_strings.append("Halt cause (Coprocessor exception)")
+
+            bps.append("assert_failure_bp")
+            sub_tests.append("assert_failure")
+            expected_strings.append("Halt cause \(assert failed: assert_failure_ex_task special_tests.c:[^\n]+\)")
+
+            bps.append("abort_bp")
+            sub_tests.append("abort")
+            expected_strings.append("Halt cause \(abort\(\) was called at PC 0x[0-9a-fA-F]+ on core [0-9]+\)")
+
         for i in range (len(bps)):
             self.add_bp(bps[i])
-            self.select_sub_test(804 + i)
+            self.select_sub_test(self.id() + '_' + sub_tests[i])
             self.resume_exec()
             rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 5)
             self.assertEqual(rsn, dbg.TARGET_STOP_REASON_BP)
@@ -134,13 +156,39 @@ class DebuggerSpecialTestsImpl:
                 nonlocal target_output
                 target_output += payload
             self.gdb.stream_handler_add('target', _target_stream_handler)
+
             try:
-                self.step()
+                self.resume_exec()
+                rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED , 5)
+                self.assertTrue(rsn == dbg.TARGET_STATE_STOPPED or rsn == dbg.TARGET_STOP_REASON_SIGTRAP)
+                self.step() # Without step OpenOCD may not print the exception cause
             finally:
                 self.gdb.stream_handler_remove('target', _target_stream_handler)
-            self.assertTrue(expected_strings[i] in target_output)
+
+            if any(word in sub_tests[i] for word in ["assert", "abort"]):
+				# On assert and abort panics, file line numbers or PC value can be vary.
+                # Therefore, we will use regex pattern for the matching expected strings.
+                pattern = re.compile(expected_strings[i])
+                if testee_info.arch == "xtensa":
+                    match = re.search(pattern, target_output)
+                    self.assertTrue(match)
+                # On RISC-V, when the SIGTRAP signal is received from GDB, there is no corresponding MI response from the target.
+                # As a result, the OpenOCD output is not visible in the gdb logs.
+                # Therefore, we will need to search for the expected strings in the OpenOCD log file instead.
+                else:
+                    log_path = get_logger().handlers[1].baseFilename
+                    found_line_count = 0
+                    with open(log_path) as file:
+                        for line in file:
+                            match = re.search(pattern, line)
+                            if match:
+                                found_line_count += 1
+                                break
+                    self.assertTrue(found_line_count)
+            else:
+               self.assertTrue(expected_strings[i] in target_output)
             self.gdb.target_reset()
-            self.gdb.add_bp('app_main')
+            self.add_bp('app_main')
             self.run_to_bp(dbg.TARGET_STOP_REASON_BP, 'app_main')
 
     def test_stub_logs(self):
@@ -185,13 +233,12 @@ class PsramTestsImpl:
         bps = ['app_main', 'gpio_set_direction', 'gpio_set_level', 'vTaskDelay']
         for f in bps:
             self.add_bp(f)
-        self.select_sub_test(802)
-        self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'gpio_set_direction', ['gpio_set_direction'], outmost_func_name='psram_check_task')
+        self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'gpio_set_direction', ['gpio_set_direction'], outmost_func_name='psram_with_flash_breakpoints_task')
         for i in range(10):
             # break at gpio_set_level
-            self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'gpio_set_level', ['gpio_set_level%d' % (i % 2)], outmost_func_name='psram_check_task')
+            self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'gpio_set_level', ['gpio_set_level%d' % (i % 2)], outmost_func_name='psram_with_flash_breakpoints_task')
             # break at vTaskDelay
-            self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'vTaskDelay', ['vTaskDelay%d' % (i % 2)], outmost_func_name='psram_check_task')
+            self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'vTaskDelay', ['vTaskDelay%d' % (i % 2)], outmost_func_name='psram_with_flash_breakpoints_task')
 
     def test_psram_with_flash_breakpoints_gh264(self):
         """
@@ -232,7 +279,7 @@ class DebuggerSpecialTestsDual(DebuggerGenericTestAppTestsDual, DebuggerSpecialT
         """
         # avoid simultaneous access to UART with SerialReader
         self.assertIsNone(self.uart_reader, "Can not run this test with UART logging enabled!")
-        self.select_sub_test(100)
+        self.select_sub_test("blink")
         self.resume_exec()
         time.sleep(2.0)
         for target in self.oocd.targets():
@@ -248,6 +295,7 @@ class DebuggerSpecialTestsDual(DebuggerGenericTestAppTestsDual, DebuggerSpecialT
         for target in self.oocd.targets():
             state = self.oocd.target_state(target)
             self.assertEqual(state, 'running')
+
 
 class DebuggerSpecialTestsSingle(DebuggerGenericTestAppTestsSingle, DebuggerSpecialTestsImpl):
     """ Test cases for single core mode

@@ -17,22 +17,6 @@
 #include "helper/binarybuffer.h"
 #include "server/gdb_server.h"
 
-/* RTOSs */
-extern const struct rtos_type freertos_rtos;
-extern const struct rtos_type threadx_rtos;
-extern const struct rtos_type ecos_rtos;
-extern const struct rtos_type linux_rtos;
-extern const struct rtos_type chibios_rtos;
-extern const struct rtos_type chromium_ec_rtos;
-extern const struct rtos_type embkernel_rtos;
-extern const struct rtos_type mqx_rtos;
-extern const struct rtos_type ucos_iii_rtos;
-extern const struct rtos_type nuttx_rtos;
-extern const struct rtos_type hwthread_rtos;
-extern const struct rtos_type riot_rtos;
-extern const struct rtos_type zephyr_rtos;
-extern const struct rtos_type rtkernel_rtos;
-
 static const struct rtos_type *rtos_types[] = {
 	&threadx_rtos,
 	&freertos_rtos,
@@ -53,8 +37,6 @@ static const struct rtos_type *rtos_types[] = {
 };
 
 static int rtos_try_next(struct target *target);
-
-int rtos_thread_packet(struct connection *connection, const char *packet, int packet_size);
 
 int rtos_smp_init(struct target *target)
 {
@@ -358,7 +340,8 @@ done:
 	return rtos_detected;
 }
 
-int get_thread_number_by_id(struct target *target, threadid_t threadid) {
+static int get_thread_number_by_id(struct target *target, threadid_t threadid)
+{
 	if ((target->rtos) && (target->rtos->thread_details)) {
 		for (int thread_num = 0; thread_num < target->rtos->thread_count; thread_num++) {
 			if (target->rtos->thread_details[thread_num].threadid == threadid &&

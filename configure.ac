@@ -119,6 +119,7 @@ m4_define([USB1_ADAPTERS],
 	[[stlink], [ST-Link Programmer], [HLADAPTER_STLINK]],
 	[[ti_icdi], [TI ICDI JTAG Programmer], [HLADAPTER_ICDI]],
 	[[ulink], [Keil ULINK JTAG Programmer], [ULINK]],
+	[[angie], [ANGIE Adapter], [ANGIE]],
 	[[usb_blaster_2], [Altera USB-Blaster II Compatible], [USB_BLASTER_2]],
 	[[ft232r], [Bitbang mode of FT232R based devices], [FT232R]],
 	[[vsllink], [Versaloon-Link JTAG Programmer], [VSLLINK]],
@@ -481,7 +482,7 @@ AS_IF([test "x$is_darwin" = "xyes"], [
 ])
 
 AC_DEFINE([IS_ESPIDF], [0], [ESP-IDF platform only supported with CMake build system])
-AC_DEFINE([BUILD_ESP32_GPIO], [0], [ESP-IDF platform only supported with CMake build system])
+AC_DEFINE([BUILD_ESP_GPIO], [0], [ESP-IDF platform only supported with CMake build system])
 
 AS_IF([test "x$build_parport" = "xyes"], [
   build_bitbang=yes

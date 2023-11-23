@@ -66,6 +66,7 @@ CFLAGS += -Wall -Werror -Os \
 INCLUDES += -I. -I$(STUB_COMMON_PATH) -I$(STUB_CHIP_PATH) -I$(STUB_CHIP_ARCH_PATH) \
 		-I$(IDF_PATH)/components/$(STUB_ARCH)/include \
 		-I$(IDF_PATH)/components/freertos/port/$(STUB_ARCH)/include \
+		-I$(IDF_PATH)/components/freertos/esp_additions/arch/$(STUB_ARCH)/include \
 		-I$(IDF_PATH)/components/soc/include \
 		-I$(IDF_PATH)/components/driver/include \
 		-I$(IDF_PATH)/components/log/include \
@@ -143,6 +144,14 @@ $(STUB_IMAGE_HDR): $(STUB_ELF)
 	@echo "  CC   $^ -> $@"
 	$(Q) @printf "#define $(STUB_CHIP)_STUB_BSS_SIZE 0x0" > $(STUB_IMAGE_HDR)
 	$(Q) $(CROSS)readelf -S $^ | fgrep .bss | awk '{print $$7"UL"}' >> $(STUB_IMAGE_HDR)
+	$(Q) @printf "\\n#define $(STUB_CHIP)_STUB_IRAM_ORG 0x0" >> $(STUB_IMAGE_HDR)
+	$(Q) $(CROSS)readelf -s $^ | fgrep .iram_org | awk '{print $$2"UL"}' >> $(STUB_IMAGE_HDR)
+	$(Q) @printf "\\n#define $(STUB_CHIP)_STUB_IRAM_LEN 0x0" >> $(STUB_IMAGE_HDR)
+	$(Q) $(CROSS)readelf -s $^ | fgrep .iram_len | awk '{print $$2"UL"}' >> $(STUB_IMAGE_HDR)
+	$(Q) @printf "\\n#define $(STUB_CHIP)_STUB_DRAM_ORG 0x0" >> $(STUB_IMAGE_HDR)
+	$(Q) $(CROSS)readelf -s $^ | fgrep .dram_org | awk '{print $$2"UL"}' >> $(STUB_IMAGE_HDR)
+	$(Q) @printf "\\n#define $(STUB_CHIP)_STUB_DRAM_LEN 0x0" >> $(STUB_IMAGE_HDR)
+	$(Q) $(CROSS)readelf -s $^ | fgrep .dram_len | awk '{print $$2"UL"}' >> $(STUB_IMAGE_HDR)
 	$(Q) @printf "\\n#define $(STUB_CHIP)_STUB_ENTRY_ADDR 0x0" >> $(STUB_IMAGE_HDR)
 	$(Q) $(CROSS)readelf -s $^ | fgrep stub_main | awk '{print $$2"UL"}' >> $(STUB_IMAGE_HDR)
 	$(Q) @printf "\\n#define $(STUB_CHIP)_STUB_APPTRACE_CTRL_ADDR 0x0" >> $(STUB_IMAGE_HDR)

@@ -9,4 +9,6 @@ git diff HEAD~${cnt} \
                 -x "a/.gitlab/*" \
                 -x "a/HACKING" \
                 -x "a/testing/esp/*" \
-            | ./tools/scripts/checkpatch.pl --no-signoff -
+                -x "a/contrib/loaders/flash/esp/*" \
+				-x "*/tools/scanbuild_reference.html" \
+            | ./tools/scripts/checkpatch.pl --no-signoff --ignore STATIC_CONST_CHAR_ARRAY

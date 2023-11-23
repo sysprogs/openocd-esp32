@@ -9,15 +9,15 @@ struct riscv_program;
 #include "opcodes.h"
 #include "gdb_regs.h"
 #include "jtag/jtag.h"
+#include "target/target.h"
 #include "target/register.h"
 #include "target/semihosting_common.h"
 #include <helper/command.h>
+#include <helper/bits.h>
 
 #define RISCV_COMMON_MAGIC	0x52495356U
 
-/* The register cache is statically allocated. */
-#define RISCV_MAX_HARTS 1024
-#define RISCV_MAX_REGISTERS 5000
+#define RISCV_MAX_HARTS  ((int)BIT(20))
 #define RISCV_MAX_TRIGGERS 32
 #define RISCV_MAX_HWBPS 16
 
@@ -26,9 +26,11 @@ struct riscv_program;
 
 #define RISCV_SATP_MODE(xlen)  ((xlen) == 32 ? SATP32_MODE : SATP64_MODE)
 #define RISCV_SATP_PPN(xlen)  ((xlen) == 32 ? SATP32_PPN : SATP64_PPN)
+#define RISCV_HGATP_MODE(xlen)  ((xlen) == 32 ? HGATP32_MODE : HGATP64_MODE)
+#define RISCV_HGATP_PPN(xlen)  ((xlen) == 32 ? HGATP32_PPN : HGATP64_PPN)
 #define RISCV_PGSHIFT 12
 
-# define PG_MAX_LEVEL 4
+#define PG_MAX_LEVEL 4
 
 #define RISCV_NUM_MEM_ACCESS_METHODS  3
 
@@ -44,6 +46,12 @@ typedef uint64_t riscv_reg_t;
 typedef uint32_t riscv_insn_t;
 typedef uint64_t riscv_addr_t;
 
+typedef enum {
+	YNM_MAYBE,
+	YNM_YES,
+	YNM_NO
+} yes_no_maybe_t;
+
 enum riscv_mem_access_method {
 	RISCV_MEM_ACCESS_UNSPECIFIED,
 	RISCV_MEM_ACCESS_PROGBUF,
@@ -53,7 +61,7 @@ enum riscv_mem_access_method {
 
 enum riscv_halt_reason {
 	RISCV_HALT_INTERRUPT,
-	RISCV_HALT_BREAKPOINT,
+	RISCV_HALT_EBREAK,
 	RISCV_HALT_SINGLESTEP,
 	RISCV_HALT_TRIGGER,
 	RISCV_HALT_UNKNOWN,
@@ -66,6 +74,13 @@ enum riscv_isrmasking_mode {
 	RISCV_ISRMASK_OFF,
 	/* RISCV_ISRMASK_ON,	*/ /* not supported yet */
 	RISCV_ISRMASK_STEPONLY,
+};
+
+enum riscv_hart_state {
+	RISCV_STATE_NON_EXISTENT,
+	RISCV_STATE_RUNNING,
+	RISCV_STATE_HALTED,
+	RISCV_STATE_UNAVAILABLE
 };
 
 typedef struct {
@@ -104,12 +119,6 @@ struct riscv_info {
 	struct command_context *cmd_ctx;
 	void *version_specific;
 
-	/* The hart that is currently being debugged.  Note that this is
-	 * different than the hartid that the RTOS is expected to use.  This
-	 * one will change all the time, it's more of a global argument to
-	 * every function than an actual */
-	int current_hartid;
-
 	/* Single buffer that contains all register names, instead of calling
 	 * malloc for each register. Needs to be freed when reg_list is freed. */
 	char *reg_names;
@@ -117,17 +126,32 @@ struct riscv_info {
 	/* It's possible that each core has a different supported ISA set. */
 	int xlen;
 	riscv_reg_t misa;
-	/* Cached value of vlenb. 0 if vlenb is not readable for some reason. */
+	/* Cached value of vlenb. 0 indicates there is no vector support.
+	 * Note that you can have vector support without misa.V set, because
+	 * Zve* extensions implement vector registers without setting misa.V. */
 	unsigned int vlenb;
+
+	bool mtopi_readable;
+	bool mtopei_readable;
 
 	/* The number of triggers per hart. */
 	unsigned int trigger_count;
 
-	/* For each physical trigger, contains -1 if the hwbp is available, or the
-	 * unique_id of the breakpoint/watchpoint that is using it.
+	/* record the tinfo of each trigger */
+	unsigned int trigger_tinfo[RISCV_MAX_TRIGGERS];
+
+	/* For each physical trigger contains:
+	 * -1: the hwbp is available
+	 * -4: The trigger is used by the itrigger command
+	 * -5: The trigger is used by the etrigger command
+	 * >= 0: unique_id of the breakpoint/watchpoint that is using it.
 	 * Note that in RTOS mode the triggers are the same across all harts the
 	 * target controls, while otherwise only a single hart is controlled. */
 	int trigger_unique_id[RISCV_MAX_HWBPS];
+
+	/* The unique id of the trigger that caused the most recent halt. If the
+	 * most recent halt was not caused by a trigger, then this is -1. */
+	uint32_t trigger_hit;
 
 	/* The number of entries in the debug buffer. */
 	int debug_buffer_size;
@@ -146,27 +170,47 @@ struct riscv_info {
 	/* This target was selected using hasel. */
 	bool selected;
 
+	/* Used by riscv_openocd_poll(). */
+	bool halted_needs_event_callback;
+	enum target_event halted_callback_event;
+
 	enum riscv_isrmasking_mode isrmask_mode;
 
 	/* Helper functions that target the various RISC-V debug spec
 	 * implementations. */
-	int (*get_register)(struct target *target, riscv_reg_t *value, int regid);
-	int (*set_register)(struct target *target, int regid, uint64_t value);
-	int (*get_register_buf)(struct target *target, uint8_t *buf, int regno);
-	int (*set_register_buf)(struct target *target, int regno,
+	int (*get_register)(struct target *target, riscv_reg_t *value,
+			enum gdb_regno regno);
+	int (*set_register)(struct target *target, enum gdb_regno regno,
+			riscv_reg_t value);
+	int (*get_register_buf)(struct target *target, uint8_t *buf,
+			enum gdb_regno regno);
+	int (*set_register_buf)(struct target *target, enum gdb_regno regno,
 			const uint8_t *buf);
-	int (*select_current_hart)(struct target *target);
-	bool (*is_halted)(struct target *target);
+	int (*select_target)(struct target *target);
+	int (*get_hart_state)(struct target *target, enum riscv_hart_state *state);
 	/* Resume this target, as well as every other prepped target that can be
 	 * resumed near-simultaneously. Clear the prepped flag on any target that
 	 * was resumed. */
 	int (*resume_go)(struct target *target);
 	int (*step_current_hart)(struct target *target);
-	int (*on_halt)(struct target *target);
 
+	/* These get called from riscv_poll_hart(), which is a house of cards
+	 * together with openocd_poll(), so be careful not to upset things too
+	 * much. */
+	int (*handle_became_halted)(struct target *target,
+		enum riscv_hart_state previous_riscv_state);
+	int (*handle_became_running)(struct target *target,
+		enum riscv_hart_state previous_riscv_state);
+	int (*handle_became_unavailable)(struct target *target,
+		enum riscv_hart_state previous_riscv_state);
+
+	/* Called periodically (no guarantees about frequency), while there's
+	 * nothing else going on. */
+	int (*tick)(struct target *target);
+
+	int (*on_halt)(struct target *target);
 	/* Indicates that target was reset.*/
 	int (*on_reset)(struct target *target);
-
 	/* Get this target as ready as possible to resume, without actually
 	 * resuming. */
 	int (*resume_prep)(struct target *target);
@@ -178,6 +222,7 @@ struct riscv_info {
 			riscv_insn_t d);
 	riscv_insn_t (*read_debug_buffer)(struct target *target, unsigned index);
 	int (*execute_debug_buffer)(struct target *target);
+	int (*invalidate_cached_debug_buffer)(struct target *target);
 	int (*dmi_write_u64_bits)(struct target *target);
 	void (*fill_dmi_write_u64)(struct target *target, char *buf, int a, uint64_t d);
 	void (*fill_dmi_read_u64)(struct target *target, char *buf, int a);
@@ -218,7 +263,7 @@ struct riscv_info {
 	struct reg_data_type_union vector_union;
 	struct reg_data_type type_vector;
 
-	/* Set when trigger registers are changed by the user. This indicates we eed
+	/* Set when trigger registers are changed by the user. This indicates we need
 	 * to beware that we may hit a trigger that we didn't realize had been set. */
 	bool manual_hwbp_set;
 
@@ -239,8 +284,19 @@ struct riscv_info {
 	 * from range 0xc000 ... 0xffff. */
 	struct list_head expose_custom;
 
+	/* The list of registers to mark as "hidden". Hidden registers are available
+	 * but do not appear in gdb targets description or reg command output. */
+	struct list_head hide_csr;
+
 	riscv_sample_config_t sample_config;
 	struct riscv_sample_buf sample_buf;
+
+	/* Track when we were last asked to do something substantial. */
+	int64_t last_activity;
+
+	yes_no_maybe_t vsew64_supported;
+
+	bool range_trigger_fallback_encountered;
 };
 
 COMMAND_HELPER(riscv_print_info_line, const char *section, const char *key,
@@ -255,6 +311,7 @@ typedef struct {
 	const char *name;
 	int level;
 	unsigned va_bits;
+	/* log2(PTESIZE) */
 	unsigned pte_shift;
 	unsigned vpn_shift[PG_MAX_LEVEL];
 	unsigned vpn_mask[PG_MAX_LEVEL];
@@ -299,6 +356,8 @@ extern uint32_t bscan_tunneled_select_dmi_num_fields;
 typedef enum { BSCAN_TUNNEL_NESTED_TAP, BSCAN_TUNNEL_DATA_REGISTER } bscan_tunnel_type_t;
 extern int bscan_tunnel_ir_width;
 
+extern const struct command_registration riscv_command_handlers[];
+
 uint32_t dtmcontrol_scan_via_bscan(struct target *target, uint32_t out);
 void select_dmi_via_bscan(struct target *target);
 
@@ -327,7 +386,6 @@ int riscv_openocd_deassert_reset(struct target *target);
 
 /*** RISC-V Interface ***/
 
-/* Initializes the shared RISC-V structure. */
 void riscv_info_init(struct target *target, struct riscv_info *r);
 
 bool riscv_supports_extension(struct target *target, char letter);
@@ -336,28 +394,35 @@ bool riscv_supports_extension(struct target *target, char letter);
 unsigned riscv_xlen(const struct target *target);
 int riscv_xlen_of_hart(const struct target *target);
 
-/* Sets the current hart, which is the hart that will actually be used when
- * issuing debug commands. */
-int riscv_set_current_hartid(struct target *target, int hartid);
-int riscv_select_current_hart(struct target *target);
-int riscv_current_hartid(const struct target *target);
-
 /*** Support functions for the RISC-V 'RTOS', which provides multihart support
  * without requiring multiple targets.  */
 
 /* Lists the number of harts in the system, which are assumed to be
  * consecutive and start with mhartid=0. */
-int riscv_count_harts(struct target *target);
+unsigned int riscv_count_harts(struct target *target);
 
-/** Set register, updating the cache. */
+/**
+ * Set the register value. For cacheable registers, only the cache is updated
+ * (write-back mode).
+ */
 int riscv_set_register(struct target *target, enum gdb_regno i, riscv_reg_t v);
+/**
+ * Set the register value and immediately write it to the target
+ * (write-through mode).
+ */
+int riscv_write_register(struct target *target, enum gdb_regno i, riscv_reg_t v);
 /** Get register, from the cache if it's in there. */
 int riscv_get_register(struct target *target, riscv_reg_t *value,
 		enum gdb_regno r);
+/** Read the register into the cache, and mark it dirty so it will be restored
+ * before resuming. */
+int riscv_save_register(struct target *target, enum gdb_regno regid);
+/** Write all dirty registers to the target. */
+int riscv_flush_registers(struct target *target);
 
 /* Checks the state of the current hart -- "is_halted" checks the actual
  * on-device register. */
-bool riscv_is_halted(struct target *target);
+int riscv_get_hart_state(struct target *target, enum riscv_hart_state *state);
 
 /* These helper functions let the generic program interface get target-specific
  * information. */
@@ -373,11 +438,32 @@ void riscv_fill_dmi_read_u64(struct target *target, char *buf, int a);
 int riscv_dmi_write_u64_bits(struct target *target);
 
 int riscv_enumerate_triggers(struct target *target);
+
+/* Espressif; we exported some functions for the common esp_riscv target */
+int riscv_assert_reset(struct target *target);
+int riscv_deassert_reset(struct target *target);
+int riscv_checksum_memory(struct target *target,
+		target_addr_t address, uint32_t count,
+		uint32_t *checksum);
+int riscv_target_resume(struct target *target, int current, target_addr_t address,
+		int handle_breakpoints, int debug_execution);
+int riscv_get_gdb_reg_list_noread(struct target *target,
+		struct reg **reg_list[], int *reg_list_size,
+		enum target_register_class reg_class);
+int riscv_get_gdb_reg_list(struct target *target,
+		struct reg **reg_list[], int *reg_list_size,
+		enum target_register_class reg_class);
+int riscv_arch_state(struct target *target);
+const char *riscv_get_gdb_arch(struct target *target);
+
 int riscv_add_breakpoint(struct target *target, struct breakpoint *breakpoint);
 int riscv_remove_breakpoint(struct target *target, struct breakpoint *breakpoint);
 int riscv_add_watchpoint(struct target *target, struct watchpoint *watchpoint);
 int riscv_remove_watchpoint(struct target *target,
 		struct watchpoint *watchpoint);
+int riscv_hit_watchpoint(struct target *target, struct watchpoint **hit_watchpoint);
+
+unsigned int riscv_xlen_nonconst(struct target *target);
 
 int riscv_init_registers(struct target *target);
 

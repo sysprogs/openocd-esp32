@@ -9,14 +9,20 @@
 #include "config.h"
 #endif
 
-#include <target/espressif/esp32c2.h>
 #include <target/espressif/esp_riscv_algorithm.h>
 #include "imp.h"
 #include "esp_riscv.h"
+#include <target/espressif/esp_riscv_apptrace.h>
 #include "contrib/loaders/flash/esp/esp32c2/stub_flasher_image.h"
 #include "contrib/loaders/flash/esp/esp32c2/stub_flasher_image_wlog.h"
 
 #define ESP32C2_FLASH_SECTOR_SIZE 4096
+
+/* memory map */
+#define ESP32C2_DROM_LOW    0x3C000000
+#define ESP32C2_DROM_HIGH   0x3C400000
+#define ESP32C2_IROM_LOW    0x42000000
+#define ESP32C2_IROM_HIGH   0x42400000
 
 struct esp32c2_flash_bank {
 	struct esp_riscv_flash_bank riscv;
@@ -42,6 +48,10 @@ static const struct esp_flasher_stub_config s_esp32c2_stub_cfg = {
 	.data_sz = sizeof(s_esp32c2_flasher_stub_data),
 	.entry_addr = ESP32C2_STUB_ENTRY_ADDR,
 	.bss_sz = ESP32C2_STUB_BSS_SIZE,
+	.iram_org = ESP32C2_STUB_IRAM_ORG,
+	.iram_len = ESP32C2_STUB_IRAM_LEN,
+	.dram_org = ESP32C2_STUB_DRAM_ORG,
+	.dram_len = ESP32C2_STUB_DRAM_LEN,
 	.first_user_reg_param = ESP_RISCV_STUB_ARGS_FUNC_START,
 	.apptrace_ctrl_addr = ESP32C2_STUB_APPTRACE_CTRL_ADDR,
 	.stack_data_pool_sz = ESP_RISCV_STACK_DATA_POOL_SIZE
@@ -54,6 +64,10 @@ static const struct esp_flasher_stub_config s_esp32c2_stub_cfg_wlog = {
 	.data_sz = sizeof(s_esp32c2_flasher_stub_data_wlog),
 	.entry_addr = ESP32C2_STUB_WLOG_ENTRY_ADDR,
 	.bss_sz = ESP32C2_STUB_WLOG_BSS_SIZE,
+	.iram_org = ESP32C2_STUB_IRAM_ORG,
+	.iram_len = ESP32C2_STUB_IRAM_LEN,
+	.dram_org = ESP32C2_STUB_DRAM_ORG,
+	.dram_len = ESP32C2_STUB_DRAM_LEN,
 	.first_user_reg_param = ESP_RISCV_STUB_ARGS_FUNC_START,
 	.apptrace_ctrl_addr = ESP32C2_STUB_WLOG_APPTRACE_CTRL_ADDR,
 	.stack_data_pool_sz = ESP_RISCV_STACK_DATA_POOL_SIZE,
@@ -124,7 +138,7 @@ static const struct command_registration esp32c2_command_handlers[] = {
 	COMMAND_REGISTRATION_DONE
 };
 
-struct flash_driver esp32c2_flash = {
+const struct flash_driver esp32c2_flash = {
 	.name = "esp32c2",
 	.commands = esp32c2_command_handlers,
 	.flash_bank_command = esp32c2_flash_bank_command,

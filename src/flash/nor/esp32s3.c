@@ -49,6 +49,10 @@ static const struct esp_flasher_stub_config s_esp32s3_stub_cfg = {
 	.data_sz = sizeof(esp32s3_flasher_stub_data),
 	.entry_addr = ESP32S3_STUB_ENTRY_ADDR,
 	.bss_sz = ESP32S3_STUB_BSS_SIZE,
+	.iram_org = ESP32S3_STUB_IRAM_ORG,
+	.iram_len = ESP32S3_STUB_IRAM_LEN,
+	.dram_org = ESP32S3_STUB_DRAM_ORG,
+	.dram_len = ESP32S3_STUB_DRAM_LEN,
 	.first_user_reg_param = XTENSA_STUB_ARGS_FUNC_START
 };
 
@@ -59,6 +63,10 @@ static const struct esp_flasher_stub_config s_esp32s3_stub_cfg_wlog = {
 	.data_sz = sizeof(esp32s3_flasher_stub_data_wlog),
 	.entry_addr = ESP32S3_STUB_WLOG_ENTRY_ADDR,
 	.bss_sz = ESP32S3_STUB_WLOG_BSS_SIZE,
+	.iram_org = ESP32S3_STUB_IRAM_ORG,
+	.iram_len = ESP32S3_STUB_IRAM_LEN,
+	.dram_org = ESP32S3_STUB_DRAM_ORG,
+	.dram_len = ESP32S3_STUB_DRAM_LEN,
 	.first_user_reg_param = XTENSA_STUB_ARGS_FUNC_START,
 	.log_buff_addr = ESP32S3_STUB_WLOG_LOG_ADDR,
 	.log_buff_size = ESP32S3_STUB_WLOG_LOG_SIZE
@@ -201,7 +209,7 @@ COMMAND_HANDLER(esp32s3_cmd_set_clock)
 		get_current_target(CMD_CTX));
 }
 
-const struct command_registration esp32s3_flash_command_handlers[] = {
+static const struct command_registration esp32s3_flash_command_handlers[] = {
 	{
 		.name = "appimage_offset",
 		.handler = esp32s3_cmd_appimage_flashoff,
@@ -287,7 +295,7 @@ static const struct command_registration esp32s3_all_command_handlers[] = {
 	COMMAND_REGISTRATION_DONE
 };
 
-struct flash_driver esp32s3_flash = {
+const struct flash_driver esp32s3_flash = {
 	.name = "esp32s3",
 	.commands = esp32s3_all_command_handlers,
 	.flash_bank_command = esp32s3_flash_bank_command,

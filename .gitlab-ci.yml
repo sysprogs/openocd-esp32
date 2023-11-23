@@ -1,19 +1,29 @@
 stages:
   - pre_check
-  - scan_build
+  - static_analyzers
   - build_openocd
   - build_idf4.x
-  - build_idf5.x
+  - build_idf5.0.x
+  - build_idf5.1.x
   - build_idf_master
   - build_nuttx
   - test_idf4.x
-  - test_idf5.x
+  - test_idf5.0.x
+  - test_idf5.1.x
   - test_idf_master
   - test_host
   - test_nuttx
   - coverage
-  - sanitizer_tests
-  - sanitizer_checks
+  - sanitizer_test_idf4.x
+  - sanitizer_test_idf5.0.x
+  - sanitizer_test_idf5.1.x
+  - sanitizer_test_idf_master
+  - sanitizer_test_nuttx
+  - sanitizer_check_idf4.x
+  - sanitizer_check_idf5.0.x
+  - sanitizer_check_idf5.1.x
+  - sanitizer_check_idf_master
+  - sanitizer_check_nuttx
   - deploy
   - private_deploy
   - pre_release
@@ -75,7 +85,7 @@ variables:
     - job: build_linux_armel
     - job: build_linux_arm64
     - job: build_windows
-    - job: osx_code_sign
+    - job: macos_codesign
 
 .release_submit_action: &release_submit_action
   image: espressif/github-hub:2
@@ -95,33 +105,28 @@ before_script:
   - set -o errexit; set -o pipefail; set -o nounset
   - test "${DEBUG_SHELL:-''}" = "1" && set -x
 
-.do_osx_code_sign: &do_osx_code_sign |
-  tar -xzf ${DIST_ART_DIR}/$ARCHIVE_NAME -C ${DIST_ART_DIR} && rm ${DIST_ART_DIR}/$ARCHIVE_NAME
-  export TARGET_BINARY="${DIST_ART_DIR}/openocd-esp32/bin/openocd"
-  $PWD/tools/codesign.sh
-  $PWD/tools/notarize.sh
-  pushd ${DIST_ART_DIR}
-  ${ARCHIVE_TOOL} ${ARCHIVE_NAME} openocd-esp32/
-  rm -r openocd-esp32/
-  popd
-
-osx_code_sign:
+macos_codesign:
   stage: pre_release
   <<: *release_tag_filter
   when: on_success
-  tags:
-    - macos_shell
-  dependencies:
-   - build_macos
-   - build_macos_arm64
+  resource_group: macos_codesign
+  tags: [ "darwin", "codesign" ]
+  # list all jobs that produces macos distros
+  needs: [build_macos, build_macos_arm64]
   artifacts:
     paths:
       - ${DIST_ART_DIR}
+  variables:
+    # directory with distro archives
+    DIST_ART_DIR: dist
+    # command to unarchive distro
+    UNARCHIVE_TOOL: "tar xzf"
+    # URL to macos codesign repo
+    NOTARIZATION_SCRIPTS_GIT: "${CI_SERVER_PROTOCOL}://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/espressif/macos_codesign_notarization.git"
   script:
-    - ARCHIVE_NAME=$(cat ${DIST_ART_DIR}/dist_name_macos)
-    - *do_osx_code_sign
-    - ARCHIVE_NAME=$(cat ${DIST_ART_DIR}/dist_name_macos-arm64)
-    - *do_osx_code_sign
+    - git clone -q --depth=1 ${NOTARIZATION_SCRIPTS_GIT} -b ${CI_COMMIT_REF_NAME} ||
+      git clone -q --depth=1 ${NOTARIZATION_SCRIPTS_GIT}
+    - ./macos_codesign_notarization/run.sh
 
 release_tag_draft:
   stage: release_stage1
@@ -219,7 +224,7 @@ test_idf_master_examples:
     project: espressif/esp-idf
     strategy: depend
 
-test_idf5.x_examples:
+test_idf5.1.x_examples:
   stage: pre_release
   when: manual
   only:
@@ -232,7 +237,23 @@ test_idf5.x_examples:
       artifacts: true
   trigger:
     project: espressif/esp-idf
-    branch: ${TEST_APP_IDF5_X_RELEASE_BRANCH}
+    branch: ${TEST_APP_IDF5_1_RELEASE_BRANCH}
+    strategy: depend
+
+test_idf5.0.x_examples:
+  stage: pre_release
+  when: manual
+  only:
+    - master
+  allow_failure: true
+  variables:
+    OOCD_DISTRO_URL: ${NEW_OOCD_DISTRO_URL}
+  needs:
+    - job: upload_to_http
+      artifacts: true
+  trigger:
+    project: espressif/esp-idf
+    branch: ${TEST_APP_IDF5_0_RELEASE_BRANCH}
     strategy: depend
 
 test_idf4.x_examples:
@@ -253,7 +274,6 @@ test_idf4.x_examples:
 
 create_coverage_reports:
   stage: coverage
-  image: $CI_DOCKER_REGISTRY/openocd-ci-env:1
   tags:
     - build
   allow_failure: true
@@ -270,6 +290,7 @@ create_coverage_reports:
     when: always
     expire_in: 1 week
   needs:
+    # idf 4.x
     - job: tests_armhf_esp32_idf4.x
     - job: tests_armhf_esp32_idf4.x_flash_encrypted
     - job: tests_armhf_esp32s2_idf4.x
@@ -277,22 +298,44 @@ create_coverage_reports:
     - job: tests_armhf_esp32s3_idf4.x
     - job: tests_armhf_esp32c3_idf4.x
     - job: tests_armhf_esp32c3_idf4.x_flash_encrypted
-    #- job: tests_armhf_esp32_solo_idf4.x
+    # idf 5.0.x
+    - job: tests_armhf_esp32_idf5.0.x
+    - job: tests_armhf_esp32_idf5.0.x_flash_encrypted
+    - job: tests_armhf_esp32s2_idf5.0.x
+    - job: tests_armhf_esp32s2_idf5.0.x_flash_encrypted
+    - job: tests_armhf_esp32c2_idf5.0.x
+    - job: tests_armhf_esp32c3_idf5.0.x
+    - job: tests_armhf_esp32c3_idf5.0.x_builtin_usb_jtag
+    - job: tests_armhf_esp32c3_idf5.0.x_flash_encrypted
+    # idf 5.1.x
+    - job: tests_armhf_esp32_idf5.1.x
+    - job: tests_armhf_esp32_idf5.1.x_flash_encrypted
+    - job: tests_armhf_esp32s2_idf5.1.x
+    - job: tests_armhf_esp32s2_idf5.1.x_flash_encrypted
+    - job: tests_armhf_esp32s3_idf5.1.x
+    - job: tests_armhf_esp32c2_idf5.1.x
+    - job: tests_armhf_esp32c3_idf5.1.x
+    - job: tests_armhf_esp32c3_idf5.1.x_builtin_usb_jtag
+    - job: tests_armhf_esp32c3_idf5.1.x_flash_encrypted
+    - job: tests_armhf_esp32c6_idf5.1.x_builtin_usb_jtag
+    - job: tests_armhf_esp32h2_idf5.1.x_builtin_usb_jtag
+    # idf master
+    - job: tests_armhf_esp32
     - job: tests_armhf_esp32_flash_encrypted
     - job: tests_armhf_esp32s2
     - job: tests_armhf_esp32s2_flash_encrypted
     - job: tests_armhf_esp32s3
+    - job: tests_armhf_esp32c2
+    - job: tests_armhf_esp32c3
     - job: tests_armhf_esp32c3_builtin_usb_jtag
     - job: tests_armhf_esp32c3_flash_encrypted
-    - job: tests_armhf_esp32
-    #- job: tests_armhf_esp32_solo
-    - job: tests_armhf_esp32c3
-    - job: tests_armhf_esp32c2
+    - job: tests_armhf_esp32c6_builtin_usb_jtag
+    - job: tests_armhf_esp32h2_builtin_usb_jtag
     - job: test_nuttx_esp32
     - job: test_nuttx_esp32s2
     - job: test_nuttx_esp32s3
     - job: test_nuttx_esp32c3
-    - job: tests_armhf_esp32c6_builtin_usb_jtag
+
   script:
     - mkdir -p cov_infos
     - mkdir -p dist

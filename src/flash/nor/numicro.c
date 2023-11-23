@@ -536,8 +536,8 @@ struct  numicro_flash_bank {
 };
 
 /* Private variables */
-uint32_t m_page_size = NUMICRO_PAGESIZE;
-uint32_t m_address_bias_offset;
+static uint32_t m_page_size = NUMICRO_PAGESIZE;
+static uint32_t m_address_bias_offset;
 
 /* Private methods */
 static int numicro_get_arm_arch(struct target *target)
@@ -713,8 +713,8 @@ static int numicro_writeblock(struct flash_bank *bank, const uint8_t *buffer,
 	 */
 
 	/* Increase buffer_size if needed */
-	if (buffer_size < (target->working_area_cfg.size/2))
-		buffer_size = (target->working_area_cfg.size/2);
+	if (buffer_size < (target->working_area_size / 2))
+		buffer_size = (target->working_area_size / 2);
 
 	/* check code alignment */
 	if (offset & 0x1) {

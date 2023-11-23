@@ -12,9 +12,23 @@
 #include <helper/log.h>
 #include <helper/binarybuffer.h>
 #include "target/target.h"
+#include "esp_riscv.h"
+#include "esp_xtensa.h"
 #include "esp.h"
 
 #define ESP_FLASH_BREAKPOINTS_MAX_NUM  32
+#define ESP_ASSIST_DEBUG_INVALID_VALUE 0xFFFFFFFF
+
+struct esp_common *target_to_esp_common(struct target *target)
+{
+	struct xtensa *xtensa = target->arch_info;
+	if (xtensa->common_magic == RISCV_COMMON_MAGIC)
+		return &(target_to_esp_riscv(target)->esp);
+	else if (xtensa->common_magic == XTENSA_COMMON_MAGIC)
+		return &(target_to_esp_xtensa(target)->esp);
+	LOG_ERROR("Unknown target arch!");
+	return NULL;
+}
 
 int esp_common_init(struct esp_common *esp,
 	const struct esp_flash_breakpoint_ops *flash_brps_ops,
@@ -219,4 +233,54 @@ int esp_common_handle_gdb_detach(struct target *target, struct esp_common *esp_c
 		}
 	}
 	return ERROR_OK;
+}
+
+void esp_common_assist_debug_monitor_disable(struct target *target, uint32_t address, uint32_t *value)
+{
+	LOG_TARGET_DEBUG(target, "addr 0x%08" PRIx32, address);
+
+	int res = target_read_u32(target, address, value);
+	if (res != ERROR_OK) {
+		LOG_ERROR("Can not read assist_debug register (%d)!", res);
+		*value = ESP_ASSIST_DEBUG_INVALID_VALUE;
+		return;
+	}
+	LOG_DEBUG("Saved register value 0x%08" PRIx32, *value);
+
+	res = target_write_u32(target, address, 0);
+	if (res != ERROR_OK) {
+		LOG_ERROR("Can not write assist_debug register (%d)!", res);
+		*value = ESP_ASSIST_DEBUG_INVALID_VALUE;
+	}
+}
+
+void esp_common_assist_debug_monitor_restore(struct target *target, uint32_t address, uint32_t value)
+{
+	LOG_TARGET_DEBUG(target, "value 0x%08" PRIx32 " addr 0x%08" PRIx32, value, address);
+
+	/* value was not set by disable function */
+	if (value == ESP_ASSIST_DEBUG_INVALID_VALUE)
+		return;
+
+	int res = target_write_u32(target, address, value);
+	if (res != ERROR_OK)
+		LOG_ERROR("Can not restore assist_debug register (%d)!", res);
+}
+
+int esp_common_read_pseudo_ex_reason(struct target *target)
+{
+	struct esp_common *esp = target_to_esp_common(target);
+	if (esp && esp->panic_reason.addr) {
+		uint8_t str[esp->panic_reason.len + 1];
+		memset(str, 0x00, sizeof(str));
+		int retval = target_read_memory(target, esp->panic_reason.addr, 1, esp->panic_reason.len, str);
+		if (retval == ERROR_OK)
+			LOG_TARGET_INFO(target, "Halt cause (%s)", str);
+		else
+			LOG_TARGET_ERROR(target, "Pseudo exception reason read failed (%d)", retval);
+		esp->panic_reason.addr = 0;
+		return ERROR_OK;
+	}
+
+	return ERROR_FAIL;
 }

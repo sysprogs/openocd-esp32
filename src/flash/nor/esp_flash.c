@@ -5,50 +5,53 @@
  *   Copyright (C) 2021 Espressif Systems Ltd.                             *
  ***************************************************************************/
 
-/*
- * Overview
- * --------
- * Like many other flash drivers this one uses special binary program (stub) running on target
- * to perform all operations and communicate to the host. Stub has entry function which accepts
- * variable number of arguments and therefore can handle different flash operation requests.
- * Only the first argument of the stub entry function is mandatory for all operations it must
- * specify the type of flash function to perform (read, write etc.). Actually stub main function
- * is a dispatcher which determines the type of flash operation to perform, retrieves other
- * arguments and calls corresponding handler. In C notation entry function looks like the following:
+/**
+* Overview
+* --------
+* Like many other flash drivers this one uses special binary program (stub) running on target
+* to perform all operations and communicate to the host. Stub has entry function which accepts
+* variable number of arguments and therefore can handle different flash operation requests.
+* Only the first argument of the stub entry function is mandatory for all operations it must
+* specify the type of flash function to perform (read, write etc.). Actually stub main function
+* is a dispatcher which determines the type of flash operation to perform, retrieves other
+* arguments and calls corresponding handler. In C notation entry function looks like the following:
 
- * int stub_main(int cmd, ...);
+* int stub_main(int cmd, ...);
 
- * In general every flash operation consists of the following steps:
- * 1) Stub is loaded to target.
- * 2) Necessary arguments are prepared and stub's main function is called.
- * 3) Stub does the work and returns the result.
+* In general every flash operation consists of the following steps:
+* 1) Stub is loaded to target.
+* 2) Necessary arguments are prepared and stub's main function is called.
+* 3) Stub does the work and returns the result.
 
- * Stub Loading
- * ------------
- * To run stub its code and data sections must be loaded to the target. It is done using working area API.
- * But since code and data address spaces are separated in ESP32 it is necessary to have two configured
- * working areas: one in code address space and another one in data space. So driver allocates chunks
- * in respective pools and writes stub sections to them. It is important that the both stub sections reside
- * at the beginning of respective working areas because stub code is linked as ELF and therefore it is
- * position dependent. So target memory for stub code and data must be allocated first.
+* Stub Loading
+* ------------
+* To execute the stub, the code and data sections need to be loaded onto the target device.
+* This is accomplished using the working area API. In ESP32, the code and data address spaces are separate,
+* but the CPU can read and write memory from both the data bus and the instruction bus.
+* This means that data written from the data bus can be accessed from the instruction bus.
+* However, ESP32 differs from other chips as it maps these buses differently.
+* To address this, the load function in the algorithm will make the necessary adjustments.
+* It is crucial that both the stub code and data sections are located at the beginning of their respective
+* working areas because the stub code is linked as ELF and therefore its position is dependent.
+* Hence, allocating target memory for the stub code and data is the first step in this process.
 
- * Stub Execution
- * --------------
- * Special wrapping code is used to enter and exit the stub's main function. It prepares register arguments
- * before Windowed ABI call to stub entry and upon return from it executes break command to indicate to OpenOCD
- * that operation is finished.
+* Stub Execution
+* --------------
+* Special wrapping code is used to enter and exit the stub's main function. It prepares register arguments
+* before Windowed ABI call to stub entry and upon return from it executes break command to indicate to OpenOCD
+* that operation is finished.
 
- * Flash Data Transfers
- * --------------------
- * To transfer data from/to target a buffer should be allocated at ESP32 side. Also during the data transfer
- * target and host must maintain the state of that buffer (read/write pointers etc.). So host needs to check
- * the state of that buffer periodically and write to or read from it (depending on flash operation type).
- * ESP32 does not support access to its memory via JTAG when it is not halted, so accessing target memory would
- * requires halting the CPUs every time the host needs to check if there are incoming data or free space available
- * in the buffer. This fact can slow down flash write/read operations dramatically. To avoid this flash driver and
- * stub use application level tracing module API to transfer the data in 'non-stop' mode.
- *
- */
+* Flash Data Transfers
+* --------------------
+* To transfer data from/to target a buffer should be allocated at ESP32 side. Also during the data transfer
+* target and host must maintain the state of that buffer (read/write pointers etc.). So host needs to check
+* the state of that buffer periodically and write to or read from it (depending on flash operation type).
+* ESP32 does not support access to its memory via JTAG when it is not halted, so accessing target memory would
+* requires halting the CPUs every time the host needs to check if there are incoming data or free space available
+* in the buffer. This fact can slow down flash write/read operations dramatically. To avoid this flash driver and
+* stub use application level tracing module API to transfer the data in 'non-stop' mode.
+*
+**/
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
@@ -101,15 +104,16 @@ struct esp_flash_bp_op_state {
 
 #if BUILD_ESP_COMPRESSION
 #include <zlib.h>
-int esp_algo_flash_compress(const uint8_t *in, uint32_t in_len, uint8_t **out, uint32_t *out_len)
+static int esp_algo_flash_compress(const uint8_t *in, uint32_t in_len, uint8_t **out, uint32_t *out_len)
 {
 	z_stream strm;
 	int wbits = -MAX_WBITS;		/*deflate */
 	int level = Z_DEFAULT_COMPRESSION;	/*Z_BEST_SPEED; */
 
-	strm.zalloc = Z_NULL;
-	strm.zfree = Z_NULL;
-	strm.opaque = Z_NULL;
+	/* Don't use Z_NULL to make Sparse tool happy */
+	strm.zalloc = NULL;
+	strm.zfree = NULL;
+	strm.opaque = NULL;
 
 	if (deflateInit2(&strm, level, Z_DEFLATED, wbits, MAX_MEM_LEVEL,
 			Z_DEFAULT_STRATEGY) != Z_OK) {
@@ -161,7 +165,7 @@ int esp_algo_flash_compress(const uint8_t *in, uint32_t in_len, uint8_t **out, u
 	return ERROR_OK;
 }
 #else
-int esp_algo_flash_compress(const uint8_t *in, uint32_t in_len, uint8_t **out, uint32_t *out_len)
+static int esp_algo_flash_compress(const uint8_t *in, uint32_t in_len, uint8_t **out, uint32_t *out_len)
 {
 	return ERROR_FAIL;
 }
@@ -205,6 +209,11 @@ static int esp_algo_flasher_algorithm_init(struct algorithm_run_data *algo,
 	algo->hw = stub_hw;
 	algo->reg_args.first_user_param = stub_cfg->first_user_reg_param;
 	algo->image.bss_size = stub_cfg->bss_sz;
+	algo->image.iram_org = stub_cfg->iram_org;
+	algo->image.iram_len = stub_cfg->iram_len;
+	algo->image.dram_org = stub_cfg->dram_org;
+	algo->image.dram_len = stub_cfg->dram_len;
+	algo->image.reverse = stub_cfg->reverse;
 	algo->stub.log_buff_addr = stub_cfg->log_buff_addr;
 	algo->stub.log_buff_size = stub_cfg->log_buff_size;
 	memset(&algo->image.image, 0, sizeof(algo->image.image));
@@ -218,7 +227,7 @@ static int esp_algo_flasher_algorithm_init(struct algorithm_run_data *algo,
 	ret = image_add_section(&algo->image.image,
 		0,
 		stub_cfg->code_sz,
-		IMAGE_ELF_PHF_EXEC,
+		ESP_IMAGE_ELF_PHF_EXEC,
 		stub_cfg->code);
 	if (ret != ERROR_OK) {
 		LOG_ERROR("Failed to create image (%d)!", ret);
@@ -591,7 +600,7 @@ static int esp_algo_flash_write_state_init(struct target *target,
 	}
 
 	/* alloc memory for stub flash write arguments in data working area */
-	if (target_alloc_alt_working_area(target, sizeof(state->stub_wargs),
+	if (target_alloc_working_area(target, sizeof(state->stub_wargs),
 			&state->stub_wargs_area) != ERROR_OK) {
 		LOG_ERROR("no working area available, can't alloc space for stub flash arguments");
 		return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
@@ -603,7 +612,7 @@ static int esp_algo_flash_write_state_init(struct target *target,
 		return ERROR_FAIL;
 	}
 	uint32_t buffer_size = 64 * 1024;
-	while (target_alloc_alt_working_area_try(target, buffer_size,
+	while (target_alloc_working_area_try(target, buffer_size,
 			&state->target_buf) != ERROR_OK) {
 		buffer_size /= 2;
 		if (buffer_size == 0) {
@@ -645,14 +654,14 @@ static void esp_algo_flash_write_state_cleanup(struct target *target,
 		return;
 	if (duration_start(&algo_time) != 0)
 		LOG_ERROR("Failed to start workarea alloc time measurement!");
-	target_free_alt_working_area(target, state->target_buf);
-	target_free_alt_working_area(target, state->stub_wargs_area);
+	target_free_working_area(target, state->target_buf);
+	target_free_working_area(target, state->stub_wargs_area);
 	if (duration_measure(&algo_time) != 0)
 		LOG_ERROR("Failed to stop data write measurement!");
 	LOG_DEBUG("PROF: Workarea freed in %g ms", duration_elapsed(&algo_time) * 1000);
 }
 
-int esp_algo_flash_apptrace_info_init(struct target *target, struct esp_flash_bank *esp_info,
+static int esp_algo_flash_apptrace_info_init(struct target *target, struct esp_flash_bank *esp_info,
 	target_addr_t new_addr, target_addr_t *old_addr)
 {
 	if (esp_info->apptrace_hw->info_init)
@@ -661,7 +670,7 @@ int esp_algo_flash_apptrace_info_init(struct target *target, struct esp_flash_ba
 	return ERROR_OK;
 }
 
-int esp_algo_flash_apptrace_info_restore(struct target *target,
+static int esp_algo_flash_apptrace_info_restore(struct target *target,
 	struct esp_flash_bank *esp_info,
 	target_addr_t old_addr)
 {
@@ -1039,7 +1048,7 @@ static int esp_algo_flash_bp_op_state_init(struct target *target,
 	/* aloocate target buffer for temp storage of flash sections contents when modifying
 	 * instruction */
 	LOG_DEBUG("SEC_SIZE %d", state->esp_info->sec_sz);
-	int ret = target_alloc_alt_working_area(target,
+	int ret = target_alloc_working_area(target,
 		2 * (state->esp_info->sec_sz),
 		&state->target_buf);
 	if (ret != ERROR_OK) {
@@ -1058,7 +1067,7 @@ static void esp_algo_flash_bp_op_state_cleanup(struct target *target,
 {
 	if (!state->target_buf)
 		return;
-	target_free_alt_working_area(target, state->target_buf);
+	target_free_working_area(target, state->target_buf);
 }
 
 int esp_algo_flash_breakpoint_add(struct target *target,

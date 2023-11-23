@@ -578,7 +578,7 @@ static int armv4_5_get_core_reg(struct reg *reg)
 	struct target *target = reg_arch_info->target;
 
 	if (target->state != TARGET_HALTED) {
-		LOG_ERROR("Target not halted");
+		LOG_TARGET_ERROR(target, "not halted");
 		return ERROR_TARGET_NOT_HALTED;
 	}
 
@@ -600,7 +600,7 @@ static int armv4_5_set_core_reg(struct reg *reg, uint8_t *buf)
 	uint32_t value = buf_get_u32(buf, 0, 32);
 
 	if (target->state != TARGET_HALTED) {
-		LOG_ERROR("Target not halted");
+		LOG_TARGET_ERROR(target, "not halted");
 		return ERROR_TARGET_NOT_HALTED;
 	}
 
@@ -817,8 +817,8 @@ COMMAND_HANDLER(handle_armv4_5_reg_command)
 	}
 
 	if (target->state != TARGET_HALTED) {
-		command_print(CMD, "error: target must be halted for register accesses");
-		return ERROR_FAIL;
+		command_print(CMD, "Error: target must be halted for register accesses");
+		return ERROR_TARGET_NOT_HALTED;
 	}
 
 	if (arm->core_type != ARM_CORE_TYPE_STD) {
@@ -833,7 +833,7 @@ COMMAND_HANDLER(handle_armv4_5_reg_command)
 	}
 
 	if (!arm->full_context) {
-		command_print(CMD, "error: target doesn't support %s",
+		command_print(CMD, "Error: target doesn't support %s",
 			CMD_NAME);
 		return ERROR_FAIL;
 	}
@@ -1018,8 +1018,10 @@ COMMAND_HANDLER(handle_armv4_5_mcrmrc)
 		return ERROR_FAIL;
 	}
 
-	if (target->state != TARGET_HALTED)
+	if (target->state != TARGET_HALTED) {
+		command_print(CMD, "Error: [%s] not halted", target_name(target));
 		return ERROR_TARGET_NOT_HALTED;
+	}
 
 	int cpnum;
 	uint32_t op1;
@@ -1252,7 +1254,7 @@ int arm_get_gdb_reg_list(struct target *target,
 /* wait for execution to complete and check exit point */
 static int armv4_5_run_algorithm_completion(struct target *target,
 	uint32_t exit_point,
-	int timeout_ms,
+	unsigned int timeout_ms,
 	void *arch_info)
 {
 	int retval;
@@ -1286,9 +1288,9 @@ int armv4_5_run_algorithm_inner(struct target *target,
 	int num_mem_params, struct mem_param *mem_params,
 	int num_reg_params, struct reg_param *reg_params,
 	uint32_t entry_point, uint32_t exit_point,
-	int timeout_ms, void *arch_info,
+	unsigned int timeout_ms, void *arch_info,
 	int (*run_it)(struct target *target, uint32_t exit_point,
-	int timeout_ms, void *arch_info))
+	unsigned int timeout_ms, void *arch_info))
 {
 	struct arm *arm = target_to_arm(target);
 	struct arm_algorithm *arm_algorithm_info = arch_info;
@@ -1307,7 +1309,7 @@ int armv4_5_run_algorithm_inner(struct target *target,
 	}
 
 	if (target->state != TARGET_HALTED) {
-		LOG_WARNING("target not halted");
+		LOG_TARGET_ERROR(target, "not halted (run target algo)");
 		return ERROR_TARGET_NOT_HALTED;
 	}
 
@@ -1474,7 +1476,7 @@ int armv4_5_run_algorithm(struct target *target,
 	struct reg_param *reg_params,
 	target_addr_t entry_point,
 	target_addr_t exit_point,
-	int timeout_ms,
+	unsigned int timeout_ms,
 	void *arch_info)
 {
 	return armv4_5_run_algorithm_inner(target,
@@ -1535,7 +1537,7 @@ int arm_checksum_memory(struct target *target,
 	buf_set_u32(reg_params[1].value, 0, 32, count);
 
 	/* 20 second timeout/megabyte */
-	int timeout = 20000 * (1 + (count / (1024 * 1024)));
+	unsigned int timeout = 20000 * (1 + (count / (1024 * 1024)));
 
 	/* armv4 must exit using a hardware breakpoint */
 	if (arm->arch == ARM_ARCH_V4)

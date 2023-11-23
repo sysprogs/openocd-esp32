@@ -31,6 +31,7 @@
 #endif
 
 #include <helper/align.h>
+#include <helper/nvp.h>
 #include <helper/time_support.h>
 #include <jtag/jtag.h>
 #include <flash/nor/core.h>
@@ -65,48 +66,6 @@ static int target_get_gdb_fileio_info_default(struct target *target,
 static int target_gdb_fileio_end_default(struct target *target, int retcode,
 		int fileio_errno, bool ctrl_c);
 
-/* targets */
-extern struct target_type arm7tdmi_target;
-extern struct target_type arm720t_target;
-extern struct target_type arm9tdmi_target;
-extern struct target_type arm920t_target;
-extern struct target_type arm966e_target;
-extern struct target_type arm946e_target;
-extern struct target_type arm926ejs_target;
-extern struct target_type fa526_target;
-extern struct target_type feroceon_target;
-extern struct target_type dragonite_target;
-extern struct target_type xscale_target;
-extern struct target_type cortexm_target;
-extern struct target_type cortexa_target;
-extern struct target_type aarch64_target;
-extern struct target_type cortexr4_target;
-extern struct target_type arm11_target;
-extern struct target_type ls1_sap_target;
-extern struct target_type mips_m4k_target;
-extern struct target_type mips_mips64_target;
-extern struct target_type avr_target;
-extern struct target_type dsp563xx_target;
-extern struct target_type dsp5680xx_target;
-extern struct target_type testee_target;
-extern struct target_type avr32_ap7k_target;
-extern struct target_type hla_target;
-extern struct target_type esp32_target;
-extern struct target_type esp32s2_target;
-extern struct target_type esp32s3_target;
-extern struct target_type esp32c2_target;
-extern struct target_type esp32h2_target;
-extern struct target_type esp32c3_target;
-extern struct target_type esp32c6_target;
-extern struct target_type or1k_target;
-extern struct target_type quark_x10xx_target;
-extern struct target_type quark_d20xx_target;
-extern struct target_type stm8_target;
-extern struct target_type riscv_target;
-extern struct target_type mem_ap_target;
-extern struct target_type esirisc_target;
-extern struct target_type arcv2_target;
-
 static struct target_type *target_types[] = {
 	&arm7tdmi_target,
 	&arm9tdmi_target,
@@ -119,6 +78,7 @@ static struct target_type *target_types[] = {
 	&feroceon_target,
 	&dragonite_target,
 	&xscale_target,
+	&xtensa_chip_target,
 	&cortexm_target,
 	&cortexa_target,
 	&cortexr4_target,
@@ -138,6 +98,7 @@ static struct target_type *target_types[] = {
 	&esp32h2_target,
 	&esp32c3_target,
 	&esp32c6_target,
+	&esp32p4_target,
 	&or1k_target,
 	&quark_x10xx_target,
 	&quark_d20xx_target,
@@ -147,6 +108,7 @@ static struct target_type *target_types[] = {
 	&esirisc_target,
 	&arcv2_target,
 	&aarch64_target,
+	&armv8r_target,
 	&mips_mips64_target,
 	NULL,
 };
@@ -160,7 +122,12 @@ static LIST_HEAD(target_trace_callback_list);
 static const int polling_interval = TARGET_DEFAULT_POLLING_INTERVAL;
 static LIST_HEAD(empty_smp_targets);
 
-static const struct jim_nvp nvp_assert[] = {
+enum nvp_assert {
+	NVP_DEASSERT,
+	NVP_ASSERT,
+};
+
+static const struct nvp nvp_assert[] = {
 	{ .name = "assert", NVP_ASSERT },
 	{ .name = "deassert", NVP_DEASSERT },
 	{ .name = "T", NVP_ASSERT },
@@ -170,7 +137,7 @@ static const struct jim_nvp nvp_assert[] = {
 	{ .name = NULL, .value = -1 }
 };
 
-static const struct jim_nvp nvp_error_target[] = {
+static const struct nvp nvp_error_target[] = {
 	{ .value = ERROR_TARGET_INVALID, .name = "err-invalid" },
 	{ .value = ERROR_TARGET_INIT_FAILED, .name = "err-init-failed" },
 	{ .value = ERROR_TARGET_TIMEOUT, .name = "err-timeout" },
@@ -187,9 +154,9 @@ static const struct jim_nvp nvp_error_target[] = {
 
 static const char *target_strerror_safe(int err)
 {
-	const struct jim_nvp *n;
+	const struct nvp *n;
 
-	n = jim_nvp_value2name_simple(nvp_error_target, err);
+	n = nvp_value2name(nvp_error_target, err);
 	if (!n->name)
 		return "unknown";
 	else
@@ -248,7 +215,7 @@ static const struct jim_nvp nvp_target_event[] = {
 	{ .name = NULL, .value = -1 }
 };
 
-static const struct jim_nvp nvp_target_state[] = {
+static const struct nvp nvp_target_state[] = {
 	{ .name = "unknown", .value = TARGET_UNKNOWN },
 	{ .name = "running", .value = TARGET_RUNNING },
 	{ .name = "halted",  .value = TARGET_HALTED },
@@ -257,7 +224,7 @@ static const struct jim_nvp nvp_target_state[] = {
 	{ .name = NULL, .value = -1 },
 };
 
-static const struct jim_nvp nvp_target_debug_reason[] = {
+static const struct nvp nvp_target_debug_reason[] = {
 	{ .name = "debug-request",             .value = DBG_REASON_DBGRQ },
 	{ .name = "breakpoint",                .value = DBG_REASON_BREAKPOINT },
 	{ .name = "watchpoint",                .value = DBG_REASON_WATCHPOINT },
@@ -278,7 +245,7 @@ static const struct jim_nvp nvp_target_endian[] = {
 	{ .name = NULL,     .value = -1 },
 };
 
-static const struct jim_nvp nvp_reset_modes[] = {
+static const struct nvp nvp_reset_modes[] = {
 	{ .name = "unknown", .value = RESET_UNKNOWN },
 	{ .name = "run",     .value = RESET_RUN },
 	{ .name = "halt",    .value = RESET_HALT },
@@ -290,7 +257,7 @@ const char *debug_reason_name(struct target *t)
 {
 	const char *cp;
 
-	cp = jim_nvp_value2name_simple(nvp_target_debug_reason,
+	cp = nvp_value2name(nvp_target_debug_reason,
 			t->debug_reason)->name;
 	if (!cp) {
 		LOG_ERROR("Invalid debug reason: %d", (int)(t->debug_reason));
@@ -302,7 +269,7 @@ const char *debug_reason_name(struct target *t)
 const char *target_state_name(struct target *t)
 {
 	const char *cp;
-	cp = jim_nvp_value2name_simple(nvp_target_state, t->state)->name;
+	cp = nvp_value2name(nvp_target_state, t->state)->name;
 	if (!cp) {
 		LOG_ERROR("Invalid target state: %d", (int)(t->state));
 		cp = "(*BUG*unknown*BUG*)";
@@ -328,7 +295,7 @@ const char *target_event_name(enum target_event event)
 const char *target_reset_mode_name(enum target_reset_mode reset_mode)
 {
 	const char *cp;
-	cp = jim_nvp_value2name_simple(nvp_reset_modes, reset_mode)->name;
+	cp = nvp_value2name(nvp_reset_modes, reset_mode)->name;
 	if (!cp) {
 		LOG_ERROR("Invalid target reset mode: %d", (int)(reset_mode));
 		cp = "(*BUG*unknown*BUG*)";
@@ -672,8 +639,8 @@ static int target_process_reset(struct command_invocation *cmd, enum target_rese
 {
 	char buf[100];
 	int retval;
-	struct jim_nvp *n;
-	n = jim_nvp_value2name_simple(nvp_reset_modes, reset_mode);
+	const struct nvp *n;
+	n = nvp_value2name(nvp_reset_modes, reset_mode);
 	if (!n->name) {
 		LOG_ERROR("invalid reset mode");
 		return ERROR_FAIL;
@@ -847,7 +814,7 @@ int target_run_algorithm(struct target *target,
 		int num_mem_params, struct mem_param *mem_params,
 		int num_reg_params, struct reg_param *reg_param,
 		target_addr_t entry_point, target_addr_t exit_point,
-		int timeout_ms, void *arch_info)
+		unsigned int timeout_ms, void *arch_info)
 {
 	int retval = ERROR_FAIL;
 
@@ -931,7 +898,7 @@ done:
 int target_wait_algorithm(struct target *target,
 		int num_mem_params, struct mem_param *mem_params,
 		int num_reg_params, struct reg_param *reg_params,
-		target_addr_t exit_point, int timeout_ms,
+		target_addr_t exit_point, unsigned int timeout_ms,
 		void *arch_info)
 {
 	int retval = ERROR_FAIL;
@@ -1363,7 +1330,7 @@ int target_add_breakpoint(struct target *target,
 		struct breakpoint *breakpoint)
 {
 	if ((target->state != TARGET_HALTED) && (breakpoint->type != BKPT_HARD)) {
-		LOG_WARNING("target %s is not halted (add breakpoint)", target_name(target));
+		LOG_TARGET_ERROR(target, "not halted (add breakpoint)");
 		return ERROR_TARGET_NOT_HALTED;
 	}
 	return target->type->add_breakpoint(target, breakpoint);
@@ -1373,7 +1340,7 @@ int target_add_context_breakpoint(struct target *target,
 		struct breakpoint *breakpoint)
 {
 	if (target->state != TARGET_HALTED) {
-		LOG_WARNING("target %s is not halted (add context breakpoint)", target_name(target));
+		LOG_TARGET_ERROR(target, "not halted (add context breakpoint)");
 		return ERROR_TARGET_NOT_HALTED;
 	}
 	return target->type->add_context_breakpoint(target, breakpoint);
@@ -1383,7 +1350,7 @@ int target_add_hybrid_breakpoint(struct target *target,
 		struct breakpoint *breakpoint)
 {
 	if (target->state != TARGET_HALTED) {
-		LOG_WARNING("target %s is not halted (add hybrid breakpoint)", target_name(target));
+		LOG_TARGET_ERROR(target, "not halted (add hybrid breakpoint)");
 		return ERROR_TARGET_NOT_HALTED;
 	}
 	return target->type->add_hybrid_breakpoint(target, breakpoint);
@@ -1399,7 +1366,7 @@ int target_add_watchpoint(struct target *target,
 		struct watchpoint *watchpoint)
 {
 	if (target->state != TARGET_HALTED) {
-		LOG_WARNING("target %s is not halted (add watchpoint)", target_name(target));
+		LOG_TARGET_ERROR(target, "not halted (add watchpoint)");
 		return ERROR_TARGET_NOT_HALTED;
 	}
 	return target->type->add_watchpoint(target, watchpoint);
@@ -1413,7 +1380,7 @@ int target_hit_watchpoint(struct target *target,
 		struct watchpoint **hit_watchpoint)
 {
 	if (target->state != TARGET_HALTED) {
-		LOG_WARNING("target %s is not halted (hit watchpoint)", target->cmd_name);
+		LOG_TARGET_ERROR(target, "not halted (hit watchpoint)");
 		return ERROR_TARGET_NOT_HALTED;
 	}
 
@@ -1495,7 +1462,7 @@ int target_step(struct target *target,
 int target_get_gdb_fileio_info(struct target *target, struct gdb_fileio_info *fileio_info)
 {
 	if (target->state != TARGET_HALTED) {
-		LOG_WARNING("target %s is not halted (gdb fileio)", target->cmd_name);
+		LOG_TARGET_ERROR(target, "not halted (gdb fileio)");
 		return ERROR_TARGET_NOT_HALTED;
 	}
 	return target->type->get_gdb_fileio_info(target, fileio_info);
@@ -1504,7 +1471,7 @@ int target_get_gdb_fileio_info(struct target *target, struct gdb_fileio_info *fi
 int target_gdb_fileio_end(struct target *target, int retcode, int fileio_errno, bool ctrl_c)
 {
 	if (target->state != TARGET_HALTED) {
-		LOG_WARNING("target %s is not halted (gdb fileio end)", target->cmd_name);
+		LOG_TARGET_ERROR(target, "not halted (gdb fileio end)");
 		return ERROR_TARGET_NOT_HALTED;
 	}
 	return target->type->gdb_fileio_end(target, retcode, fileio_errno, ctrl_c);
@@ -1860,7 +1827,7 @@ int target_call_reset_callbacks(struct target *target, enum target_reset_mode re
 	struct target_reset_callback *callback;
 
 	LOG_DEBUG("target reset %i (%s)", reset_mode,
-			jim_nvp_value2name_simple(nvp_reset_modes, reset_mode)->name);
+			nvp_value2name(nvp_reset_modes, reset_mode)->name);
 
 	list_for_each_entry(callback, &target_reset_callback_list, list)
 		callback->callback(target, reset_mode, callback->priv);
@@ -1961,9 +1928,9 @@ int64_t target_timer_next_event(void)
 }
 
 /* Prints the working area layout for debug purposes */
-static void print_wa_layout(struct working_area_config *wa_cfg)
+static void print_wa_layout(struct target *target)
 {
-	struct working_area *c = wa_cfg->areas;
+	struct working_area *c = target->working_areas;
 
 	while (c) {
 		LOG_DEBUG("%c%c " TARGET_ADDR_FMT "-" TARGET_ADDR_FMT " (%" PRIu32 " bytes)",
@@ -2004,9 +1971,9 @@ static void target_split_working_area(struct working_area *area, uint32_t size)
 }
 
 /* Merge all adjacent free areas into one */
-static void target_merge_working_areas(struct working_area_config *wa_cfg)
+static void target_merge_working_areas(struct target *target)
 {
-	struct working_area *c = wa_cfg->areas;
+	struct working_area *c = target->working_areas;
 
 	while (c && c->next) {
 		assert(c->next->address == c->address + c->size); /* This is an invariant */
@@ -2032,10 +1999,10 @@ static void target_merge_working_areas(struct working_area_config *wa_cfg)
 	}
 }
 
-static int alloc_working_area_try_do(struct target *target, struct working_area_config *wa_cfg, uint32_t size, struct working_area **area)
+int target_alloc_working_area_try(struct target *target, uint32_t size, struct working_area **area)
 {
 	/* Reevaluate working area address based on MMU state*/
-	if (!wa_cfg->areas) {
+	if (!target->working_areas) {
 		int retval;
 		int enabled;
 
@@ -2044,22 +2011,22 @@ static int alloc_working_area_try_do(struct target *target, struct working_area_
 			return retval;
 
 		if (!enabled) {
-			if (wa_cfg->phys_spec) {
+			if (target->working_area_phys_spec) {
 				LOG_DEBUG("MMU disabled, using physical "
-					"address for working memory "TARGET_ADDR_FMT,
-					wa_cfg->phys);
-				wa_cfg->area = wa_cfg->phys;
+					"address for working memory " TARGET_ADDR_FMT,
+					target->working_area_phys);
+				target->working_area = target->working_area_phys;
 			} else {
 				LOG_ERROR("No working memory available. "
 					"Specify -work-area-phys to target.");
 				return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
 			}
 		} else {
-			if (wa_cfg->virt_spec) {
+			if (target->working_area_virt_spec) {
 				LOG_DEBUG("MMU enabled, using virtual "
-					"address for working memory "TARGET_ADDR_FMT,
-					wa_cfg->virt);
-				wa_cfg->area = wa_cfg->virt;
+					"address for working memory " TARGET_ADDR_FMT,
+					target->working_area_virt);
+				target->working_area = target->working_area_virt;
 			} else {
 				LOG_ERROR("No working memory available. "
 					"Specify -work-area-virt to target.");
@@ -2071,20 +2038,20 @@ static int alloc_working_area_try_do(struct target *target, struct working_area_
 		struct working_area *new_wa = malloc(sizeof(*new_wa));
 		if (new_wa) {
 			new_wa->next = NULL;
-			new_wa->size = ALIGN_DOWN(wa_cfg->size, 4); /* 4-byte align */
-			new_wa->address = wa_cfg->area;
+			new_wa->size = ALIGN_DOWN(target->working_area_size, 4); /* 4-byte align */
+			new_wa->address = target->working_area;
 			new_wa->backup = NULL;
 			new_wa->user = NULL;
 			new_wa->free = true;
 		}
 
-		wa_cfg->areas = new_wa;
+		target->working_areas = new_wa;
 	}
 
 	/* only allocate multiples of 4 byte */
 	size = ALIGN_UP(size, 4);
 
-	struct working_area *c = wa_cfg->areas;
+	struct working_area *c = target->working_areas;
 
 	/* Find the first large enough working area */
 	while (c) {
@@ -2102,7 +2069,7 @@ static int alloc_working_area_try_do(struct target *target, struct working_area_
 	LOG_DEBUG("allocated new working area of %" PRIu32 " bytes at address " TARGET_ADDR_FMT,
 			  size, c->address);
 
-	if (wa_cfg->backup) {
+	if (target->backup_working_area) {
 		if (!c->backup) {
 			c->backup = malloc(c->size);
 			if (!c->backup)
@@ -2121,19 +2088,9 @@ static int alloc_working_area_try_do(struct target *target, struct working_area_
 	/* user pointer */
 	c->user = area;
 
-	print_wa_layout(wa_cfg);
+	print_wa_layout(target);
 
 	return ERROR_OK;
-}
-
-int target_alloc_working_area_try(struct target *target, uint32_t size, struct working_area **area)
-{
-	return alloc_working_area_try_do(target, &target->working_area_cfg, size, area);
-}
-
-int target_alloc_alt_working_area_try(struct target *target, uint32_t size, struct working_area **area)
-{
-	return alloc_working_area_try_do(target, &target->alt_working_area_cfg, size, area);
 }
 
 int target_alloc_working_area(struct target *target, uint32_t size, struct working_area **area)
@@ -2144,23 +2101,14 @@ int target_alloc_working_area(struct target *target, uint32_t size, struct worki
 	if (retval == ERROR_TARGET_RESOURCE_NOT_AVAILABLE)
 		LOG_WARNING("not enough working area available(requested %"PRIu32")", size);
 	return retval;
+
 }
 
-int target_alloc_alt_working_area(struct target *target, uint32_t size, struct working_area **area)
-{
-	int retval;
-
-	retval = target_alloc_alt_working_area_try(target, size, area);
-	if (retval == ERROR_TARGET_RESOURCE_NOT_AVAILABLE)
-		LOG_WARNING("not enough working area available(requested %"PRIu32")", size);
-	return retval;
-}
-
-static int target_restore_working_area(struct target *target, struct working_area_config *wa_cfg, struct working_area *area)
+static int target_restore_working_area(struct target *target, struct working_area *area)
 {
 	int retval = ERROR_OK;
 
-	if (wa_cfg->backup && area->backup) {
+	if (target->backup_working_area && area->backup) {
 		retval = target_write_memory(target, area->address, 4, area->size / 4, area->backup);
 		if (retval != ERROR_OK)
 			LOG_ERROR("failed to restore %" PRIu32 " bytes of working area at address " TARGET_ADDR_FMT,
@@ -2171,14 +2119,14 @@ static int target_restore_working_area(struct target *target, struct working_are
 }
 
 /* Restore the area's backup memory, if any, and return the area to the allocation pool */
-static int target_free_working_area_restore(struct target *target, struct working_area_config *wa_cfg, struct working_area *area, int restore)
+static int target_free_working_area_restore(struct target *target, struct working_area *area, int restore)
 {
 	if (!area || area->free)
 		return ERROR_OK;
 
 	int retval = ERROR_OK;
 	if (restore) {
-		retval = target_restore_working_area(target, wa_cfg, area);
+		retval = target_restore_working_area(target, area);
 		/* REVISIT: Perhaps the area should be freed even if restoring fails. */
 		if (retval != ERROR_OK)
 			return retval;
@@ -2196,29 +2144,24 @@ static int target_free_working_area_restore(struct target *target, struct workin
 	*area->user = NULL;
 	area->user = NULL;
 
-	target_merge_working_areas(wa_cfg);
+	target_merge_working_areas(target);
 
-	print_wa_layout(wa_cfg);
+	print_wa_layout(target);
 
 	return retval;
 }
 
 int target_free_working_area(struct target *target, struct working_area *area)
 {
-	return target_free_working_area_restore(target, &target->working_area_cfg, area, 1);
-}
-
-int target_free_alt_working_area(struct target *target, struct working_area *area)
-{
-	return target_free_working_area_restore(target, &target->alt_working_area_cfg, area, 1);
+	return target_free_working_area_restore(target, area, 1);
 }
 
 /* free resources and restore memory, if restoring memory fails,
  * free up resources anyway
  */
-static void target_free_all_working_areas_restore(struct target *target, struct working_area_config *wa_cfg, int restore)
+static void target_free_all_working_areas_restore(struct target *target, int restore)
 {
-	struct working_area *c = wa_cfg->areas;
+	struct working_area *c = target->working_areas;
 
 	LOG_DEBUG("freeing all working areas");
 
@@ -2226,7 +2169,7 @@ static void target_free_all_working_areas_restore(struct target *target, struct 
 	while (c) {
 		if (!c->free) {
 			if (restore)
-				target_restore_working_area(target, wa_cfg, c);
+				target_restore_working_area(target, c);
 			c->free = true;
 			*c->user = NULL; /* Same as above */
 			c->user = NULL;
@@ -2235,41 +2178,32 @@ static void target_free_all_working_areas_restore(struct target *target, struct 
 	}
 
 	/* Run a merge pass to combine all areas into one */
-	target_merge_working_areas(wa_cfg);
+	target_merge_working_areas(target);
 
-	print_wa_layout(wa_cfg);
-}
-
-static void target_free_all_working_areas_do(struct target *target, struct working_area_config *wa_cfg)
-{
-	target_free_all_working_areas_restore(target, wa_cfg, 1);
-	/* Now we have none or only one working area marked as free */
-	if (wa_cfg->areas) {
-		/* Free the last one to allow on-the-fly moving and resizing */
-		free(wa_cfg->areas->backup);
-		free(wa_cfg->areas);
-		wa_cfg->areas = NULL;
-	}
+	print_wa_layout(target);
 }
 
 void target_free_all_working_areas(struct target *target)
 {
-	target_free_all_working_areas_do(target, &target->working_area_cfg);
-}
+	target_free_all_working_areas_restore(target, 1);
 
-void target_free_all_alt_working_areas(struct target *target)
-{
-	target_free_all_working_areas_do(target, &target->alt_working_area_cfg);
+	/* Now we have none or only one working area marked as free */
+	if (target->working_areas) {
+		/* Free the last one to allow on-the-fly moving and resizing */
+		free(target->working_areas->backup);
+		free(target->working_areas);
+		target->working_areas = NULL;
+	}
 }
 
 /* Find the largest number of bytes that can be allocated */
-static uint32_t get_working_area_avail_do(struct target *target, struct working_area_config *wa_cfg)
+uint32_t target_get_working_area_avail(struct target *target)
 {
-	struct working_area *c = wa_cfg->areas;
+	struct working_area *c = target->working_areas;
 	uint32_t max_size = 0;
 
 	if (!c)
-		return ALIGN_DOWN(wa_cfg->size, 4);
+		return ALIGN_DOWN(target->working_area_size, 4);
 
 	while (c) {
 		if (c->free && max_size < c->size)
@@ -2279,16 +2213,6 @@ static uint32_t get_working_area_avail_do(struct target *target, struct working_
 	}
 
 	return max_size;
-}
-
-uint32_t target_get_working_area_avail(struct target *target)
-{
-	return get_working_area_avail_do(target, &target->working_area_cfg);
-}
-
-uint32_t target_get_alt_working_area_avail(struct target *target)
-{
-	return get_working_area_avail_do(target, &target->alt_working_area_cfg);
 }
 
 static void target_destroy(struct target *target)
@@ -3311,7 +3235,7 @@ COMMAND_HANDLER(handle_wait_halt_command)
  *
  * After 500ms, keep_alive() is invoked
  */
-int target_wait_state(struct target *target, enum target_state state, int ms)
+int target_wait_state(struct target *target, enum target_state state, unsigned int ms)
 {
 	int retval;
 	int64_t then = 0, cur;
@@ -3328,7 +3252,7 @@ int target_wait_state(struct target *target, enum target_state state, int ms)
 			once = false;
 			then = timeval_ms();
 			LOG_DEBUG("waiting for target %s...",
-				jim_nvp_value2name_simple(nvp_target_state, state)->name);
+				nvp_value2name(nvp_target_state, state)->name);
 		}
 
 		if (cur-then > 500)
@@ -3336,7 +3260,7 @@ int target_wait_state(struct target *target, enum target_state state, int ms)
 
 		if ((cur-then) > ms) {
 			LOG_ERROR("timed out while waiting for target %s",
-				jim_nvp_value2name_simple(nvp_target_state, state)->name);
+				nvp_value2name(nvp_target_state, state)->name);
 			return ERROR_FAIL;
 		}
 	}
@@ -3386,8 +3310,8 @@ COMMAND_HANDLER(handle_reset_command)
 
 	enum target_reset_mode reset_mode = RESET_RUN;
 	if (CMD_ARGC == 1) {
-		const struct jim_nvp *n;
-		n = jim_nvp_name2value_simple(nvp_reset_modes, CMD_ARGV[0]);
+		const struct nvp *n;
+		n = nvp_name2value(nvp_reset_modes, CMD_ARGV[0]);
 		if ((!n->name) || (n->value == RESET_UNKNOWN))
 			return ERROR_COMMAND_SYNTAX_ERROR;
 		reset_mode = n->value;
@@ -3441,14 +3365,14 @@ COMMAND_HANDLER(handle_step_command)
 }
 
 void target_handle_md_output(struct command_invocation *cmd,
-		struct target *target, target_addr_t address, unsigned size,
-		unsigned count, const uint8_t *buffer)
+		struct target *target, target_addr_t address, unsigned int size,
+		unsigned int count, const uint8_t *buffer, bool include_address)
 {
 	const unsigned line_bytecnt = 32;
-	unsigned line_modulo = line_bytecnt / size;
+	unsigned int line_modulo = line_bytecnt / size;
 
 	char output[line_bytecnt * 4 + 1];
-	unsigned output_len = 0;
+	unsigned int output_len = 0;
 
 	const char *value_fmt;
 	switch (size) {
@@ -3470,8 +3394,8 @@ void target_handle_md_output(struct command_invocation *cmd,
 		return;
 	}
 
-	for (unsigned i = 0; i < count; i++) {
-		if (i % line_modulo == 0) {
+	for (unsigned int i = 0; i < count; i++) {
+		if (include_address && (i % line_modulo == 0)) {
 			output_len += snprintf(output + output_len,
 					sizeof(output) - output_len,
 					TARGET_ADDR_FMT ": ",
@@ -3555,7 +3479,8 @@ COMMAND_HANDLER(handle_md_command)
 	struct target *target = get_current_target(CMD_CTX);
 	int retval = fn(target, address, size, count, buffer);
 	if (retval == ERROR_OK)
-		target_handle_md_output(CMD, target, address, size, count, buffer);
+		target_handle_md_output(CMD, target, address, size, count, buffer,
+				true);
 
 	free(buffer);
 
@@ -4236,8 +4161,8 @@ COMMAND_HANDLER(handle_wp_command)
 		while (watchpoint) {
 			command_print(CMD, "address: " TARGET_ADDR_FMT
 					", len: 0x%8.8" PRIx32
-					", r/w/a: %i, value: 0x%8.8" PRIx32
-					", mask: 0x%8.8" PRIx32,
+					", r/w/a: %i, value: 0x%8.8" PRIx64
+					", mask: 0x%8.8" PRIx64,
 					watchpoint->address,
 					watchpoint->length,
 					(int)watchpoint->rw,
@@ -4251,15 +4176,20 @@ COMMAND_HANDLER(handle_wp_command)
 	enum watchpoint_rw type = WPT_ACCESS;
 	target_addr_t addr = 0;
 	uint32_t length = 0;
-	uint32_t data_value = 0x0;
-	uint32_t data_mask = 0xffffffff;
+	uint64_t data_value = 0x0;
+	uint64_t data_mask = WATCHPOINT_IGNORE_DATA_VALUE_MASK;
+	bool mask_specified = false;
 
 	switch (CMD_ARGC) {
 	case 5:
-		COMMAND_PARSE_NUMBER(u32, CMD_ARGV[4], data_mask);
+		COMMAND_PARSE_NUMBER(u64, CMD_ARGV[4], data_mask);
+		mask_specified = true;
 		/* fall through */
 	case 4:
-		COMMAND_PARSE_NUMBER(u32, CMD_ARGV[3], data_value);
+		COMMAND_PARSE_NUMBER(u64, CMD_ARGV[3], data_value);
+		// if user specified only data value without mask - the mask should be 0
+		if (!mask_specified)
+			data_mask = 0;
 		/* fall through */
 	case 3:
 		switch (CMD_ARGV[2][0]) {
@@ -5412,10 +5342,6 @@ enum target_cfg_param {
 	TCFG_CHAIN_POSITION,
 	TCFG_DBGBASE,
 	TCFG_RTOS,
-	TCFG_ALT_WORK_AREA_VIRT,
-	TCFG_ALT_WORK_AREA_PHYS,
-	TCFG_ALT_WORK_AREA_SIZE,
-	TCFG_ALT_WORK_AREA_BACKUP,
 	TCFG_DEFER_EXAMINE,
 	TCFG_GDB_PORT,
 	TCFG_GDB_MAX_CONNECTIONS,
@@ -5433,10 +5359,6 @@ static struct jim_nvp nvp_config_opts[] = {
 	{ .name = "-chain-position",   .value = TCFG_CHAIN_POSITION },
 	{ .name = "-dbgbase",          .value = TCFG_DBGBASE },
 	{ .name = "-rtos",             .value = TCFG_RTOS },
-	{ .name = "-alt-work-area-virt",   .value = TCFG_ALT_WORK_AREA_VIRT },
-	{ .name = "-alt-work-area-phys",   .value = TCFG_ALT_WORK_AREA_PHYS },
-	{ .name = "-alt-work-area-size",   .value = TCFG_ALT_WORK_AREA_SIZE },
-	{ .name = "-alt-work-area-backup", .value = TCFG_ALT_WORK_AREA_BACKUP },
 	{ .name = "-defer-examine",    .value = TCFG_DEFER_EXAMINE },
 	{ .name = "-gdb-port",         .value = TCFG_GDB_PORT },
 	{ .name = "-gdb-max-connections",   .value = TCFG_GDB_MAX_CONNECTIONS },
@@ -5577,107 +5499,65 @@ no_params:
 			break;
 
 		case TCFG_WORK_AREA_VIRT:
-		case TCFG_ALT_WORK_AREA_VIRT:
 			if (goi->isconfigure) {
-				target_free_all_working_areas_restore(target, n->value == TCFG_ALT_WORK_AREA_VIRT ?
-					&target->alt_working_area_cfg : &target->working_area_cfg, 1);
+				target_free_all_working_areas(target);
 				e = jim_getopt_wide(goi, &w);
 				if (e != JIM_OK)
 					return e;
-				if (n->value == TCFG_ALT_WORK_AREA_VIRT) {
-					target->alt_working_area_cfg.virt = w;
-					target->alt_working_area_cfg.virt_spec = true;
-				} else {
-					target->working_area_cfg.virt = w;
-					target->working_area_cfg.virt_spec = true;
-				}
+				target->working_area_virt = w;
+				target->working_area_virt_spec = true;
 			} else {
 				if (goi->argc != 0)
 					goto no_params;
 			}
-			if (n->value == TCFG_ALT_WORK_AREA_VIRT) {
-				Jim_SetResult(goi->interp, Jim_NewIntObj(goi->interp, target->alt_working_area_cfg.virt));
-			} else {
-				Jim_SetResult(goi->interp, Jim_NewIntObj(goi->interp, target->working_area_cfg.virt));
-			}
+			Jim_SetResult(goi->interp, Jim_NewIntObj(goi->interp, target->working_area_virt));
 			/* loop for more */
 			break;
 
 		case TCFG_WORK_AREA_PHYS:
-		case TCFG_ALT_WORK_AREA_PHYS:
 			if (goi->isconfigure) {
-				target_free_all_working_areas_restore(target, n->value == TCFG_ALT_WORK_AREA_VIRT ?
-					&target->alt_working_area_cfg : &target->working_area_cfg, 1);
+				target_free_all_working_areas(target);
 				e = jim_getopt_wide(goi, &w);
 				if (e != JIM_OK)
 					return e;
-				if (n->value == TCFG_ALT_WORK_AREA_PHYS) {
-					target->alt_working_area_cfg.phys = w;
-					target->alt_working_area_cfg.phys_spec = true;
-				} else {
-					target->working_area_cfg.phys = w;
-					target->working_area_cfg.phys_spec = true;
-				}
+				target->working_area_phys = w;
+				target->working_area_phys_spec = true;
 			} else {
 				if (goi->argc != 0)
 					goto no_params;
 			}
-			if (n->value == TCFG_ALT_WORK_AREA_PHYS) {
-				Jim_SetResult(goi->interp, Jim_NewIntObj(goi->interp, target->alt_working_area_cfg.phys));
-			} else {
-				Jim_SetResult(goi->interp, Jim_NewIntObj(goi->interp, target->working_area_cfg.phys));
-			}
+			Jim_SetResult(goi->interp, Jim_NewIntObj(goi->interp, target->working_area_phys));
 			/* loop for more */
 			break;
 
 		case TCFG_WORK_AREA_SIZE:
-		case TCFG_ALT_WORK_AREA_SIZE:
 			if (goi->isconfigure) {
-				target_free_all_working_areas_restore(target, n->value == TCFG_ALT_WORK_AREA_VIRT ?
-					&target->alt_working_area_cfg : &target->working_area_cfg, 1);
+				target_free_all_working_areas(target);
 				e = jim_getopt_wide(goi, &w);
 				if (e != JIM_OK)
 					return e;
-				if (n->value == TCFG_ALT_WORK_AREA_SIZE) {
-					target->alt_working_area_cfg.size = w;
-				} else {
-					target->working_area_cfg.size = w;
-				}
+				target->working_area_size = w;
 			} else {
 				if (goi->argc != 0)
 					goto no_params;
 			}
-			if (n->value == TCFG_ALT_WORK_AREA_SIZE) {
-				Jim_SetResult(goi->interp, Jim_NewIntObj(goi->interp, target->alt_working_area_cfg.size));
-			} else {
-				Jim_SetResult(goi->interp, Jim_NewIntObj(goi->interp, target->working_area_cfg.size));
-			}
+			Jim_SetResult(goi->interp, Jim_NewIntObj(goi->interp, target->working_area_size));
 			/* loop for more */
 			break;
 
 		case TCFG_WORK_AREA_BACKUP:
-		case TCFG_ALT_WORK_AREA_BACKUP:
 			if (goi->isconfigure) {
-				target_free_all_working_areas_restore(target, n->value == TCFG_ALT_WORK_AREA_VIRT ?
-					&target->alt_working_area_cfg : &target->working_area_cfg, 1);
+				target_free_all_working_areas(target);
 				e = jim_getopt_wide(goi, &w);
 				if (e != JIM_OK)
 					return e;
 				/* make this exactly 1 or 0 */
-				if (n->value == TCFG_ALT_WORK_AREA_BACKUP) {
-					target->alt_working_area_cfg.backup = (!!w);
-				} else {
-					target->working_area_cfg.backup = (!!w);
-				}
+				target->backup_working_area = (!!w);
 			} else {
 				if (goi->argc != 0)
 					goto no_params;
 			}
-			if (n->value == TCFG_ALT_WORK_AREA_BACKUP) {
-				Jim_SetResult(goi->interp, Jim_NewIntObj(goi->interp, target->alt_working_area_cfg.backup));
-			} else {
-				Jim_SetResult(goi->interp, Jim_NewIntObj(goi->interp, target->working_area_cfg.backup));
-			}
+			Jim_SetResult(goi->interp, Jim_NewIntObj(goi->interp, target->backup_working_area));
 			/* loop for more e*/
 			break;
 
@@ -5729,7 +5609,6 @@ no_params:
 				}
 
 				target_free_all_working_areas(target);
-				target_free_all_alt_working_areas(target);
 				e = jim_getopt_obj(goi, &o_t);
 				if (e != JIM_OK)
 					return e;
@@ -5859,55 +5738,40 @@ static int jim_target_array2mem(Jim_Interp *interp,
 	return target_array2mem(interp, target, argc - 1, argv + 1);
 }
 
-static int jim_target_tap_disabled(Jim_Interp *interp)
-{
-	Jim_SetResultFormatted(interp, "[TAP is disabled]");
-	return JIM_ERR;
-}
-
-static int jim_target_examine(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
+COMMAND_HANDLER(handle_target_examine)
 {
 	bool allow_defer = false;
 
-	struct jim_getopt_info goi;
-	jim_getopt_setup(&goi, interp, argc - 1, argv + 1);
-	if (goi.argc > 1) {
-		const char *cmd_name = Jim_GetString(argv[0], NULL);
-		Jim_SetResultFormatted(goi.interp,
-				"usage: %s ['allow-defer']", cmd_name);
-		return JIM_ERR;
-	}
-	if (goi.argc > 0 &&
-	    strcmp(Jim_GetString(argv[1], NULL), "allow-defer") == 0) {
-		/* consume it */
-		Jim_Obj *obj;
-		int e = jim_getopt_obj(&goi, &obj);
-		if (e != JIM_OK)
-			return e;
+	if (CMD_ARGC > 1)
+		return ERROR_COMMAND_SYNTAX_ERROR;
+
+	if (CMD_ARGC == 1) {
+		if (strcmp(CMD_ARGV[0], "allow-defer"))
+			return ERROR_COMMAND_ARGUMENT_INVALID;
 		allow_defer = true;
 	}
 
-	struct command_context *cmd_ctx = current_command_context(interp);
-	assert(cmd_ctx);
-	struct target *target = get_current_target(cmd_ctx);
-	if (!target->tap->enabled)
-		return jim_target_tap_disabled(interp);
+	struct target *target = get_current_target(CMD_CTX);
+	if (!target->tap->enabled) {
+		command_print(CMD, "[TAP is disabled]");
+		return ERROR_FAIL;
+	}
 
 	if (allow_defer && target->defer_examine) {
 		LOG_INFO("Deferring arp_examine of %s", target_name(target));
 		LOG_INFO("Use arp_examine command to examine it manually!");
-		return JIM_OK;
+		return ERROR_OK;
 	}
 
-	int e = target->type->examine(target);
-	if (e != ERROR_OK) {
+	int retval = target->type->examine(target);
+	if (retval != ERROR_OK) {
 		target_reset_examined(target);
-		return JIM_ERR;
+		return retval;
 	}
 
 	target_set_examined(target);
 
-	return JIM_OK;
+	return ERROR_OK;
 }
 
 COMMAND_HANDLER(handle_target_was_examined)
@@ -5944,62 +5808,47 @@ COMMAND_HANDLER(handle_target_halt_gdb)
 	return target_call_event_callbacks(target, TARGET_EVENT_GDB_HALT);
 }
 
-static int jim_target_poll(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
+COMMAND_HANDLER(handle_target_poll)
 {
-	if (argc != 1) {
-		Jim_WrongNumArgs(interp, 1, argv, "[no parameters]");
-		return JIM_ERR;
-	}
-	struct command_context *cmd_ctx = current_command_context(interp);
-	assert(cmd_ctx);
-	struct target *target = get_current_target(cmd_ctx);
-	if (!target->tap->enabled)
-		return jim_target_tap_disabled(interp);
+	if (CMD_ARGC != 0)
+		return ERROR_COMMAND_SYNTAX_ERROR;
 
-	int e;
+	struct target *target = get_current_target(CMD_CTX);
+	if (!target->tap->enabled) {
+		command_print(CMD, "[TAP is disabled]");
+		return ERROR_FAIL;
+	}
+
 	if (!(target_was_examined(target)))
-		e = ERROR_TARGET_NOT_EXAMINED;
-	else
-		e = target->type->poll(target);
-	if (e != ERROR_OK)
-		return JIM_ERR;
-	return JIM_OK;
+		return ERROR_TARGET_NOT_EXAMINED;
+
+	return target->type->poll(target);
 }
 
-static int jim_target_reset(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
+COMMAND_HANDLER(handle_target_reset)
 {
-	struct jim_getopt_info goi;
-	jim_getopt_setup(&goi, interp, argc - 1, argv + 1);
+	if (CMD_ARGC != 2)
+		return ERROR_COMMAND_SYNTAX_ERROR;
 
-	if (goi.argc != 2) {
-		Jim_WrongNumArgs(interp, 0, argv,
-				"([tT]|[fF]|assert|deassert) BOOL");
-		return JIM_ERR;
+	const struct nvp *n = nvp_name2value(nvp_assert, CMD_ARGV[0]);
+	if (!n->name) {
+		nvp_unknown_command_print(CMD, nvp_assert, NULL, CMD_ARGV[0]);
+		return ERROR_COMMAND_ARGUMENT_INVALID;
 	}
 
-	struct jim_nvp *n;
-	int e = jim_getopt_nvp(&goi, nvp_assert, &n);
-	if (e != JIM_OK) {
-		jim_getopt_nvp_unknown(&goi, nvp_assert, 1);
-		return e;
-	}
 	/* the halt or not param */
-	jim_wide a;
-	e = jim_getopt_wide(&goi, &a);
-	if (e != JIM_OK)
-		return e;
+	int a;
+	COMMAND_PARSE_NUMBER(int, CMD_ARGV[1], a);
 
-	struct command_context *cmd_ctx = current_command_context(interp);
-	assert(cmd_ctx);
-	struct target *target = get_current_target(cmd_ctx);
-	if (!target->tap->enabled)
-		return jim_target_tap_disabled(interp);
+	struct target *target = get_current_target(CMD_CTX);
+	if (!target->tap->enabled) {
+		command_print(CMD, "[TAP is disabled]");
+		return ERROR_FAIL;
+	}
 
 	if (!target->type->assert_reset || !target->type->deassert_reset) {
-		Jim_SetResultFormatted(interp,
-				"No target-specific reset for %s",
-				target_name(target));
-		return JIM_ERR;
+		command_print(CMD, "No target-specific reset for %s", target_name(target));
+		return ERROR_FAIL;
 	}
 
 	if (target->defer_examine)
@@ -6008,71 +5857,57 @@ static int jim_target_reset(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
 	/* determine if we should halt or not. */
 	target->reset_halt = (a != 0);
 	/* When this happens - all workareas are invalid. */
-	target_free_all_working_areas_restore(target, &target->working_area_cfg, 0);
-	target_free_all_working_areas_restore(target, &target->alt_working_area_cfg, 0);
+	target_free_all_working_areas_restore(target, 0);
 
 	/* do the assert */
 	if (n->value == NVP_ASSERT)
-		e = target->type->assert_reset(target);
-	else
-		e = target->type->deassert_reset(target);
-	return (e == ERROR_OK) ? JIM_OK : JIM_ERR;
+		return target->type->assert_reset(target);
+	return target->type->deassert_reset(target);
 }
 
-static int jim_target_halt(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
+COMMAND_HANDLER(handle_target_halt)
 {
-	if (argc != 1) {
-		Jim_WrongNumArgs(interp, 1, argv, "[no parameters]");
-		return JIM_ERR;
+	if (CMD_ARGC != 0)
+		return ERROR_COMMAND_SYNTAX_ERROR;
+
+	struct target *target = get_current_target(CMD_CTX);
+	if (!target->tap->enabled) {
+		command_print(CMD, "[TAP is disabled]");
+		return ERROR_FAIL;
 	}
-	struct command_context *cmd_ctx = current_command_context(interp);
-	assert(cmd_ctx);
-	struct target *target = get_current_target(cmd_ctx);
-	if (!target->tap->enabled)
-		return jim_target_tap_disabled(interp);
-	int e = target->type->halt(target);
-	return (e == ERROR_OK) ? JIM_OK : JIM_ERR;
+
+	return target->type->halt(target);
 }
 
-static int jim_target_wait_state(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
+COMMAND_HANDLER(handle_target_wait_state)
 {
-	struct jim_getopt_info goi;
-	jim_getopt_setup(&goi, interp, argc - 1, argv + 1);
+	if (CMD_ARGC != 2)
+		return ERROR_COMMAND_SYNTAX_ERROR;
 
-	/* params:  <name>  statename timeoutmsecs */
-	if (goi.argc != 2) {
-		const char *cmd_name = Jim_GetString(argv[0], NULL);
-		Jim_SetResultFormatted(goi.interp,
-				"%s <state_name> <timeout_in_msec>", cmd_name);
-		return JIM_ERR;
+	const struct nvp *n = nvp_name2value(nvp_target_state, CMD_ARGV[0]);
+	if (!n->name) {
+		nvp_unknown_command_print(CMD, nvp_target_state, NULL, CMD_ARGV[0]);
+		return ERROR_COMMAND_ARGUMENT_INVALID;
 	}
 
-	struct jim_nvp *n;
-	int e = jim_getopt_nvp(&goi, nvp_target_state, &n);
-	if (e != JIM_OK) {
-		jim_getopt_nvp_unknown(&goi, nvp_target_state, 1);
-		return e;
-	}
-	jim_wide a;
-	e = jim_getopt_wide(&goi, &a);
-	if (e != JIM_OK)
-		return e;
-	struct command_context *cmd_ctx = current_command_context(interp);
-	assert(cmd_ctx);
-	struct target *target = get_current_target(cmd_ctx);
-	if (!target->tap->enabled)
-		return jim_target_tap_disabled(interp);
+	unsigned int a;
+	COMMAND_PARSE_NUMBER(uint, CMD_ARGV[1], a);
 
-	e = target_wait_state(target, n->value, a);
-	if (e != ERROR_OK) {
-		Jim_Obj *obj = Jim_NewIntObj(interp, e);
-		Jim_SetResultFormatted(goi.interp,
-				"target: %s wait %s fails (%#s) %s",
+	struct target *target = get_current_target(CMD_CTX);
+	if (!target->tap->enabled) {
+		command_print(CMD, "[TAP is disabled]");
+		return ERROR_FAIL;
+	}
+
+	int retval = target_wait_state(target, n->value, a);
+	if (retval != ERROR_OK) {
+		command_print(CMD,
+				"target: %s wait %s fails (%d) %s",
 				target_name(target), n->name,
-				obj, target_strerror_safe(e));
-		return JIM_ERR;
+				retval, target_strerror_safe(retval));
+		return retval;
 	}
-	return JIM_OK;
+	return ERROR_OK;
 }
 /* List for human, Events defined for this target.
  * scripts/programs should use 'name cget -event NAME'
@@ -6264,7 +6099,7 @@ static const struct command_registration target_instance_command_handlers[] = {
 	{
 		.name = "arp_examine",
 		.mode = COMMAND_EXEC,
-		.jim_handler = jim_target_examine,
+		.handler = handle_target_examine,
 		.help = "used internally for reset processing",
 		.usage = "['allow-defer']",
 	},
@@ -6292,26 +6127,30 @@ static const struct command_registration target_instance_command_handlers[] = {
 	{
 		.name = "arp_poll",
 		.mode = COMMAND_EXEC,
-		.jim_handler = jim_target_poll,
+		.handler = handle_target_poll,
 		.help = "used internally for reset processing",
+		.usage = "",
 	},
 	{
 		.name = "arp_reset",
 		.mode = COMMAND_EXEC,
-		.jim_handler = jim_target_reset,
+		.handler = handle_target_reset,
 		.help = "used internally for reset processing",
+		.usage = "'assert'|'deassert' halt",
 	},
 	{
 		.name = "arp_halt",
 		.mode = COMMAND_EXEC,
-		.jim_handler = jim_target_halt,
+		.handler = handle_target_halt,
 		.help = "used internally for reset processing",
+		.usage = "",
 	},
 	{
 		.name = "arp_waitstate",
 		.mode = COMMAND_EXEC,
-		.jim_handler = jim_target_wait_state,
+		.handler = handle_target_wait_state,
 		.help = "used internally for reset processing",
+		.usage = "statename timeoutmsecs",
 	},
 	{
 		.name = "invoke-event",
@@ -6415,14 +6254,10 @@ static int target_create(struct jim_getopt_info *goi)
 	/* default to first core, override with -coreid */
 	target->coreid = 0;
 
-	target->working_area_cfg.area       = 0x0;
-	target->working_area_cfg.size       = 0x0;
-	target->working_area_cfg.areas      = NULL;
-	target->working_area_cfg.backup     = 0;
-	target->alt_working_area_cfg.area   = 0x0;
-	target->alt_working_area_cfg.size   = 0x0;
-	target->alt_working_area_cfg.areas  = NULL;
-	target->alt_working_area_cfg.backup = 0;
+	target->working_area        = 0x0;
+	target->working_area_size   = 0x0;
+	target->working_areas       = NULL;
+	target->backup_working_area = 0;
 
 	target->state               = TARGET_UNKNOWN;
 	target->debug_reason        = DBG_REASON_UNDEFINED;
@@ -6939,8 +6774,8 @@ COMMAND_HANDLER(handle_ps_command)
 	struct target *target = get_current_target(CMD_CTX);
 	char *display;
 	if (target->state != TARGET_HALTED) {
-		LOG_INFO("target not halted !!");
-		return ERROR_OK;
+		command_print(CMD, "Error: [%s] not halted", target_name(target));
+		return ERROR_TARGET_NOT_HALTED;
 	}
 
 	if ((target->rtos) && (target->rtos->type)
@@ -6971,8 +6806,8 @@ COMMAND_HANDLER(handle_test_mem_access_command)
 	int retval = ERROR_OK;
 
 	if (target->state != TARGET_HALTED) {
-		LOG_INFO("target not halted !!");
-		return ERROR_FAIL;
+		command_print(CMD, "Error: [%s] not halted", target_name(target));
+		return ERROR_TARGET_NOT_HALTED;
 	}
 
 	if (CMD_ARGC != 1)
@@ -7426,4 +7261,30 @@ static int target_register_user_commands(struct command_context *cmd_ctx)
 
 
 	return register_commands(cmd_ctx, NULL, target_exec_command_handlers);
+}
+
+const char *target_debug_reason_str(enum target_debug_reason reason)
+{
+	switch (reason) {
+		case DBG_REASON_DBGRQ:
+			return "DBGRQ";
+		case DBG_REASON_BREAKPOINT:
+			return "BREAKPOINT";
+		case DBG_REASON_WATCHPOINT:
+			return "WATCHPOINT";
+		case DBG_REASON_WPTANDBKPT:
+			return "WPTANDBKPT";
+		case DBG_REASON_SINGLESTEP:
+			return "SINGLESTEP";
+		case DBG_REASON_NOTHALTED:
+			return "NOTHALTED";
+		case DBG_REASON_EXIT:
+			return "EXIT";
+		case DBG_REASON_EXC_CATCH:
+			return "EXC_CATCH";
+		case DBG_REASON_UNDEFINED:
+			return "UNDEFINED";
+		default:
+			return "UNKNOWN!";
+	}
 }

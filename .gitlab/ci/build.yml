@@ -35,7 +35,7 @@
   popd
 
 .buildx_hidapi: &buildx_hidapi |
-  export HIDAPI_VER=hidapi-0.13.1
+  export HIDAPI_VER=hidapi-0.14.0
   wget https://dl.espressif.com/dl/hidapi-$HIDAPI_VER.tar.gz -O $HIDAPI_VER.tar.gz
   tar xzf $HIDAPI_VER.tar.gz && rm $HIDAPI_VER.tar.gz
   pushd hidapi-$HIDAPI_VER
@@ -181,7 +181,6 @@ build_linux:
 # Just to test build with latest gcc.
 build_linux_gcc_latest:
   stage: build_openocd
-  image: $CI_DOCKER_REGISTRY/openocd-ci-env:1
   tags:
     - build
   allow_failure: true
@@ -196,9 +195,6 @@ build_linux_gcc_latest:
 
 build_linux_armhf_test:
   extends: .build_linux_arm_template
-  except:
-    refs:
-      - schedules
   variables:
     CONF_HOST: "arm-linux-gnueabihf"
     PLATFORM_NAME: "linux-armhf-test"
@@ -207,11 +203,6 @@ build_linux_armhf_test:
 
 build_linux_armhf_sanitizer_test:
   extends: .build_linux_arm_template
-  only:
-    refs:
-      - schedules
-    variables:
-      - $SCHEDULE_TYPE == "build_sanitizer_test"
   variables:
     CONF_HOST: "arm-linux-gnueabihf"
     PLATFORM_NAME: "linux-armhf-test"
@@ -288,8 +279,7 @@ build_macos_arm64:
     HOST_CC: ${CONF_HOST}-cc
 
 scan-build:
-  stage: scan_build
-  image: $CI_DOCKER_REGISTRY/openocd-ci-env:1
+  stage: static_analyzers
   tags:
     - build
   allow_failure: true
@@ -298,6 +288,8 @@ scan-build:
   artifacts:
     paths:
       - ${SCAN_BUILD_OUTPUT}
+      - scanbuild_reference.html
+    when: always
   script:
     - !reference [.add_gitlab_key, script]
     - !reference [.submodules_mirror_update, script]
@@ -310,10 +302,45 @@ scan-build:
     - ${ARCHIVE_TOOL} scan_build.${ARCHIVE_EXT} build-scanbuild/out
     - mkdir -p ${SCAN_BUILD_OUTPUT}
     - mv scan_build.${ARCHIVE_EXT} ${SCAN_BUILD_OUTPUT}
+    - cp build-scanbuild/out/*/index.html scanbuild_reference.html
+    - apt-get update && apt-get install pip && pip install beautifulsoup4
+    - SCANBUILD_REF_FILE="tools/scanbuild_reference.txt"
+    - SCANBUILD_OUT_FILE="scanbuild_report.txt"
+    - python3 tools/scanbuild_parser.py -i scanbuild_reference.html -o $SCANBUILD_OUT_FILE
+    - python3 tools/scanbuild_parser.py -i tools/scanbuild_reference.html -o $SCANBUILD_REF_FILE
+    - ./tools/compare_static_analyzer_files.sh $SCANBUILD_OUT_FILE $SCANBUILD_REF_FILE
+
+sparse:
+  stage: static_analyzers
+  tags:
+    - build
+  allow_failure: true
+  variables:
+    SPARSE_BUILD_OUTDIR: "sparse"
+    SPARSE_BUILD_OUTFILE: "warnings.log"
+  artifacts:
+    paths:
+      - ${SPARSE_BUILD_OUTDIR}
+      - sparse_reference.log
+    when: always
+  script:
+    - !reference [.add_gitlab_key, script]
+    - !reference [.submodules_mirror_update, script]
+    - apt-get update && apt-get install sparse
+    - ./bootstrap
+    - mkdir build-sparse && pushd build-sparse
+    - ../configure CC=cgcc CFLAGS="-Wsparse-all -Wno-declaration-after-statement -Wno-unknown-attribute -Wno-transparent-union -Wno-tautological-compare -Wno-vla -Wno-flexible-array-array -D__FLT_EVAL_METHOD__=0"
+    - ((make -j`nproc`) 1> >(tee make.log)) 2> >(tee ${SPARSE_BUILD_OUTFILE} 2>&2)
+    - echo $(wc -l < ${SPARSE_BUILD_OUTFILE}) "sparse warning found"
+    - popd
+    - ${ARCHIVE_TOOL} sparse_out.${ARCHIVE_EXT} build-sparse/${SPARSE_BUILD_OUTFILE}
+    - mkdir -p ${SPARSE_BUILD_OUTDIR}
+    - mv sparse_out.${ARCHIVE_EXT} ${SPARSE_BUILD_OUTDIR}
+    - SPARSE_REF_FILE="tools/sparse_reference.log"
+    - ./tools/compare_static_analyzer_files.sh build-sparse/${SPARSE_BUILD_OUTFILE} $SPARSE_REF_FILE sparse_reference.log
 
 build_linux_cmake:
   stage: build_openocd
-  image: $CI_DOCKER_REGISTRY/openocd-ci-env:1
   tags:
     - build
   allow_failure: true

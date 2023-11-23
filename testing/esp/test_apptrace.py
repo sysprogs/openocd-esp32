@@ -37,7 +37,6 @@ class ApptraceTestsImpl:
         pass
 
     def test_apptrace_dest_tcp(self):
-        self.select_sub_test(503)
         self.add_bp('raw_trace_log_done')
         trace_src = 'tcp://localhost:53535'
         reader = reader_create(trace_src, 1.0)
@@ -59,13 +58,12 @@ class ApptraceTestsImpl:
             self.assertEqual(line, "[%d %s]\n" % (i, " " * (i * 20)))
 
     def test_apptrace_autostop(self):
-        self.select_sub_test(504)
         trace_file = tempfile.NamedTemporaryFile(delete=False)
         trace_file_name = trace_file.name
         trace_file.close()
         trace_src = 'file://%s' % trace_file_name
         reader = reader_create(trace_src, 1.0)
-        # 0 ms poll period, stop when 9000 bytes are received or due to 5 s timeout
+        # 0 ms poll period, stop when 10000 bytes are received or due to 5 s timeout
         self.oocd.apptrace_start("%s 0 10000 5" % trace_src)
         self.resume_exec()
         self.oocd.apptrace_wait_stop(tmo=30)
@@ -84,7 +82,6 @@ class ApptraceTestsImpl:
         """
             This test checks that apptracing continue to work if target resets between start and stop
         """
-        self.select_sub_test(505)
         trace_file = tempfile.NamedTemporaryFile(delete=False)
         trace_file_name = trace_file.name
         trace_file.close()
@@ -111,9 +108,9 @@ class ApptraceTestsImpl:
             except ReaderTimeoutError:
                 break
 
-        self.gdb.add_bp('app_main')
+        self.add_bp('app_main')
         self.run_to_bp(dbg.TARGET_STOP_REASON_BP, 'app_main')
-        self.select_sub_test(505)
+        self.select_sub_test(self.id())
         self.resume_exec()
         sleep(2) #  let it works some time
         self.oocd.apptrace_stop();
@@ -129,7 +126,6 @@ class ApptraceTestsImpl:
                 break
         reader.cleanup()
         os.remove(trace_file_name)
-
         # compare first 5 lines. But before that make sure first line includes number zero
         self.assertEqual(lines_before_reset[0].rstrip().split('#')[1], '0')
         self.assertEqual(lines_before_reset[:5], lines_after_reset[:5])

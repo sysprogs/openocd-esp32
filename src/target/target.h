@@ -45,6 +45,8 @@ struct gdb_fileio_info;
  * not sure how this is used with all the recent changes)
  * TARGET_DEBUG_RUNNING = 4: the target is running, but it is executing code on
  * behalf of the debugger (e.g. algorithm for flashing)
+ * TARGET_UNAVAILABLE = 5: The target is unavailable for some reason. It might
+ * be powered down, for instance.
  *
  * also see: target_state_name();
  */
@@ -55,11 +57,7 @@ enum target_state {
 	TARGET_HALTED = 2,
 	TARGET_RESET = 3,
 	TARGET_DEBUG_RUNNING = 4,
-};
-
-enum nvp_assert {
-	NVP_DEASSERT,
-	NVP_ASSERT,
+	TARGET_UNAVAILABLE = 5
 };
 
 enum target_reset_mode {
@@ -117,18 +115,6 @@ enum target_register_class {
 	REG_CLASS_GENERAL,
 };
 
-struct working_area_config {
-	target_addr_t area;				/* working area (initialised RAM). Evaluated
-										 * upon first allocation from virtual/physical address. */
-	bool virt_spec;		/* virtual address specified? */
-	target_addr_t virt;			/* virtual address */
-	bool phys_spec;		/* physical address specified? */
-	target_addr_t phys;			/* physical address */
-	uint32_t size;			/* size in bytes */
-	uint32_t backup;		/* whether the content of the working area has to be preserved */
-	struct working_area *areas;/* list of allocated working areas */
-};
-
 /* target_type.h contains the full definition of struct target_type */
 struct target {
 	struct target_type *type;			/* target type definition (name, access functions) */
@@ -160,10 +146,15 @@ struct target {
 	struct target_event_action *event_action;
 
 	bool reset_halt;						/* attempt resetting the CPU into the halted mode? */
-	
-	struct working_area_config	working_area_cfg;
-	struct working_area_config	alt_working_area_cfg;
-
+	target_addr_t working_area;				/* working area (initialised RAM). Evaluated
+										 * upon first allocation from virtual/physical address. */
+	bool working_area_virt_spec;		/* virtual address specified? */
+	target_addr_t working_area_virt;			/* virtual address */
+	bool working_area_phys_spec;		/* physical address specified? */
+	target_addr_t working_area_phys;			/* physical address */
+	uint32_t working_area_size;			/* size in bytes */
+	uint32_t backup_working_area;		/* whether the content of the working area has to be preserved */
+	struct working_area *working_areas;/* list of allocated working areas */
 	enum target_debug_reason debug_reason;/* reason why the target entered debug state */
 	enum target_endianness endianness;	/* target endianness */
 	/* also see: target_state_name() */
@@ -560,7 +551,7 @@ int target_run_algorithm(struct target *target,
 		int num_mem_params, struct mem_param *mem_params,
 		int num_reg_params, struct reg_param *reg_param,
 		target_addr_t entry_point, target_addr_t exit_point,
-		int timeout_ms, void *arch_info);
+		unsigned int timeout_ms, void *arch_info);
 
 /**
  * Starts an algorithm in the background on the @a target given.
@@ -581,7 +572,7 @@ int target_start_algorithm(struct target *target,
 int target_wait_algorithm(struct target *target,
 		int num_mem_params, struct mem_param *mem_params,
 		int num_reg_params, struct reg_param *reg_params,
-		target_addr_t exit_point, int timeout_ms,
+		target_addr_t exit_point, unsigned int timeout_ms,
 		void *arch_info);
 
 /**
@@ -673,7 +664,7 @@ int target_checksum_memory(struct target *target,
 int target_blank_check_memory(struct target *target,
 		struct target_memory_check_block *blocks, int num_blocks,
 		uint8_t erased_value);
-int target_wait_state(struct target *target, enum target_state state, int ms);
+int target_wait_state(struct target *target, enum target_state state, unsigned int ms);
 
 /**
  * Obtain file-I/O information from target for GDB to do syscall.
@@ -730,8 +721,6 @@ const char *target_reset_mode_name(enum target_reset_mode reset_mode);
  */
 int target_alloc_working_area(struct target *target,
 		uint32_t size, struct working_area **area);
-int target_alloc_alt_working_area(struct target *target,
-		uint32_t size, struct working_area **area);
 /* Same as target_alloc_working_area, except that no error is logged
  * when ERROR_TARGET_RESOURCE_NOT_AVAILABLE is returned.
  *
@@ -739,8 +728,6 @@ int target_alloc_alt_working_area(struct target *target,
  * and have a fallback to another behaviour(slower?).
  */
 int target_alloc_working_area_try(struct target *target,
-		uint32_t size, struct working_area **area);
-int target_alloc_alt_working_area_try(struct target *target,
 		uint32_t size, struct working_area **area);
 /**
  * Free a working area.
@@ -750,10 +737,8 @@ int target_alloc_alt_working_area_try(struct target *target,
  * @returns ERROR_OK if successful; error code if restore failed
  */
 int target_free_working_area(struct target *target, struct working_area *area);
-int target_free_alt_working_area(struct target *target, struct working_area *area);
 void target_free_all_working_areas(struct target *target);
 uint32_t target_get_working_area_avail(struct target *target);
-uint32_t target_get_alt_working_area_avail(struct target *target);
 
 /**
  * Free all the resources allocated by targets and the target layer
@@ -798,8 +783,8 @@ int target_arch_state(struct target *target);
 void target_handle_event(struct target *t, enum target_event e);
 
 void target_handle_md_output(struct command_invocation *cmd,
-	struct target *target, target_addr_t address, unsigned size,
-	unsigned count, const uint8_t *buffer);
+	struct target *target, target_addr_t address, unsigned int size,
+	unsigned int count, const uint8_t *buffer, bool include_address);
 
 int target_profiling_default(struct target *target, uint32_t *samples, uint32_t
 		max_num_samples, uint32_t *num_samples, uint32_t seconds);
@@ -821,5 +806,7 @@ int target_profiling_default(struct target *target, uint32_t *samples, uint32_t
 extern bool get_target_reset_nag(void);
 
 #define TARGET_DEFAULT_POLLING_INTERVAL		100
+
+const char *target_debug_reason_str(enum target_debug_reason reason);
 
 #endif /* OPENOCD_TARGET_TARGET_H */

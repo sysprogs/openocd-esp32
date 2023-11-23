@@ -86,7 +86,7 @@
 #cmakedefine01 BUILD_ESP_COMPRESSION
 
 /* 0 if you don't want ESP32 gpio driver support */
-#cmakedefine01 BUILD_ESP32_GPIO
+#cmakedefine01 BUILD_ESP_GPIO
 
 /* 0 if you don't want OpenOCD source code coverage support */
 #cmakedefine01 BUILD_GCOV
@@ -105,6 +105,9 @@
 
 /* 0 if you don't want Keil ULINK JTAG Programmer */
 #cmakedefine01 BUILD_ULINK
+
+/* 0 if you do not want ANGIE USB-JTAG adapter */
+#cmakedefine01 BUILD_ANGIE
 
 /* 0 if you don't want Altera USB-Blaster II Compatible */
 #cmakedefine01 BUILD_USB_BLASTER_2

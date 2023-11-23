@@ -11,6 +11,11 @@
 #include <stdint.h>
 #include "flash/nor/esp_flash.h"
 
+#define IS_1XXX(v)		(((v) & 0x08) == 0x08)
+#define IS_0100(v)      (((v) & 0x0f) == 0x04)
+
+#define ESP_FLASH_BOOT_MODE	0x08
+
 /* must be in sync with ESP-IDF version */
 /** Size of the pre-compiled target buffer for stub trampoline.
  * @note Must be in sync with ESP-IDF version */
@@ -38,6 +43,7 @@ enum esp_dbg_stub_id {
 
 #define ESP_DBG_STUB_MAGIC_NUM_VAL      0xFEEDBEEF
 #define ESP_DBG_STUB_CAP_GCOV_THREAD    (1 << 0)
+
 
 /**
  * Debug stubs descriptor. ID: ESP_DBG_STUB_DESC
@@ -74,6 +80,11 @@ struct esp_dbg_stubs {
 	struct esp_dbg_stubs_desc desc;
 };
 
+struct esp_panic_reason {
+	uint32_t addr;
+	uint32_t len;
+};
+
 /**
  * Semihost calls handling operations.
  */
@@ -107,6 +118,7 @@ struct esp_common {
 	struct esp_flash_breakpoints flash_brps;
 	const struct algorithm_hw *algo_hw;
 	struct esp_dbg_stubs dbg_stubs;
+	struct esp_panic_reason panic_reason;
 };
 
 struct esp_ops {
@@ -116,6 +128,7 @@ struct esp_ops {
 	int (*reset_reason_fetch)(struct target *target, int *rsn_id, const char **rsn_str);
 };
 
+struct esp_common *target_to_esp_common(struct target *target);
 int esp_common_init(struct esp_common *esp,
 	const struct esp_flash_breakpoint_ops *flash_brps_ops,
 	const struct algorithm_hw *algo_hw);
@@ -130,5 +143,14 @@ bool esp_common_flash_breakpoint_exists(struct esp_common *esp,
 int esp_common_handle_gdb_detach(struct target *target, struct esp_common *esp_common);
 
 int esp_dbgstubs_table_read(struct target *target, struct esp_dbg_stubs *dbg_stubs);
+
+void esp_common_assist_debug_monitor_disable(struct target *target, uint32_t address, uint32_t *value);
+void esp_common_assist_debug_monitor_restore(struct target *target, uint32_t address, uint32_t value);
+int esp_common_read_pseudo_ex_reason(struct target *target);
+
+static inline bool esp_is_flash_boot(uint32_t strap_reg)
+{
+	return (IS_1XXX(strap_reg) || IS_0100(strap_reg));
+}
 
 #endif	/* OPENOCD_TARGET_ESP_H */
