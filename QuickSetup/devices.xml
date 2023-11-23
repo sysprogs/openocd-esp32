@@ -48,4 +48,10 @@
 		<MatchRegex>^ESP32H2$</MatchRegex>
 		<ScriptFile>target/esp32h2.cfg</ScriptFile>
 	</TargetDeviceFamily>
+	<TargetDeviceFamily>
+		<ID>ESP32P4</ID>
+		<Name>ESP32P4</Name>
+		<MatchRegex>^ESP32P4$</MatchRegex>
+		<ScriptFile>target/esp32p4.cfg</ScriptFile>
+	</TargetDeviceFamily>
 </ArrayOfTargetDeviceFamily>

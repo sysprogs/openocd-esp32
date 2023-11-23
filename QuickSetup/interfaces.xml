@@ -252,7 +252,7 @@
   </ProgrammingInterface>
   <ProgrammingInterface>
     <ID>esp_usb_jtag</ID>
-    <Name>ESP32C3 built-in JTAG</Name>
+    <Name>ESP32S3/ESP32Cx built-in JTAG</Name>
     <ScriptFile>interface/esp_usb_jtag.cfg</ScriptFile>
     <UsbIdentities>
       <UsbIdentity>
