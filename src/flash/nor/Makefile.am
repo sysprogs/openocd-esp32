@@ -26,8 +26,10 @@ NOR_DRIVERS = \
 	%D%/cc26xx.c \
 	%D%/cfi.c \
 	%D%/dsp5680xx_flash.c \
+	%D%/dw-spi.c \
 	%D%/efm32.c \
 	%D%/em357.c \
+	%D%/eneispif.c \
 	%D%/esp_flash.c \
 	%D%/esp_xtensa.c \
 	%D%/esp_riscv.c \
@@ -37,7 +39,10 @@ NOR_DRIVERS = \
 	%D%/esp32h2.c \
 	%D%/esp32c3.c \
 	%D%/esp32s3.c \
+	%D%/esp32c5.c \
 	%D%/esp32c6.c \
+	%D%/esp32c61.c \
+	%D%/esp32p4.c \
 	%D%/esirisc_flash.c \
 	%D%/faux.c \
 	%D%/fespi.c \
@@ -53,6 +58,7 @@ NOR_DRIVERS = \
 	%D%/max32xxx.c \
 	%D%/mdr.c \
 	%D%/msp432.c \
+	%D%/mspm0.c \
 	%D%/mrvlqspi.c \
 	%D%/niietcm4.c \
 	%D%/non_cfi.c \
@@ -66,7 +72,7 @@ NOR_DRIVERS = \
 	%D%/psoc6.c \
 	%D%/qn908x.c \
 	%D%/renesas_rpchf.c \
-	%D%/rp2040.c \
+	%D%/rp2xxx.c \
 	%D%/rsl10.c \
 	%D%/sfdp.c \
 	%D%/sh_qspi.c \
@@ -98,6 +104,7 @@ NORHEADERS = \
 	%D%/cc26xx.h \
 	%D%/cfi.h \
 	%D%/driver.h \
+	%D%/dw-spi-helper.h \
 	%D%/imp.h \
 	%D%/non_cfi.h \
 	%D%/ocl.h \

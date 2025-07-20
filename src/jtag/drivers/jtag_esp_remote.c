@@ -272,7 +272,7 @@ static int jtag_esp_remote_path_move(struct pathmove_command *cmd)
 	uint8_t trans[cb];
 	memset(trans, 0, cb);
 
-	for (int i = 0; i < cmd->num_states; i++) {
+	for (unsigned int i = 0; i < cmd->num_states; i++) {
 		if (tap_state_transition(tap_get_state(), true) == cmd->path[i])
 			buf_set_u32(trans, i, 1, 1);
 		tap_set_state(cmd->path[i]);
@@ -290,9 +290,9 @@ static int jtag_esp_remote_tms(struct tms_command *cmd)
 	return jtag_esp_remote_tms_seq(cmd->bits, cmd->num_bits);
 }
 
-static int jtag_esp_remote_state_move(tap_state_t state)
+static int jtag_esp_remote_state_move(enum tap_state state)
 {
-	const tap_state_t cur_state = tap_get_state();
+	enum tap_state cur_state = tap_get_state();
 	if (cur_state == state)
 		return ERROR_OK;
 
@@ -432,7 +432,7 @@ static int jtag_esp_remote_scan(struct scan_command *cmd, size_t *out_read_size)
 	scan_bits = jtag_build_buffer(cmd, &buf);
 
 	*out_read_size = 0;
-	for (int i = 0; i < cmd->num_fields; ++i) {
+	for (unsigned int i = 0; i < cmd->num_fields; ++i) {
 		struct scan_field *sf = cmd->fields + i;
 		if (sf->in_value)
 			*out_read_size += sf->num_bits;
@@ -471,7 +471,7 @@ static int jtag_esp_remote_scan_read(struct scan_command *cmd)
 	uint8_t *buf = NULL;
 
 	size_t read_size = 0;
-	for (int i = 0; i < cmd->num_fields; ++i) {
+	for (unsigned int i = 0; i < cmd->num_fields; ++i) {
 		struct scan_field *sf = cmd->fields + i;
 		if (sf->in_value)
 			read_size += sf->num_bits;
@@ -492,7 +492,7 @@ jtag_esp_remote_scan_read_exit:
 	return retval;
 }
 
-static int jtag_esp_remote_runtest(int cycles, tap_state_t end_state)
+static int jtag_esp_remote_runtest(int cycles, enum tap_state end_state)
 {
 	int retval;
 
@@ -531,15 +531,14 @@ static int jtag_esp_remote_stableclocks(int cycles)
 	return ERROR_OK;
 }
 
-static int jtag_esp_remote_execute_queue(void)
+static int jtag_esp_remote_execute_queue(struct jtag_command *cmd_queue)
 {
 	struct jtag_command *cmd;
 	int retval = ERROR_OK;
 	size_t read_size = 0;
 	size_t cmd_read_size;
 
-	for (cmd = jtag_command_queue; retval == ERROR_OK && cmd != NULL;
-		cmd = cmd->next) {
+	for (cmd = cmd_queue; retval == ERROR_OK && cmd; cmd = cmd->next) {
 		switch (cmd->type) {
 		case JTAG_RESET:
 			retval = jtag_esp_remote_reset(cmd->cmd.reset->trst,
@@ -577,8 +576,7 @@ static int jtag_esp_remote_execute_queue(void)
 	}
 
 	if (read_size > 0) {
-		for (cmd = jtag_command_queue; retval == ERROR_OK && cmd != NULL;
-			cmd = cmd->next) {
+		for (cmd = cmd_queue; retval == ERROR_OK && cmd; cmd = cmd->next) {
 			if (cmd->type == JTAG_SCAN)
 				retval = jtag_esp_remote_scan_read(cmd->cmd.scan);
 		}
@@ -631,7 +629,7 @@ static int jtag_esp_remote_init_usb(void)
 {
 	const uint16_t vids[] = { usb_vid, 0 };		/* must be null terminated */
 	const uint16_t pids[] = { usb_pid, 0 };		/* must be null terminated */
-	int r = jtag_libusb_open(vids, pids, &usb_device, NULL);
+	int r = jtag_libusb_open(vids, pids, NULL, &usb_device, NULL);
 	if (r != ERROR_OK) {
 		if (r == ERROR_FAIL)
 			return ERROR_JTAG_INVALID_INTERFACE;	/*we likely can't find the USB
@@ -837,7 +835,8 @@ static struct jtag_interface esp_remote_jtag_interface = {
 struct adapter_driver esp_remote_adapter_driver = {
 	.name = "jtag_esp_remote",
 	.commands = jtag_esp_remote_command_handlers,
-	.transports = jtag_only,
+	.transport_ids = TRANSPORT_JTAG,
+	.transport_preferred_id = TRANSPORT_JTAG,
 
 	.init = jtag_esp_remote_init,
 	.quit = jtag_esp_remote_quit,

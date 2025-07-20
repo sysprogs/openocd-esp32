@@ -28,12 +28,12 @@ implementation.
 */
 
 /* ESP32 memory map */
+#define ESP32_IROM_MASK_LOW       0x40000000
+#define ESP32_IROM_MASK_HIGH      0x40070000
 #define ESP32_RTC_DATA_LOW        0x50000000
 #define ESP32_RTC_DATA_HIGH       0x50002000
 #define ESP32_DR_REG_LOW          0x3ff00000
 #define ESP32_DR_REG_HIGH         0x3ff71000
-#define ESP32_SYS_RAM_LOW         0x60000000UL
-#define ESP32_SYS_RAM_HIGH        (ESP32_SYS_RAM_LOW + 0x20000000UL)
 #define ESP32_RTC_SLOW_MEM_BASE   ESP32_RTC_DATA_LOW
 
 /* ESP32 WDT */
@@ -216,7 +216,8 @@ static int esp32_soc_reset(struct target *target)
 	LOG_DEBUG("Resuming the target");
 	xtensa = target_to_xtensa(target);
 	xtensa->suppress_dsr_errors = true;
-	res = xtensa_resume(target, 0, ESP32_RTC_SLOW_MEM_BASE + 4, 0, 0);
+	res = xtensa_resume(target, false, ESP32_RTC_SLOW_MEM_BASE + 4, false,
+		false);
 	xtensa->suppress_dsr_errors = false;
 	if (res != ERROR_OK) {
 		LOG_ERROR("Failed to run stub (%d)!", res);
@@ -232,9 +233,8 @@ static int esp32_soc_reset(struct target *target)
 		alive_sleep(10);
 		xtensa_poll(target);
 		if (timeval_ms() >= timeout) {
-			LOG_TARGET_ERROR(target,
-				"Timed out waiting for CPU to be reset, target state=%d",
-				target->state);
+			LOG_TARGET_ERROR(target, "Timed out waiting for CPU to be reset, target state %s",
+				target_state_name(target));
 			get_timeout = true;
 			break;
 		}
@@ -437,8 +437,9 @@ static const struct xtensa_power_ops esp32_pwr_ops = {
 };
 
 static const struct esp_flash_breakpoint_ops esp32_flash_brp_ops = {
+	.breakpoint_prepare = esp_algo_flash_breakpoint_prepare,
 	.breakpoint_add = esp_algo_flash_breakpoint_add,
-	.breakpoint_remove = esp_algo_flash_breakpoint_remove
+	.breakpoint_remove = esp_algo_flash_breakpoint_remove,
 };
 
 static const struct esp_xtensa_smp_chip_ops esp32_chip_ops = {
@@ -451,7 +452,7 @@ static const struct esp_semihost_ops esp32_semihost_ops = {
 	.post_reset = esp_semihosting_post_reset
 };
 
-static int esp32_target_create(struct target *target, Jim_Interp *interp)
+static int esp32_target_create(struct target *target)
 {
 	struct xtensa_debug_module_config esp32_dm_cfg = {
 		.dbg_ops = &esp32_dbg_ops,
@@ -490,6 +491,16 @@ static int esp32_target_create(struct target *target, Jim_Interp *interp)
 	target->state = TARGET_RUNNING;
 	target->debug_reason = DBG_REASON_NOTHALTED;
 	return ERROR_OK;
+}
+
+static int esp32_get_gdb_memory_map(struct target *target, struct target_memory_map *memory_map)
+{
+	struct target_memory_region region = { 0 };
+
+	region.type = MEMORY_TYPE_ROM;
+	region.start = ESP32_IROM_MASK_LOW;
+	region.length = ESP32_IROM_MASK_HIGH - ESP32_IROM_MASK_LOW;
+	return target_add_memory_region(memory_map, &region);
 }
 
 static COMMAND_HELPER(esp32_cmd_flashbootstrap_do, struct esp32_common *esp32)
@@ -655,6 +666,7 @@ struct target_type esp32_target = {
 
 	.get_gdb_arch = xtensa_get_gdb_arch,
 	.get_gdb_reg_list = xtensa_get_gdb_reg_list,
+	.get_gdb_memory_map = esp32_get_gdb_memory_map,
 
 	.run_algorithm = xtensa_run_algorithm,
 	.start_algorithm = xtensa_start_algorithm,

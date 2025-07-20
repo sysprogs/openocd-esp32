@@ -8,6 +8,12 @@
 
 #include "esp_vfs_semihost.h"
 
+#if CONFIG_IDF_TARGET_ARCH_XTENSA
+#include "xtensa/semihosting.h"
+#else
+#include "riscv/semihosting.h"
+#endif
+
 #include "esp_log.h"
 const static char *TAG = "semihost_test";
 
@@ -15,8 +21,6 @@ const static char *TAG = "semihost_test";
 #define ESP_ENOTSUP_WIN         129
 #define ESP_ENOTSUP_UNIX        95
 #define ESP_ENOTSUP_DARWIN      45
-
-#define SYSCALL_INSTR           "break 1,14\n"
 
 #define SYS_OPEN                0x01
 #define SYS_CLOSE               0x02
@@ -66,28 +70,15 @@ static inline void done(void)
     }
 }
 
-#if UT_IDF_VER >= MAKE_UT_IDF_VER(5,0,0,0)
-
 static inline bool esp_cpu_in_ocd_debug_mode(void)  //check
 {
     return esp_cpu_dbgr_is_attached();
 }
 
-#endif
-
-static inline long semihosting_call_noerrno_generic(long id, long *data)
-{
-    register long a2 asm ("a2") = id;
-    register long a3 asm ("a3") = (long)data;
-    __asm__ __volatile__ (
-        "break 1, 14\n"
-        : "+r"(a2) : "r"(a3)
-        : "memory");
-    return a2;
-}
 static inline int generic_syscall(int sys_nr, int arg1, int arg2, int arg3, int arg4,
                                   int *ret_errno)
 {
+    *ret_errno = 0;
     int core_id = xPortGetCoreID();
     if (!esp_cpu_in_ocd_debug_mode()) {
         *ret_errno = EIO;
@@ -97,10 +88,10 @@ static inline int generic_syscall(int sys_nr, int arg1, int arg2, int arg3, int 
     long data[] = {arg1, arg2, arg3, arg4};
     ESP_LOGI(TAG, "CPU[%d]: -> syscall 0x%x, args: 0x%x, 0x%x, 0x%x, 0x%x", core_id, sys_nr, arg1, arg2, arg3, arg4);
 
-    long ret = semihosting_call_noerrno_generic(sys_nr, data);
-    if (ret < 0) {
+    long ret = semihosting_call_noerrno(sys_nr, data);
+    if (ret == -1) {
         const int semihosting_sys_errno = SYS_ERRNO;
-        *ret_errno = (int) semihosting_call_noerrno_generic(semihosting_sys_errno, NULL);
+        *ret_errno = (int) semihosting_call_noerrno(semihosting_sys_errno, NULL);
     }
     ESP_LOGI(TAG, "CPU[%d]: -> syscall 0x%x, args: 0x%x, 0x%x, 0x%x, 0x%x, ret: 0x%x, errno: 0x%x", core_id, sys_nr, arg1, arg2, arg3, arg4, (int)ret, (int)*ret_errno);
     return ret;
@@ -277,8 +268,6 @@ static inline int semihosting_wrong_args(int wrong_arg)
 
     return 0;
 }
-
-#if UT_IDF_VER >= MAKE_UT_IDF_VER(5,0,0,0)
 
 static int s_win_flag = 0;
 
@@ -678,7 +667,6 @@ TEST_DECL(semihost_custom_calls_win, "test_semihost.SemihostTests*.test_semihost
     s_win_flag = 1;
     xTaskCreatePinnedToCore(TEST_ENTRY(semihost_custom_calls), "semihost_custom_call_task0", 4096, NULL, 5, NULL, 0);
 }
-#endif
 
 static void semihost_task(void *pvParameter)
 {
@@ -800,7 +788,6 @@ static void semihost_task(void *pvParameter)
     done();
 }
 
-#if CONFIG_IDF_TARGET_ARCH_XTENSA
 TEST_DECL(semihost_args, "test_semihost.SemihostTests*.test_semihost_args")
 {
     int ret;
@@ -845,7 +832,6 @@ TEST_DECL(semihost_args, "test_semihost.SemihostTests*.test_semihost_args")
     }
     done();
 }
-#endif /* CONFIG_IDF_TARGET_ARCH_XTENSA */
 
 TEST_DECL(semihost_rw, "test_semihost.SemihostTests*.test_semihost_rw")
 {
@@ -915,12 +901,15 @@ TEST_DECL(gdb_consoleio, "test_semihost.SemihostTests*.test_semihost_with_consol
 #endif
     }
 
-    FILE *f_out = freopen("/host/:tt", "w", stdout);
+    FILE *saved_out = stdout;
+    FILE *saved_err = stderr;
+    FILE *f_out = fopen("/host/:tt", "w");
     if (f_out == NULL) {
         ESP_LOGE(TAG, "CPU[%d]: Failed to open file for writing (%d)!", core_id, errno);
         assert(false);
     }
     stderr = f_out;
+    stdout = f_out;
 
 	fflush(stdout);
 	fflush(stderr);
@@ -935,10 +924,9 @@ TEST_DECL(gdb_consoleio, "test_semihost.SemihostTests*.test_semihost_with_consol
     }
 
     // restore std streams
-    char path[64] = { 0 };
-    snprintf(path, sizeof(path) - 1, "/dev/uart/%d", CONFIG_ESP_CONSOLE_UART_NUM);
-    stdout = freopen(path, "w", f_out);
-    stderr = stdout;
+    stdout = saved_out;
+    stderr = saved_err;
+    fclose(f_out);
 
     if (core_id == 0) {
 #if !CONFIG_FREERTOS_UNICORE
@@ -956,7 +944,7 @@ TEST_DECL(gdb_consoleio, "test_semihost.SemihostTests*.test_semihost_with_consol
     done();
 }
 
-ut_result_t semihost_test_do(int test_num)
+ut_result_t semihost_test_do(int test_num, int core_num)
 {
     if (TEST_ID_MATCH(TEST_ID_PATTERN(gdb_fileio), test_num)) {
         xTaskCreatePinnedToCore(TEST_ENTRY(gdb_fileio), "gdb_fileio_task", 4096, NULL, 5, NULL, 0);
@@ -965,7 +953,6 @@ ut_result_t semihost_test_do(int test_num)
         xTaskCreatePinnedToCore(TEST_ENTRY(gdb_consoleio), "gdb_consoleio_task", 4096, NULL, 5, NULL, 0);
     } else if (TEST_ID_MATCH(TEST_ID_PATTERN(semihost_rw), test_num)) {
         xTaskCreatePinnedToCore(TEST_ENTRY(semihost_rw), "semihost_task", 4096, NULL, 5, NULL, 0);
-#if CONFIG_IDF_TARGET_ARCH_XTENSA
     } else if (TEST_ID_MATCH(TEST_ID_PATTERN(semihost_args), test_num)) {
         /*
         * *** About the test ***
@@ -987,8 +974,6 @@ ut_result_t semihost_test_do(int test_num)
         * - Close the file
         */
         xTaskCreatePinnedToCore(TEST_ENTRY(semihost_args), "semihost_args_task0", 8000, NULL, 5, NULL, 0);
-#endif /* CONFIG_IDF_TARGET_ARCH_XTENSA  */
-#if UT_IDF_VER >= MAKE_UT_IDF_VER(5,0,0,0)
     /*
     * *** About the tests ***
     *
@@ -1001,7 +986,6 @@ ut_result_t semihost_test_do(int test_num)
         xTaskCreatePinnedToCore(TEST_ENTRY(semihost_custom_calls), "semihost_custom_call_task0", 4096, NULL, 5, NULL, 0);
     } else if (TEST_ID_MATCH(TEST_ID_PATTERN(semihost_custom_calls_win), test_num)) {
         TEST_ENTRY(semihost_custom_calls_win)(NULL);
-#endif
     } else {
         return UT_UNSUPPORTED;
     }

@@ -31,34 +31,36 @@
 
 #define CPUID		0xE000ED00
 
-#define ARM_CPUID_IMPLEMENTOR_POS	24
-#define ARM_CPUID_IMPLEMENTOR_MASK	(0xFF << ARM_CPUID_IMPLEMENTOR_POS)
+#define ARM_CPUID_IMPLEMENTER_POS	24
+#define ARM_CPUID_IMPLEMENTER_MASK	(0xFF << ARM_CPUID_IMPLEMENTER_POS)
 #define ARM_CPUID_PARTNO_POS		4
 #define ARM_CPUID_PARTNO_MASK		(0xFFF << ARM_CPUID_PARTNO_POS)
 
-#define ARM_MAKE_CPUID(impl, partno)	((((impl) << ARM_CPUID_IMPLEMENTOR_POS) & ARM_CPUID_IMPLEMENTOR_MASK) | \
+#define ARM_MAKE_CPUID(impl, partno)	((((impl) << ARM_CPUID_IMPLEMENTER_POS) & ARM_CPUID_IMPLEMENTER_MASK) | \
 	(((partno) << ARM_CPUID_PARTNO_POS)  & ARM_CPUID_PARTNO_MASK))
 
 /** Known Arm Cortex masked CPU Ids
- * This includes the implementor and part number, but _not_ the revision or
+ * This includes the implementer and part number, but _not_ the revision or
  * patch fields.
  */
 enum cortex_m_impl_part {
 	CORTEX_M_PARTNO_INVALID,
-	STAR_MC1_PARTNO      = ARM_MAKE_CPUID(ARM_IMPLEMENTOR_ARM, 0x132), /* FIXME - confirm implementor! */
-	CORTEX_M0_PARTNO     = ARM_MAKE_CPUID(ARM_IMPLEMENTOR_ARM, 0xC20),
-	CORTEX_M1_PARTNO     = ARM_MAKE_CPUID(ARM_IMPLEMENTOR_ARM, 0xC21),
-	CORTEX_M3_PARTNO     = ARM_MAKE_CPUID(ARM_IMPLEMENTOR_ARM, 0xC23),
-	CORTEX_M4_PARTNO     = ARM_MAKE_CPUID(ARM_IMPLEMENTOR_ARM, 0xC24),
-	CORTEX_M7_PARTNO     = ARM_MAKE_CPUID(ARM_IMPLEMENTOR_ARM, 0xC27),
-	CORTEX_M0P_PARTNO    = ARM_MAKE_CPUID(ARM_IMPLEMENTOR_ARM, 0xC60),
-	CORTEX_M23_PARTNO    = ARM_MAKE_CPUID(ARM_IMPLEMENTOR_ARM, 0xD20),
-	CORTEX_M33_PARTNO    = ARM_MAKE_CPUID(ARM_IMPLEMENTOR_ARM, 0xD21),
-	CORTEX_M35P_PARTNO   = ARM_MAKE_CPUID(ARM_IMPLEMENTOR_ARM, 0xD31),
-	CORTEX_M55_PARTNO    = ARM_MAKE_CPUID(ARM_IMPLEMENTOR_ARM, 0xD22),
-	INFINEON_SLX2_PARTNO = ARM_MAKE_CPUID(ARM_IMPLEMENTOR_INFINEON, 0xDB0),
-	REALTEK_M200_PARTNO  = ARM_MAKE_CPUID(ARM_IMPLEMENTOR_REALTEK, 0xd20),
-	REALTEK_M300_PARTNO  = ARM_MAKE_CPUID(ARM_IMPLEMENTOR_REALTEK, 0xd22),
+	STAR_MC1_PARTNO      = ARM_MAKE_CPUID(ARM_IMPLEMENTER_ARM_CHINA, 0x132),
+	CORTEX_M0_PARTNO     = ARM_MAKE_CPUID(ARM_IMPLEMENTER_ARM, 0xC20),
+	CORTEX_M1_PARTNO     = ARM_MAKE_CPUID(ARM_IMPLEMENTER_ARM, 0xC21),
+	CORTEX_M3_PARTNO     = ARM_MAKE_CPUID(ARM_IMPLEMENTER_ARM, 0xC23),
+	CORTEX_M4_PARTNO     = ARM_MAKE_CPUID(ARM_IMPLEMENTER_ARM, 0xC24),
+	CORTEX_M7_PARTNO     = ARM_MAKE_CPUID(ARM_IMPLEMENTER_ARM, 0xC27),
+	CORTEX_M0P_PARTNO    = ARM_MAKE_CPUID(ARM_IMPLEMENTER_ARM, 0xC60),
+	CORTEX_M23_PARTNO    = ARM_MAKE_CPUID(ARM_IMPLEMENTER_ARM, 0xD20),
+	CORTEX_M33_PARTNO    = ARM_MAKE_CPUID(ARM_IMPLEMENTER_ARM, 0xD21),
+	CORTEX_M35P_PARTNO   = ARM_MAKE_CPUID(ARM_IMPLEMENTER_ARM, 0xD31),
+	CORTEX_M52_PARTNO    = ARM_MAKE_CPUID(ARM_IMPLEMENTER_ARM_CHINA, 0xD24),
+	CORTEX_M55_PARTNO    = ARM_MAKE_CPUID(ARM_IMPLEMENTER_ARM, 0xD22),
+	CORTEX_M85_PARTNO    = ARM_MAKE_CPUID(ARM_IMPLEMENTER_ARM, 0xD23),
+	INFINEON_SLX2_PARTNO = ARM_MAKE_CPUID(ARM_IMPLEMENTER_INFINEON, 0xDB0),
+	REALTEK_M200_PARTNO  = ARM_MAKE_CPUID(ARM_IMPLEMENTER_REALTEK, 0xd20),
+	REALTEK_M300_PARTNO  = ARM_MAKE_CPUID(ARM_IMPLEMENTER_REALTEK, 0xd22),
 };
 
 /* Relevant Cortex-M flags, used in struct cortex_m_part_info.flags */
@@ -148,6 +150,7 @@ struct cortex_m_part_info {
 #define VC_CORERESET	BIT(0)
 
 /* DCB_DSCSR bit and field definitions */
+#define DSCSR_CDSKEY	BIT(17)
 #define DSCSR_CDS		BIT(16)
 
 /* NVIC registers */
@@ -164,6 +167,8 @@ struct cortex_m_part_info {
 #define NVIC_DFSR		0xE000ED30
 #define NVIC_MMFAR		0xE000ED34
 #define NVIC_BFAR		0xE000ED38
+#define MPU_CTRL		0xE000ED94
+#define SAU_CTRL		0xE000EDD0
 #define NVIC_SFSR		0xE000EDE4
 #define NVIC_SFAR		0xE000EDE8
 
@@ -180,6 +185,9 @@ struct cortex_m_part_info {
 #define DFSR_DWTTRAP		4
 #define DFSR_VCATCH			8
 #define DFSR_EXTERNAL		16
+
+#define MPU_CTRL_ENABLE		BIT(0)
+#define SAU_CTRL_ENABLE		BIT(0)
 
 #define FPCR_CODE 0
 #define FPCR_LITERAL 1
@@ -255,6 +263,19 @@ struct cortex_m_common {
 	/* Whether this target has the erratum that makes C_MASKINTS not apply to
 	 * already pending interrupts */
 	bool maskints_erratum;
+
+	/* Errata 3092511 Cortex-M7 can halt in an incorrect address when breakpoint
+	 * and exception occurs simultaneously */
+	bool incorrect_halt_erratum;
+};
+
+struct cortex_m_saved_security {
+	bool dscsr_dirty;
+	uint32_t dscsr;
+	bool sau_ctrl_dirty;
+	uint32_t sau_ctrl;
+	bool mpu_ctrl_dirty;
+	uint32_t mpu_ctrl;
 };
 
 static inline bool is_cortex_m_or_hla(const struct cortex_m_common *cortex_m)
@@ -333,5 +354,18 @@ void cortex_m_enable_watchpoints(struct target *target);
 void cortex_m_deinit_target(struct target *target);
 int cortex_m_profiling(struct target *target, uint32_t *samples,
 	uint32_t max_num_samples, uint32_t *num_samples, uint32_t seconds);
+
+/**
+ * Forces Cortex-M core to the basic secure context with SAU and MPU off
+ * @param ssec pointer to save previous security state or NULL
+ * @returns error code or ERROR_OK if secure mode was set or is not applicable
+ * (not ARMv8M with security extension)
+ */
+int cortex_m_set_secure(struct target *target, struct cortex_m_saved_security *ssec);
+
+/**
+ * Restores saved security context to MPU_CTRL, SAU_CTRL and DSCSR
+ */
+int cortex_m_security_restore(struct target *target, struct cortex_m_saved_security *ssec);
 
 #endif /* OPENOCD_TARGET_CORTEX_M_H */

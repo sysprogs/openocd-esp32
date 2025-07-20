@@ -3,6 +3,7 @@ from .defs import *
 import os
 import time
 import re
+import shutil
 import threading
 from pprint import pformat
 from pygdbmi.gdbcontroller import GdbController
@@ -17,7 +18,7 @@ class Gdb(object):
     def __init__(self, gdb_path='gdb',
                  remote_target=None,
                  extended_remote_mode=False,
-                 gdb_log_file=None,
+                 gdb_log_folder=None,
                  log_level=None,
                  log_stream_handler=None,
                  log_file_handler=None):
@@ -34,8 +35,8 @@ class Gdb(object):
                 Use ""  or None value to skip the connection stage.
             extended_remote_mode : bool
                 If True extended remote mode should be used.
-            gdb_log_file : string
-                path to GDB log file.
+            gdb_log_folder : string
+                path to GDB log folder.
             log_level : int
                 logging level for this object. See logging.CRITICAL etc
             log_stream_handler : logging.Handler
@@ -55,15 +56,16 @@ class Gdb(object):
         self.stream_handlers = {'console': [], 'target': [], 'log': []}
         self._curr_frame = None
         self._curr_wp_val = None
+        self._gdb_log_folder = gdb_log_folder
+        self._remote_log_count = 0
         # gdb config
         try:
             self.prog_startup_cmdfile = None
             self.gdb_set("mi-async", "on")
-            if gdb_log_file is not None:
-                pardirs = os.path.dirname(gdb_log_file)
-                if pardirs:
-                    os.makedirs(pardirs, exist_ok=True)  # create non-existing folders
-                self.gdb_set("logging", "file %s" % gdb_log_file)
+            if self._gdb_log_folder:
+                shutil.rmtree(self._gdb_log_folder, ignore_errors=True)
+                os.makedirs(self._gdb_log_folder)
+                self.gdb_set("logging file", os.path.join(self._gdb_log_folder, 'gdb.log'))
                 self.gdb_set("logging", "on")
         except Exception as e:
             self._logger.error('Failed to config GDB (%s)!', e)
@@ -376,6 +378,9 @@ class Gdb(object):
 
     def get_reg(self, nm):
         sval = self.data_eval_expr('$%s' % nm)
+        if ' ' in sval:
+            # for priv we get something like "0 '\\000'"
+            sval = sval.split()[0]
         # for PC we'll get something like '0x400e0db8 <gpio_set_direction>'
         return self.extract_exec_addr(sval)
 
@@ -432,7 +437,7 @@ class Gdb(object):
             # this is a workaround until get a proper fix in the gdb
 
             # we do not check the response, In some cases we may get an error RESULT: error {'msg': 'PC not saved'}
-            self._mi_cmd_run('bt')
+            self._mi_cmd_run('bt',tmo=0.1)
         res, res_body = self._mi_cmd_run('-stack-list-frames')
         if res != 'done' or not res_body or 'stack' not in res_body:
             raise DebuggerError('Failed to get backtrace! (%s / %s)' % (res, res_body))
@@ -551,6 +556,10 @@ class Gdb(object):
             return
         self._logger.debug('Connecting to %s', self._remote_target)
         remote_mode = 'extended-remote' if self._extended_remote_mode else 'remote'
+        if self._gdb_log_folder:
+            self.gdb_set('remotelogfile', os.path.join(self._gdb_log_folder, f'remote_{self._remote_log_count}.log'))
+            self._remote_log_count += 1
+
         self.target_select(remote_mode, self._remote_target, tmo=tmo)
 
     def disconnect(self):

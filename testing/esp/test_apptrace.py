@@ -74,6 +74,7 @@ class ApptraceTestsImpl:
             except ReaderTimeoutError:
                 break
         reader.cleanup()
+        assert len(lines) > 0
         for i, line in enumerate(lines):
             self.assertEqual(line, "[%d %s]\n" % (i, " " * (i * 20)))
         os.remove(trace_file_name)
@@ -87,10 +88,8 @@ class ApptraceTestsImpl:
         trace_file.close()
         trace_src = 'file://%s' % trace_file_name
         reader = reader_create(trace_src, 1.0)
-        # 10 ms poll period, stop when 800 bytes are received or due to 10 s timeout
-        poll_period_ms = 0 # 10ms period doesn't work for ESP32. Why?
-        if testee_info.chip == "esp32c6" or testee_info.chip == "esp32h2":
-            poll_period_ms = 10 # Check why we need a delay during poll.OCD-717
+        # 0 ms poll period, stop when 800 bytes are received or due to 10 s timeout
+        poll_period_ms = 0
         self.oocd.apptrace_start("%s %d 800 10" % (trace_src, poll_period_ms))
         self.resume_exec()
         sleep(1) #  let it works some time
@@ -135,7 +134,7 @@ class ApptraceTestsImpl:
 ########################################################################
 
 class ApptraceTestAppTestsDual(DebuggerGenericTestAppTests):
-    """ Base class to run tests which use gcov test app in dual core mode
+    """ Base class to run tests which use apptrace test app in dual core mode
     """
     def __init__(self, methodName='runTest'):
         super(ApptraceTestAppTestsDual, self).__init__(methodName)
@@ -144,7 +143,7 @@ class ApptraceTestAppTestsDual(DebuggerGenericTestAppTests):
 
 
 class ApptraceTestAppTestsSingle(DebuggerGenericTestAppTests):
-    """ Base class to run tests which use gcov test app in single core mode.
+    """ Base class to run tests which use apptrace test app in single core mode.
     """
     def __init__(self, methodName='runTest'):
         super(ApptraceTestAppTestsSingle, self).__init__(methodName)

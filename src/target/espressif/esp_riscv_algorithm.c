@@ -10,19 +10,23 @@
 #endif
 
 #include <target/target.h>
+#include <target/smp.h>
 #include <target/riscv/riscv.h>
 #include "esp_riscv.h"
 #include "esp_riscv_algorithm.h"
 
-static int esp_riscv_algo_init(struct target *target, struct algorithm_run_data *run,
+static int esp_riscv_algo_init(struct target *target, struct esp_algorithm_run_data *run,
 	uint32_t num_args, va_list ap);
-static int esp_riscv_algo_cleanup(struct target *target, struct algorithm_run_data *run);
+static int esp_riscv_algo_cleanup(struct target *target, struct esp_algorithm_run_data *run);
 static const uint8_t *esp_riscv_stub_tramp_get(struct target *target, size_t *size);
+static int esp_riscv_smp_run_onboard_func(struct target *target, struct esp_algorithm_run_data *run,
+	uint32_t func_addr, uint32_t num_args, ...);
 
-const struct algorithm_hw riscv_algo_hw = {
+const struct esp_algorithm_hw riscv_algo_hw = {
 	.algo_init = esp_riscv_algo_init,
 	.algo_cleanup = esp_riscv_algo_cleanup,
 	.stub_tramp_get = esp_riscv_stub_tramp_get,
+	.run_onboard_func = esp_riscv_smp_run_onboard_func,
 };
 
 static const uint8_t *esp_riscv_stub_tramp_get(struct target *target, size_t *size)
@@ -35,7 +39,7 @@ static const uint8_t *esp_riscv_stub_tramp_get(struct target *target, size_t *si
 	return s_riscv_stub_tramp;
 }
 
-static int esp_riscv_algo_regs_init_start(struct target *target, struct algorithm_run_data *run)
+static int esp_riscv_algo_regs_init_start(struct target *target, struct esp_algorithm_run_data *run)
 {
 	uint32_t stack_addr = run->stub.stack_addr;
 	int xlen = riscv_xlen(target);
@@ -53,7 +57,7 @@ static int esp_riscv_algo_regs_init_start(struct target *target, struct algorith
 	return ERROR_OK;
 }
 
-static int esp_riscv_algo_init(struct target *target, struct algorithm_run_data *run,
+static int esp_riscv_algo_init(struct target *target, struct esp_algorithm_run_data *run,
 	uint32_t num_args, va_list ap)
 {
 	int xlen = riscv_xlen(target);
@@ -79,18 +83,18 @@ static int esp_riscv_algo_init(struct target *target, struct algorithm_run_data 
 
 	if (num_args > 0) {
 		uint32_t arg = va_arg(ap, uint32_t);
-		algorithm_user_arg_set_uint(run, 0, arg);
+		esp_algorithm_user_arg_set_uint(run, 0, arg);
 		LOG_DEBUG("Set arg[0] = %d (%s)", arg,
 			run->reg_args.params[run->reg_args.first_user_param + 0].reg_name);
 	} else {
-		algorithm_user_arg_set_uint(run, 0, 0);
+		esp_algorithm_user_arg_set_uint(run, 0, 0);
 	}
 
 	for (uint32_t i = 1; i < num_args; i++) {
 		uint32_t arg = va_arg(ap, uint32_t);
 		init_reg_param(&run->reg_args.params[run->reg_args.first_user_param + i],
 			arg_regs[i], xlen, PARAM_OUT);
-		algorithm_user_arg_set_uint(run, i, arg);
+		esp_algorithm_user_arg_set_uint(run, i, arg);
 		LOG_DEBUG("Set arg[%d] = %d (%s)", i, arg,
 			run->reg_args.params[run->reg_args.first_user_param + i].reg_name);
 	}
@@ -98,16 +102,18 @@ static int esp_riscv_algo_init(struct target *target, struct algorithm_run_data 
 	assert(ainfo);
 	/* backup all regs */
 	ainfo->max_saved_reg = GDB_REGNO_COUNT - 1;
+
 	/* disable assist_debug to avoid triggering while executing algorithm code */
 	struct esp_riscv_common *esp_riscv = target_to_esp_riscv(target);
 	uint32_t ad_mon_reg = esp_riscv->assist_debug_cpu0_mon_reg + (target->coreid * esp_riscv->assist_debug_cpu_offset);
 	uint32_t *ad_mon_saved_val = &ainfo->saved_assist_debug_monitor_register;
 	esp_common_assist_debug_monitor_disable(target, ad_mon_reg, ad_mon_saved_val);
+
 	run->stub.ainfo = ainfo;
 	return ERROR_OK;
 }
 
-static int esp_riscv_algo_cleanup(struct target *target, struct algorithm_run_data *run)
+static int esp_riscv_algo_cleanup(struct target *target, struct esp_algorithm_run_data *run)
 {
 	struct esp_riscv_common *esp_riscv = target_to_esp_riscv(target);
 	uint32_t ad_mon_reg = esp_riscv->assist_debug_cpu0_mon_reg + (target->coreid * esp_riscv->assist_debug_cpu_offset);
@@ -119,4 +125,31 @@ static int esp_riscv_algo_cleanup(struct target *target, struct algorithm_run_da
 		destroy_reg_param(&run->reg_args.params[i]);
 	free(run->reg_args.params);
 	return ERROR_OK;
+}
+
+static int esp_riscv_smp_run_onboard_func(struct target *target, struct esp_algorithm_run_data *run,
+	uint32_t func_addr, uint32_t num_args, ...)
+{
+	struct target *run_target = target;
+	struct target_list *head;
+	va_list ap;
+
+	if (target->smp) {
+		/* find first HALTED and examined core */
+		foreach_smp_target(head, target->smp_targets) {
+			run_target = head->target;
+			if (target_was_examined(run_target) && run_target->state == TARGET_HALTED)
+				break;
+		}
+		if (!head) {
+			LOG_ERROR("Failed to find HALTED core!");
+			return ERROR_FAIL;
+		}
+	}
+
+	va_start(ap, num_args);
+	int algo_res = esp_algorithm_run_onboard_func_va(run_target, run, func_addr, num_args, ap);
+	va_end(ap);
+
+	return algo_res;
 }

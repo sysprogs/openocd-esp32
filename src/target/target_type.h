@@ -42,10 +42,10 @@ struct target_type {
 	/* halt will log a warning, but return ERROR_OK if the target is already halted. */
 	int (*halt)(struct target *target);
 	/* See target.c target_resume() for documentation. */
-	int (*resume)(struct target *target, int current, target_addr_t address,
-			int handle_breakpoints, int debug_execution);
-	int (*step)(struct target *target, int current, target_addr_t address,
-			int handle_breakpoints);
+	int (*resume)(struct target *target, bool current, target_addr_t address,
+			bool handle_breakpoints, bool debug_execution);
+	int (*step)(struct target *target, bool current, target_addr_t address,
+			bool handle_breakpoints);
 	/* target reset control. assert reset can be invoked when OpenOCD and
 	 * the target is out of sync.
 	 *
@@ -83,7 +83,7 @@ struct target_type {
 	 * if dynamic allocation is used for this value, it must be managed by
 	 * the target, ideally by caching the result for subsequent calls.
 	 */
-	const char *(*get_gdb_arch)(struct target *target);
+	const char *(*get_gdb_arch)(const struct target *target);
 
 	/**
 	 * Target register access for GDB.  Do @b not call this function
@@ -105,6 +105,13 @@ struct target_type {
 	int (*get_gdb_reg_list_noread)(struct target *target,
 			struct reg **reg_list[], int *reg_list_size,
 			enum target_register_class reg_class);
+
+	/**
+	 * Function to get target-specific memory map for GDB.
+	 * Maps memory regions (ROM, RAM, etc.) with their start addresses and lengths.
+	 * Used by GDB to understand the target's memory layout for debugging operations.
+	 */
+	int (*get_gdb_memory_map)(struct target *target, struct target_memory_map *memory_map);
 
 	/* target memory access
 	* size: 1 = byte (8bit), 2 = half-word (16bit), 4 = word (32bit)
@@ -194,16 +201,12 @@ struct target_type {
 	const struct command_registration *commands;
 
 	/* called when target is created */
-	int (*target_create)(struct target *target, Jim_Interp *interp);
+	int (*target_create)(struct target *target);
 
 	/* called for various config parameters */
 	/* returns JIM_CONTINUE - if option not understood */
 	/* otherwise: JIM_OK, or JIM_ERR, */
 	int (*target_jim_configure)(struct target *target, struct jim_getopt_info *goi);
-
-	/* target commands specifically handled by the target */
-	/* returns JIM_OK, or JIM_ERR, or JIM_CONTINUE - if option not understood */
-	int (*target_jim_commands)(struct target *target, struct jim_getopt_info *goi);
 
 	/**
 	 * This method is used to perform target setup that requires
@@ -303,7 +306,7 @@ struct target_type {
 	/* Return the number of address bits this target supports. This will
 	 * typically be 32 for 32-bit targets, and 64 for 64-bit targets. If not
 	 * implemented, it's assumed to be 32. */
-	unsigned (*address_bits)(struct target *target);
+	unsigned int (*address_bits)(struct target *target);
 
 	/* Return the number of system bus data bits this target supports. This
 	 * will typically be 32 for 32-bit targets, and 64 for 64-bit targets. If
@@ -311,6 +314,7 @@ struct target_type {
 	unsigned int (*data_bits)(struct target *target);
 };
 
+// Keep in alphabetic order this list of targets
 extern struct target_type aarch64_target;
 extern struct target_type arcv2_target;
 extern struct target_type arm11_target;
@@ -339,6 +343,9 @@ extern struct target_type esp32h2_target;
 extern struct target_type esp32c3_target;
 extern struct target_type esp32c6_target;
 extern struct target_type esp32p4_target;
+extern struct target_type esp32h4_target;
+extern struct target_type esp32c5_target;
+extern struct target_type esp32c61_target;
 extern struct target_type fa526_target;
 extern struct target_type feroceon_target;
 extern struct target_type hla_target;

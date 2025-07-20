@@ -10,6 +10,7 @@
 #include "config.h"
 #endif
 
+#include <stdio.h>
 #include <string.h>
 
 #include <helper/log.h>
@@ -53,7 +54,7 @@ static int jtag_libusb_error(int err)
 bool jtag_libusb_match_ids(struct libusb_device_descriptor *dev_desc,
 		const uint16_t vids[], const uint16_t pids[])
 {
-	for (unsigned i = 0; vids[i]; i++) {
+	for (unsigned int i = 0; vids[i]; i++) {
 		if (dev_desc->idVendor == vids[i] &&
 			dev_desc->idProduct == pids[i]) {
 			return true;
@@ -145,13 +146,112 @@ static bool jtag_libusb_match_serial(struct libusb_device_handle *device,
 	return match;
 }
 
+static int jtag_libusb_get_dev_location(struct libusb_device *dev, char *loc, int loc_len)
+{
+	int k, len, wr;
+	uint8_t dev_bus = 0;
+	uint8_t port_path[MAX_USB_PORTS];
+	int path_len = 0;
+
+#ifdef HAVE_LIBUSB_GET_PORT_NUMBERS
+	path_len = libusb_get_port_numbers(dev, port_path, MAX_USB_PORTS);
+	if (path_len == LIBUSB_ERROR_OVERFLOW) {
+		LOG_WARNING("cannot determine path to usb device! (more than %i ports in path)", MAX_USB_PORTS);
+		return ERROR_FAIL;
+	}
+	dev_bus = libusb_get_bus_number(dev);
+#endif /* HAVE_LIBUSB_GET_PORT_NUMBERS */
+
+	len = snprintf(loc, loc_len, "%d", dev_bus);
+	if (len < 0 || len >= (loc_len - len)) {
+		*loc = 0;
+		return ERROR_FAIL;
+	}
+
+	for (k = 0; k < path_len; k++) {
+		wr = snprintf(&loc[len], loc_len - len, k == 0 ? "-%d" : ".%d", port_path[k]);
+		if (wr < 0 || wr >= (loc_len - len)) {
+			*loc = 0;
+			return ERROR_FAIL;
+		}
+		len += wr;
+	}
+	return ERROR_OK;
+}
+
+int jtag_libusb_get_dev_location_by_handle(struct libusb_device_handle *dev, char *loc, int loc_len)
+{
+	return jtag_libusb_get_dev_location(libusb_get_device(dev), loc, loc_len);
+}
+
+int jtag_libusb_get_devs_locations(const uint16_t vids[], const uint16_t pids[], char ***locations)
+{
+	int cnt, idx, devs_cnt = 0;
+	struct libusb_device **list;
+	struct libusb_device_descriptor desc;
+	char **locs;
+	/* <bus>-<port>[.<port>]... */
+	#define MAX_DEV_LOCATION_LEN	128
+
+	cnt = libusb_get_device_list(jtag_libusb_context, &list);
+	if (cnt <= 0) {
+		LOG_WARNING("Cannot get devices list (%d)!", cnt);
+		return 0;
+	}
+
+	locs = calloc(cnt, sizeof(char *));
+	if (!locs) {
+		LOG_ERROR("Unable to allocate space USB devices list!");
+		libusb_free_device_list(list, 1);
+		return 0;
+	}
+	for (idx = 0; idx < cnt; idx++) {
+		if (libusb_get_device_descriptor(list[idx], &desc) != 0)
+			continue;
+		if (!jtag_libusb_match_ids(&desc, vids, pids))
+			continue;
+
+		locs[devs_cnt] = calloc(1, MAX_DEV_LOCATION_LEN);
+		if (!locs[devs_cnt]) {
+			LOG_ERROR("Unable to allocate space USB device location!");
+			jtag_libusb_free_devs_locations(locs, devs_cnt);
+			libusb_free_device_list(list, true);
+			return 0;
+		}
+		if (jtag_libusb_get_dev_location(list[idx], locs[devs_cnt], MAX_DEV_LOCATION_LEN) != ERROR_OK)
+			LOG_WARNING("Cannot get location for usb device!");
+
+		devs_cnt++;
+	}
+	*locations = locs;
+
+	libusb_free_device_list(list, true);
+
+	return devs_cnt;
+}
+
+void jtag_libusb_free_devs_locations(char *locations[], int cnt)
+{
+	int i;
+
+	if (!locations || cnt == 0)
+		return;
+
+	for (i = 0; i < cnt; i++) {
+		if (locations[i])
+			free(locations[i]);
+	}
+	free(locations);
+}
+
 int jtag_libusb_open(const uint16_t vids[], const uint16_t pids[],
-		struct libusb_device_handle **out,
+		const char *product, struct libusb_device_handle **out,
 		adapter_get_alternate_serial_fn adapter_get_alternate_serial)
 {
 	int cnt, idx, err_code;
 	int retval = ERROR_FAIL;
 	bool serial_mismatch = false;
+	bool product_mismatch = false;
 	struct libusb_device_handle *libusb_handle = NULL;
 	const char *serial = adapter_get_required_serial();
 
@@ -188,10 +288,18 @@ int jtag_libusb_open(const uint16_t vids[], const uint16_t pids[],
 			continue;
 		}
 
+		if (product &&
+				!string_descriptor_equal(libusb_handle, dev_desc.iProduct, product)) {
+			product_mismatch = true;
+			libusb_close(libusb_handle);
+			continue;
+		}
+
 		/* Success. */
 		*out = libusb_handle;
 		retval = ERROR_OK;
 		serial_mismatch = false;
+		product_mismatch = false;
 		break;
 	}
 	if (cnt >= 0)
@@ -199,6 +307,9 @@ int jtag_libusb_open(const uint16_t vids[], const uint16_t pids[],
 
 	if (serial_mismatch)
 		LOG_INFO("No device matches the serial string");
+
+	if (product_mismatch)
+		LOG_INFO("No device matches the product string");
 
 	if (retval != ERROR_OK)
 		libusb_exit(jtag_libusb_context);
@@ -432,4 +543,80 @@ libusb_device *jtag_libusb_find_device(const uint16_t vids[], const uint16_t pid
 int jtag_libusb_handle_events_completed(int *completed)
 {
 	return libusb_handle_events_completed(jtag_libusb_context, completed);
+}
+
+static enum {
+	DEV_MEM_NOT_YET_DECIDED,
+	DEV_MEM_AVAILABLE,
+	DEV_MEM_FALLBACK_MALLOC
+} dev_mem_allocation;
+
+/* Older libusb does not implement following API calls - define stubs instead */
+#if !defined(LIBUSB_API_VERSION) || (LIBUSB_API_VERSION < 0x01000105)
+static uint8_t *libusb_dev_mem_alloc(libusb_device_handle *devh, size_t length)
+{
+	return NULL;
+}
+
+static int libusb_dev_mem_free(libusb_device_handle *devh,
+							   uint8_t *buffer, size_t length)
+{
+	return LIBUSB_ERROR_NOT_SUPPORTED;
+}
+#endif
+
+uint8_t *oocd_libusb_dev_mem_alloc(libusb_device_handle *devh,
+			size_t length)
+{
+	uint8_t *buffer = NULL;
+	if (dev_mem_allocation != DEV_MEM_FALLBACK_MALLOC)
+		buffer = libusb_dev_mem_alloc(devh, length);
+
+	if (dev_mem_allocation == DEV_MEM_NOT_YET_DECIDED)
+		dev_mem_allocation = buffer ? DEV_MEM_AVAILABLE : DEV_MEM_FALLBACK_MALLOC;
+
+	if (dev_mem_allocation == DEV_MEM_FALLBACK_MALLOC)
+		buffer = malloc(length);
+
+	return buffer;
+}
+
+int oocd_libusb_dev_mem_free(libusb_device_handle *devh,
+		uint8_t *buffer, size_t length)
+{
+	if (!buffer)
+		return ERROR_OK;
+
+	switch (dev_mem_allocation) {
+	case DEV_MEM_AVAILABLE:
+		return jtag_libusb_error(libusb_dev_mem_free(devh, buffer, length));
+
+	case DEV_MEM_FALLBACK_MALLOC:
+		free(buffer);
+		return ERROR_OK;
+
+	case DEV_MEM_NOT_YET_DECIDED:
+		return ERROR_FAIL;
+	}
+	return ERROR_FAIL;
+}
+
+void libusb_list_devices(void)
+{
+	struct libusb_device **list;
+
+	int cnt = libusb_get_device_list(jtag_libusb_context, &list);
+
+	for (int idx = 0; idx < cnt; idx++) {
+		struct libusb_device *device = list[idx];
+		struct libusb_device_descriptor dev_desc;
+
+		int err = libusb_get_device_descriptor(device, &dev_desc);
+		if (err != LIBUSB_SUCCESS) {
+			LOG_ERROR("libusb_get_device_descriptor() failed with %s", libusb_error_name(err));
+			continue;
+		}
+		LOG_INFO("USB dev VID/PID %x/%x", dev_desc.idVendor, dev_desc.idProduct);
+	}
+	libusb_free_device_list(list, 1);
 }

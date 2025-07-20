@@ -1,22 +1,10 @@
-.add_gitlab_key_snippet: &add_gitlab_key_snippet |
-  command -v ssh-agent >/dev/null || exit 1
-  eval $(ssh-agent -s)
-  printf '%s\n' "${GITLAB_KEY}" | tr -d '\r' | ssh-add - > /dev/null
-  mkdir -p ~/.ssh && chmod 700 ~/.ssh
-  [[ -f /.dockerenv ]] && echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config || true
-
-.add_gitlab_key:
-  script:
-    - *add_gitlab_key_snippet
-
-
 .submodules_mirror_update_snippet: &submodules_mirror_update_snippet |
   # Gitlab doesn't clean submodule contents
   git submodule foreach "git clean -d -x -f" || true
   # Use local mirror for submodules
-  git config submodule.tools/git2cl.url https://gitlab-ci-token:${BOT_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/idf/git2cl.git
-  git config submodule.jimtcl.url https://gitlab-ci-token:${BOT_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/idf/jimtcl.git
-  git config submodule.src/jtag/drivers/libjaylink.url https://gitlab-ci-token:${BOT_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/idf/libjaylink.git
+  git config submodule.tools/git2cl.url https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/idf/git2cl.git
+  git config submodule.jimtcl.url https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/idf/jimtcl.git
+  git config submodule.src/jtag/drivers/libjaylink.url https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/idf/libjaylink.git
   git submodule update --init
 
 .submodules_mirror_update:
@@ -25,22 +13,30 @@
 
 
 .export_toolchain_snippet: &export_toolchain_snippet |
-  export PATH=${HOME}/.espressif/tools/${TOOLCHAIN_PREFIX}-elf/${ESP_TOOLCHAIN}/${TOOLCHAIN_PREFIX}-elf/bin:${PATH}
+  echo "TOOLCHAIN_PREFIX: ${TOOLCHAIN_PREFIX}"
+  echo "ESP_TOOLCHAIN: ${ESP_TOOLCHAIN}"
+  echo "ESP_GDB_TOOLCHAIN: ${ESP_GDB_TOOLCHAIN}"
+  if [ ! -z "$ESP_TOOLCHAIN" ]; then
+    export PATH=${HOME}/.espressif/tools/${TOOLCHAIN_PREFIX}-elf/${ESP_TOOLCHAIN}/${TOOLCHAIN_PREFIX}-elf/bin:${PATH}
+  fi
   if [ ! -z "$ESP_GDB_TOOLCHAIN" ]; then
     export PATH=${HOME}/.espressif/tools/${ESP_GDB_TOOLCHAIN}/bin:${PATH}
   fi
-  source /opt/pyenv/activate && pyenv global ${TEST_IMAGE_PYTHON_VER}
-  if [ "${GDB_ARMHF_DISTRO_URL:-test}" != "test" ]; then
-    case $CI_JOB_NAME in "tests_armhf_"*)
-      echo "Replacing GDBs from $GDB_ARMHF_DISTRO_URL"
-      wget --no-verbose $GDB_ARMHF_DISTRO_URL
-      ARCH_NAME=$(basename $GDB_ARMHF_DISTRO_URL)
-      tar -xf $ARCH_NAME
-      export PATH=$PWD/$NEW_GDB_ARMHF_DISTRO_DIR/bin:$PATH
-      xtensa-esp32-elf-gdb --version
-    ;;
-    esac
+  if [[ ! -z "$TRIGGERED_BY_GDB_PIPELINE_BRANCH" && -d "${CI_PROJECT_DIR}/gdb" ]]; then
+    if [[ "${PLATFORM_NAME:-unknown}" == "linux-armhf-test" ]]; then
+        export PATH=${CI_PROJECT_DIR}/gdb/riscv32-esp-elf-gdb_armhf/bin:${PATH}
+        export PATH=${CI_PROJECT_DIR}/gdb/xtensa-esp-elf-gdb_armhf/bin:${PATH}
+    elif [[ "${PLATFORM_NAME:-unknown}" == "linux-arm64-test" ]]; then
+        export PATH=${CI_PROJECT_DIR}/gdb/riscv32-esp-elf-gdb_arm64/bin:${PATH}
+        export PATH=${CI_PROJECT_DIR}/gdb/xtensa-esp-elf-gdb_arm64/bin:${PATH}
+    fi
   fi
+  if [ ! -z "$ESP_GCOV_TOOLCHAIN" ]; then
+    wget --no-cache --no-verbose https://dl.espressif.com/dl/${ESP_TOOLCHAIN}-gcov.tar.gz
+    tar -xf ${ESP_TOOLCHAIN}-gcov.tar.gz
+    export PATH=${ESP_GCOV_TOOLCHAIN}/${TOOLCHAIN_PREFIX}-elf/bin:${PATH}
+  fi
+  echo "PATH: ${PATH}"
 
 .export_toolchain:
   script:
@@ -51,31 +47,23 @@
   tar -C ${TEST_RUN_DIR} -x -m -f ${DIST_ART_DIR}/${ARCHIVE_NAME}
   export DIST_DIR=${PWD}/${TEST_RUN_DIR}/${DIST_INSTALLED_DIR}
   export PYTHONPATH=$PWD/${TEST_RUN_DIR}:$PWD/testing/esp/py_debug_backend
-  . $PWD/${TEST_RUN_DIR}/gen_ut_app/gcov_data/gcov_env.sh
-  testing/esp/run_tests.py -o $DIST_DIR/bin/openocd -s $DIST_DIR/share/openocd/scripts -a $PWD/$TEST_RUN_DIR -t ${TOOLCHAIN_PREFIX}-elf- -d 4 -l $PWD/$TEST_RUN_DIR/debug_backend_tests.log -to $PWD/$TEST_RUN_DIR/results $TEST_RUN_EXTRA_OPTS
+  echo "CHIP_TEST_TOOLCHAIN: ${CHIP_TEST_TOOLCHAIN}"
+  set +e
+  testing/esp/run_tests.py -o $DIST_DIR/bin/openocd -s $DIST_DIR/share/openocd/scripts -a $PWD/$TEST_RUN_DIR -t ${CHIP_TEST_TOOLCHAIN}-elf- -d 4 -l $PWD/$TEST_RUN_DIR/debug_backend_tests.log -tr x -to $PWD/$TEST_RUN_DIR/results $TEST_RUN_EXTRA_OPTS -c "${OOCD_CMDS}" -u $ESPTOOL_PORT || exit $?
+  if [[ $SCHEDULE_TYPE == "run_sanitizer_tests" ]] ; then
+    grep -i -e".*sanitizer" -e"runtime error" ${TEST_RUN_DIR}/debug_backend_tests.log > ${TEST_RUN_DIR}/sanitizer_errors.log || true
+    # fail if `sanitizer_errors.log` is not empty
+    [[ ! -s ${TEST_RUN_DIR}/sanitizer_errors.log ]]
+  fi
 
 .run_tests_linux:
   script:
     - *run_tests_linux_snippet
 
 .copy_nuttx_files_snippet: &copy_nuttx_files_snippet |
-  ./testing/esp/test_apps/nuttx/mkjson.sh $TEST_RUN_DIR $NUTTX_APP_NAME $CHIP
-  mv nuttx.bin $TEST_RUN_DIR/$NUTTX_APP_NAME/$NUTTX_APP_NAME.bin
+  mv nuttx.merged.bin $TEST_RUN_DIR/$NUTTX_APP_NAME/$NUTTX_APP_NAME.bin
   mv nuttx $TEST_RUN_DIR/$NUTTX_APP_NAME/$NUTTX_APP_NAME.elf
-  mv bootloader.bin partition-table.bin $TEST_RUN_DIR/$NUTTX_APP_NAME/
 
 .copy_nuttx_files:
   script:
     - *copy_nuttx_files_snippet
-
-
-.run_tests_nuttx_snippet: &run_tests_nuttx_snippet |
-  ARCHIVE_NAME=$(cat ${DIST_ART_DIR}/dist_name_${PLATFORM_NAME})
-  tar -C ${TEST_RUN_DIR} -x -f ${DIST_ART_DIR}/${ARCHIVE_NAME}
-  export DIST_DIR=${PWD}/${TEST_RUN_DIR}/${DIST_INSTALLED_DIR}
-  export PYTHONPATH=$PWD/${TEST_RUN_DIR}:$PWD/testing/esp/py_debug_backend
-  testing/esp/run_tests.py -o $DIST_DIR/bin/openocd -s $DIST_DIR/share/openocd/scripts -a $PWD/$TEST_RUN_DIR -t ${TOOLCHAIN_PREFIX}-elf- -d 4 -l $PWD/$TEST_RUN_DIR/debug_backend_tests.log $TEST_RUN_EXTRA_OPTS -c "${OOCD_CMDS}"
-
-.run_tests_nuttx:
-  script:
-    - *run_tests_nuttx_snippet

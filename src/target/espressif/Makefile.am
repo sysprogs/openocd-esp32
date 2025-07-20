@@ -16,6 +16,9 @@ noinst_LTLIBRARIES += %D%/libespressif.la
 		%D%/esp32c3.c \
 		%D%/esp32c6.c \
 		%D%/esp32p4.c \
+		%D%/esp32h4.c \
+		%D%/esp32c5.c \
+		%D%/esp32c61.c \
 		%D%/esp.c \
 		%D%/esp.h \
 		%D%/esp_riscv.c \
@@ -29,6 +32,8 @@ noinst_LTLIBRARIES += %D%/libespressif.la
 		%D%/segger_sysview.h \
 		%D%/esp_algorithm.c \
 		%D%/esp_algorithm.h \
+		%D%/esp_xtensa_algorithm.c \
+		%D%/esp_xtensa_algorithm.h \
 		%D%/esp_riscv_algorithm.c \
 		%D%/esp_riscv_algorithm.h \
 		%D%/esp_semihosting.c \

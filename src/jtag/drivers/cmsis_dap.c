@@ -39,14 +39,22 @@
 #include "cmsis_dap.h"
 #include "libusb_helper.h"
 
-static const struct cmsis_dap_backend *const cmsis_dap_backends[] = {
-#if BUILD_CMSIS_DAP_USB == 1
-	&cmsis_dap_usb_backend,
+/* Create a dummy backend for 'backend' command if real one does not build */
+#if BUILD_CMSIS_DAP_USB == 0
+const struct cmsis_dap_backend cmsis_dap_usb_backend = {
+	.name = "usb_bulk",
+};
 #endif
 
-#if BUILD_CMSIS_DAP_HID == 1
-	&cmsis_dap_hid_backend,
+#if BUILD_CMSIS_DAP_HID == 0
+const struct cmsis_dap_backend cmsis_dap_hid_backend = {
+	.name = "hid"
+};
 #endif
+
+static const struct cmsis_dap_backend *const cmsis_dap_backends[] = {
+	&cmsis_dap_usb_backend,
+	&cmsis_dap_hid_backend,
 };
 
 /* USB Config */
@@ -261,26 +269,32 @@ static int cmsis_dap_open(void)
 		return ERROR_FAIL;
 	}
 
+	int retval = ERROR_FAIL;
 	if (cmsis_dap_backend >= 0) {
 		/* Use forced backend */
 		backend = cmsis_dap_backends[cmsis_dap_backend];
-		if (backend->open(dap, cmsis_dap_vid, cmsis_dap_pid, adapter_get_required_serial()) != ERROR_OK)
-			backend = NULL;
+		if (backend->open)
+			retval = backend->open(dap, cmsis_dap_vid, cmsis_dap_pid, adapter_get_required_serial());
+		else
+			LOG_ERROR("Requested CMSIS-DAP backend is disabled by configure");
+
 	} else {
 		/* Try all backends */
 		for (unsigned int i = 0; i < ARRAY_SIZE(cmsis_dap_backends); i++) {
 			backend = cmsis_dap_backends[i];
-			if (backend->open(dap, cmsis_dap_vid, cmsis_dap_pid, adapter_get_required_serial()) == ERROR_OK)
+			if (!backend->open)
+				continue;
+
+			retval = backend->open(dap, cmsis_dap_vid, cmsis_dap_pid, adapter_get_required_serial());
+			if (retval == ERROR_OK)
 				break;
-			else
-				backend = NULL;
 		}
 	}
 
-	if (!backend) {
+	if (retval != ERROR_OK) {
 		LOG_ERROR("unable to find a matching CMSIS-DAP device");
 		free(dap);
-		return ERROR_FAIL;
+		return retval;
 	}
 
 	dap->backend = backend;
@@ -293,7 +307,8 @@ static int cmsis_dap_open(void)
 static void cmsis_dap_close(struct cmsis_dap *dap)
 {
 	if (dap->backend) {
-		dap->backend->close(dap);
+		if (dap->backend->close)
+			dap->backend->close(dap);
 		dap->backend = NULL;
 	}
 
@@ -315,7 +330,7 @@ static void cmsis_dap_flush_read(struct cmsis_dap *dap)
 	 * USB close/open so we need to flush up to 64 old packets
 	 * to be sure all buffers are empty */
 	for (i = 0; i < 64; i++) {
-		int retval = dap->backend->read(dap, 10);
+		int retval = dap->backend->read(dap, 10, CMSIS_DAP_BLOCKING);
 		if (retval == ERROR_TIMEOUT_REACHED)
 			break;
 	}
@@ -326,10 +341,13 @@ static void cmsis_dap_flush_read(struct cmsis_dap *dap)
 /* Send a message and receive the reply */
 static int cmsis_dap_xfer(struct cmsis_dap *dap, int txlen)
 {
+	if (dap->write_count + dap->read_count) {
+		LOG_ERROR("internal: queue not empty before xfer");
+	}
 	if (dap->pending_fifo_block_count) {
 		LOG_ERROR("pending %u blocks, flushing", dap->pending_fifo_block_count);
 		while (dap->pending_fifo_block_count) {
-			dap->backend->read(dap, 10);
+			dap->backend->read(dap, 10, CMSIS_DAP_BLOCKING);
 			dap->pending_fifo_block_count--;
 		}
 		dap->pending_fifo_put_idx = 0;
@@ -342,7 +360,7 @@ static int cmsis_dap_xfer(struct cmsis_dap *dap, int txlen)
 		return retval;
 
 	/* get reply */
-	retval = dap->backend->read(dap, LIBUSB_TIMEOUT_MS);
+	retval = dap->backend->read(dap, LIBUSB_TIMEOUT_MS, CMSIS_DAP_BLOCKING);
 	if (retval < 0)
 		return retval;
 
@@ -356,6 +374,7 @@ static int cmsis_dap_xfer(struct cmsis_dap *dap, int txlen)
 		LOG_ERROR("CMSIS-DAP command mismatch. Sent 0x%" PRIx8
 			 " received 0x%" PRIx8, current_cmd, resp[0]);
 
+		dap->backend->cancel_all(dap);
 		cmsis_dap_flush_read(dap);
 		return ERROR_FAIL;
 	}
@@ -553,7 +572,7 @@ static int cmsis_dap_cmd_dap_delay(uint16_t delay_us)
 static int cmsis_dap_metacmd_targetsel(uint32_t instance_id)
 {
 	uint8_t *command = cmsis_dap_handle->command;
-	const uint32_t SEQ_RD = 0x80, SEQ_WR = 0x00;
+	const uint32_t seq_rd = 0x80, seq_wr = 0x00;
 
 	/* SWD multi-drop requires a transfer ala CMD_DAP_TFER,
 	but with no expectation of an SWD ACK response.  In
@@ -569,14 +588,14 @@ static int cmsis_dap_metacmd_targetsel(uint32_t instance_id)
 	command[idx++] = 3;	/* sequence count */
 
 	/* sequence 0: packet request for TARGETSEL */
-	command[idx++] = SEQ_WR | 8;
+	command[idx++] = seq_wr | 8;
 	command[idx++] = SWD_CMD_START | swd_cmd(false, false, DP_TARGETSEL) | SWD_CMD_STOP | SWD_CMD_PARK;
 
 	/* sequence 1: read Trn ACK Trn, no expectation for target to ACK  */
-	command[idx++] = SEQ_RD | 5;
+	command[idx++] = seq_rd | 5;
 
 	/* sequence 2: WDATA plus parity */
-	command[idx++] = SEQ_WR | (32 + 1);
+	command[idx++] = seq_wr | (32 + 1);
 	h_u32_to_le(command + idx, instance_id);
 	idx += 4;
 	command[idx++] = parity_u32(instance_id);
@@ -749,6 +768,22 @@ static int cmsis_dap_cmd_dap_swo_data(
 	return ERROR_OK;
 }
 
+static void cmsis_dap_swd_discard_all_pending(struct cmsis_dap *dap)
+{
+	for (unsigned int i = 0; i < MAX_PENDING_REQUESTS; i++)
+		dap->pending_fifo[i].transfer_count = 0;
+
+	dap->pending_fifo_put_idx = 0;
+	dap->pending_fifo_get_idx = 0;
+	dap->pending_fifo_block_count = 0;
+}
+
+static void cmsis_dap_swd_cancel_transfers(struct cmsis_dap *dap)
+{
+	dap->backend->cancel_all(dap);
+	cmsis_dap_flush_read(dap);
+	cmsis_dap_swd_discard_all_pending(dap);
+}
 
 static void cmsis_dap_swd_write_from_queue(struct cmsis_dap *dap)
 {
@@ -770,8 +805,10 @@ static void cmsis_dap_swd_write_from_queue(struct cmsis_dap *dap)
 		goto skip;
 	}
 
-	if (block->transfer_count == 0)
+	if (block->transfer_count == 0) {
+		LOG_ERROR("internal: write an empty queue?!");
 		goto skip;
+	}
 
 	bool block_cmd = !cmsis_dap_handle->swd_cmds_differ
 					 && block->transfer_count >= CMD_DAP_TFER_BLOCK_MIN_OPS;
@@ -831,14 +868,13 @@ static void cmsis_dap_swd_write_from_queue(struct cmsis_dap *dap)
 	if (retval < 0) {
 		queued_retval = retval;
 		goto skip;
-	} else {
-		queued_retval = ERROR_OK;
 	}
 
-	dap->pending_fifo_put_idx = (dap->pending_fifo_put_idx + 1) % dap->packet_count;
+	unsigned int packet_count = dap->quirk_mode ? 1 : dap->packet_count;
+	dap->pending_fifo_put_idx = (dap->pending_fifo_put_idx + 1) % packet_count;
 	dap->pending_fifo_block_count++;
-	if (dap->pending_fifo_block_count > dap->packet_count)
-		LOG_ERROR("too much pending writes %u", dap->pending_fifo_block_count);
+	if (dap->pending_fifo_block_count > packet_count)
+		LOG_ERROR("internal: too much pending writes %u", dap->pending_fifo_block_count);
 
 	return;
 
@@ -846,21 +882,43 @@ skip:
 	block->transfer_count = 0;
 }
 
-static void cmsis_dap_swd_read_process(struct cmsis_dap *dap, int timeout_ms)
+static void cmsis_dap_swd_read_process(struct cmsis_dap *dap, enum cmsis_dap_blocking blocking)
 {
+	int retval;
 	struct pending_request_block *block = &dap->pending_fifo[dap->pending_fifo_get_idx];
 
-	if (dap->pending_fifo_block_count == 0)
-		LOG_ERROR("no pending write");
+	if (dap->pending_fifo_block_count == 0) {
+		LOG_ERROR("internal: no pending write when reading?!");
+		return;
+	}
+
+	if (queued_retval != ERROR_OK) {
+		/* keep reading blocks until the pipeline is empty */
+		retval = dap->backend->read(dap, 10, CMSIS_DAP_BLOCKING);
+		if (retval == ERROR_TIMEOUT_REACHED || retval == 0) {
+			/* timeout means that we flushed the pipeline,
+			 * we can safely discard remaining pending requests */
+			cmsis_dap_swd_discard_all_pending(dap);
+			return;
+		}
+		goto skip;
+	}
 
 	/* get reply */
-	int retval = dap->backend->read(dap, timeout_ms);
-	if (retval == ERROR_TIMEOUT_REACHED && timeout_ms < LIBUSB_TIMEOUT_MS)
+	retval = dap->backend->read(dap, LIBUSB_TIMEOUT_MS, blocking);
+	bool timeout = (retval == ERROR_TIMEOUT_REACHED || retval == 0);
+	if (timeout && blocking == CMSIS_DAP_NON_BLOCKING)
 		return;
 
 	if (retval <= 0) {
-		LOG_DEBUG("error reading data");
+		LOG_DEBUG("error reading adapter response");
 		queued_retval = ERROR_FAIL;
+		if (timeout) {
+			/* timeout means that we flushed the pipeline,
+			 * we can safely discard remaining pending requests */
+			cmsis_dap_swd_discard_all_pending(dap);
+			return;
+		}
 		goto skip;
 	}
 
@@ -868,8 +926,9 @@ static void cmsis_dap_swd_read_process(struct cmsis_dap *dap, int timeout_ms)
 	if (resp[0] != block->command) {
 		LOG_ERROR("CMSIS-DAP command mismatch. Expected 0x%x received 0x%" PRIx8,
 			block->command, resp[0]);
+		cmsis_dap_swd_cancel_transfers(dap);
 		queued_retval = ERROR_FAIL;
-		goto skip;
+		return;
 	}
 
 	unsigned int transfer_count;
@@ -890,17 +949,22 @@ static void cmsis_dap_swd_read_process(struct cmsis_dap *dap, int timeout_ms)
 	if (ack != SWD_ACK_OK) {
 		LOG_DEBUG("SWD ack not OK @ %d %s", transfer_count,
 			  ack == SWD_ACK_WAIT ? "WAIT" : ack == SWD_ACK_FAULT ? "FAULT" : "JUNK");
-		queued_retval = ack == SWD_ACK_WAIT ? ERROR_WAIT : ERROR_FAIL;
+		queued_retval = swd_ack_to_error_code(ack);
 		/* TODO: use results of transfers completed before the error occurred? */
 		goto skip;
 	}
 
-	if (block->transfer_count != transfer_count)
+	if (block->transfer_count != transfer_count) {
 		LOG_ERROR("CMSIS-DAP transfer count mismatch: expected %d, got %d",
 			  block->transfer_count, transfer_count);
+		cmsis_dap_swd_cancel_transfers(dap);
+		queued_retval = ERROR_FAIL;
+		return;
+	}
 
-	LOG_DEBUG_IO("Received results of %d queued transactions FIFO index %u timeout %i",
-		 transfer_count, dap->pending_fifo_get_idx, timeout_ms);
+	LOG_DEBUG_IO("Received results of %d queued transactions FIFO index %u, %s mode",
+				 transfer_count, dap->pending_fifo_get_idx,
+				 blocking ? "blocking" : "nonblocking");
 
 	for (unsigned int i = 0; i < transfer_count; i++) {
 		struct pending_transfer_result *transfer = &(block->transfers[i]);
@@ -926,19 +990,22 @@ static void cmsis_dap_swd_read_process(struct cmsis_dap *dap, int timeout_ms)
 
 skip:
 	block->transfer_count = 0;
-	dap->pending_fifo_get_idx = (dap->pending_fifo_get_idx + 1) % dap->packet_count;
+	if (!dap->quirk_mode && dap->packet_count > 1)
+		dap->pending_fifo_get_idx = (dap->pending_fifo_get_idx + 1) % dap->packet_count;
 	dap->pending_fifo_block_count--;
 }
 
 static int cmsis_dap_swd_run_queue(void)
 {
-	if (cmsis_dap_handle->pending_fifo_block_count)
-		cmsis_dap_swd_read_process(cmsis_dap_handle, 0);
+	if (cmsis_dap_handle->write_count + cmsis_dap_handle->read_count) {
+		if (cmsis_dap_handle->pending_fifo_block_count)
+			cmsis_dap_swd_read_process(cmsis_dap_handle, CMSIS_DAP_NON_BLOCKING);
 
-	cmsis_dap_swd_write_from_queue(cmsis_dap_handle);
+		cmsis_dap_swd_write_from_queue(cmsis_dap_handle);
+	}
 
 	while (cmsis_dap_handle->pending_fifo_block_count)
-		cmsis_dap_swd_read_process(cmsis_dap_handle, LIBUSB_TIMEOUT_MS);
+		cmsis_dap_swd_read_process(cmsis_dap_handle, CMSIS_DAP_BLOCKING);
 
 	cmsis_dap_handle->pending_fifo_put_idx = 0;
 	cmsis_dap_handle->pending_fifo_get_idx = 0;
@@ -979,10 +1046,16 @@ static unsigned int cmsis_dap_tfer_resp_size(unsigned int write_count,
 
 static void cmsis_dap_swd_queue_cmd(uint8_t cmd, uint32_t *dst, uint32_t data)
 {
+	/* TARGETSEL register write cannot be queued */
+	if (swd_cmd(false, false, DP_TARGETSEL) == cmd) {
+		queued_retval = cmsis_dap_swd_run_queue();
+
+		cmsis_dap_metacmd_targetsel(data);
+		return;
+	}
+
 	/* Compute sizes of the DAP Transfer command and the expected response
 	 * for all queued and this operation */
-	bool targetsel_cmd = swd_cmd(false, false, DP_TARGETSEL) == cmd;
-
 	unsigned int write_count = cmsis_dap_handle->write_count;
 	unsigned int read_count = cmsis_dap_handle->read_count;
 	bool block_cmd;
@@ -1003,31 +1076,25 @@ static void cmsis_dap_swd_queue_cmd(uint8_t cmd, uint32_t *dst, uint32_t data)
 													block_cmd);
 	unsigned int max_transfer_count = block_cmd ? 65535 : 255;
 
-	/* Does the DAP Transfer command and the expected response fit into one packet?
-	 * Run the queue also before a targetsel - it cannot be queued */
+	/* Does the DAP Transfer command and also its expected response fit into one packet? */
 	if (cmd_size > tfer_max_command_size
 			|| resp_size > tfer_max_response_size
-			|| targetsel_cmd
 			|| write_count + read_count > max_transfer_count) {
 		if (cmsis_dap_handle->pending_fifo_block_count)
-			cmsis_dap_swd_read_process(cmsis_dap_handle, 0);
+			cmsis_dap_swd_read_process(cmsis_dap_handle, CMSIS_DAP_NON_BLOCKING);
 
 		/* Not enough room in the queue. Run the queue. */
 		cmsis_dap_swd_write_from_queue(cmsis_dap_handle);
 
-		if (cmsis_dap_handle->pending_fifo_block_count >= cmsis_dap_handle->packet_count)
-			cmsis_dap_swd_read_process(cmsis_dap_handle, LIBUSB_TIMEOUT_MS);
+		unsigned int packet_count = cmsis_dap_handle->quirk_mode ? 1 : cmsis_dap_handle->packet_count;
+		if (cmsis_dap_handle->pending_fifo_block_count >= packet_count)
+			cmsis_dap_swd_read_process(cmsis_dap_handle, CMSIS_DAP_BLOCKING);
 	}
 
 	assert(cmsis_dap_handle->pending_fifo[cmsis_dap_handle->pending_fifo_put_idx].transfer_count < pending_queue_len);
 
 	if (queued_retval != ERROR_OK)
 		return;
-
-	if (targetsel_cmd) {
-		cmsis_dap_metacmd_targetsel(data);
-		return;
-	}
 
 	struct pending_request_block *block = &cmsis_dap_handle->pending_fifo[cmsis_dap_handle->pending_fifo_put_idx];
 	struct pending_transfer_result *transfer = &(block->transfers[block->transfer_count]);
@@ -1160,7 +1227,10 @@ static int cmsis_dap_swd_switch_seq(enum swd_special_seq seq)
 	unsigned int s_len;
 	int retval;
 
-	if (seq != LINE_RESET &&
+	if (swd_mode)
+		queued_retval = cmsis_dap_swd_run_queue();
+
+	if (cmsis_dap_handle->quirk_mode && seq != LINE_RESET &&
 			(output_pins & (SWJ_PIN_SRST | SWJ_PIN_TRST))
 				== (SWJ_PIN_SRST | SWJ_PIN_TRST)) {
 		/* Following workaround deasserts reset on most adapters.
@@ -1296,7 +1366,7 @@ static int cmsis_dap_init(void)
 	if (data[0] == 2) {  /* short */
 		uint16_t pkt_sz = data[1] + (data[2] << 8);
 		if (pkt_sz != cmsis_dap_handle->packet_size) {
-			free(cmsis_dap_handle->packet_buffer);
+			cmsis_dap_handle->backend->packet_buffer_free(cmsis_dap_handle);
 			retval = cmsis_dap_handle->backend->packet_buffer_alloc(cmsis_dap_handle, pkt_sz);
 			if (retval != ERROR_OK)
 				goto init_err;
@@ -1447,7 +1517,7 @@ static int cmsis_dap_execute_tlr_reset(struct jtag_command *cmd)
 }
 
 /* Set new end state */
-static void cmsis_dap_end_state(tap_state_t state)
+static void cmsis_dap_end_state(enum tap_state state)
 {
 	if (tap_is_state_stable(state))
 		tap_set_end_state(state);
@@ -1687,7 +1757,7 @@ static void cmsis_dap_execute_scan(struct jtag_command *cmd)
 		LOG_DEBUG("discarding trailing empty field");
 	}
 
-	if (cmd->cmd.scan->num_fields == 0) {
+	if (!cmd->cmd.scan->num_fields) {
 		LOG_DEBUG("empty scan, doing nothing");
 		return;
 	}
@@ -1707,11 +1777,11 @@ static void cmsis_dap_execute_scan(struct jtag_command *cmd)
 	cmsis_dap_end_state(cmd->cmd.scan->end_state);
 
 	struct scan_field *field = cmd->cmd.scan->fields;
-	unsigned scan_size = 0;
+	unsigned int scan_size = 0;
 
-	for (int i = 0; i < cmd->cmd.scan->num_fields; i++, field++) {
+	for (unsigned int i = 0; i < cmd->cmd.scan->num_fields; i++, field++) {
 		scan_size += field->num_bits;
-		LOG_DEBUG_IO("%s%s field %d/%d %d bits",
+		LOG_DEBUG_IO("%s%s field %u/%u %u bits",
 			field->in_value ? "in" : "",
 			field->out_value ? "out" : "",
 			i,
@@ -1776,7 +1846,7 @@ static void cmsis_dap_execute_scan(struct jtag_command *cmd)
 		tap_state_name(tap_get_end_state()));
 }
 
-static void cmsis_dap_pathmove(int num_states, tap_state_t *path)
+static void cmsis_dap_pathmove(int num_states, enum tap_state *path)
 {
 	uint8_t tms0 = 0x00;
 	uint8_t tms1 = 0xff;
@@ -1807,18 +1877,18 @@ static void cmsis_dap_execute_pathmove(struct jtag_command *cmd)
 	cmsis_dap_pathmove(cmd->cmd.pathmove->num_states, cmd->cmd.pathmove->path);
 }
 
-static void cmsis_dap_stableclocks(int num_cycles)
+static void cmsis_dap_stableclocks(unsigned int num_cycles)
 {
 	uint8_t tms = tap_get_state() == TAP_RESET;
 	/* TODO: Perform optimizations? */
 	/* Execute num_cycles. */
-	for (int i = 0; i < num_cycles; i++)
+	for (unsigned int i = 0; i < num_cycles; i++)
 		cmsis_dap_add_tms_sequence(&tms, 1);
 }
 
-static void cmsis_dap_runtest(int num_cycles)
+static void cmsis_dap_runtest(unsigned int num_cycles)
 {
-	tap_state_t saved_end_state = tap_get_end_state();
+	enum tap_state saved_end_state = tap_get_end_state();
 
 	/* Only do a state_move when we're not already in IDLE. */
 	if (tap_get_state() != TAP_IDLE) {
@@ -1836,7 +1906,7 @@ static void cmsis_dap_runtest(int num_cycles)
 
 static void cmsis_dap_execute_runtest(struct jtag_command *cmd)
 {
-	LOG_DEBUG_IO("runtest %i cycles, end in %i", cmd->cmd.runtest->num_cycles,
+	LOG_DEBUG_IO("runtest %u cycles, end in %i", cmd->cmd.runtest->num_cycles,
 		      cmd->cmd.runtest->end_state);
 
 	cmsis_dap_end_state(cmd->cmd.runtest->end_state);
@@ -1845,13 +1915,13 @@ static void cmsis_dap_execute_runtest(struct jtag_command *cmd)
 
 static void cmsis_dap_execute_stableclocks(struct jtag_command *cmd)
 {
-	LOG_DEBUG_IO("stableclocks %i cycles", cmd->cmd.runtest->num_cycles);
+	LOG_DEBUG_IO("stableclocks %u cycles", cmd->cmd.runtest->num_cycles);
 	cmsis_dap_stableclocks(cmd->cmd.runtest->num_cycles);
 }
 
 static void cmsis_dap_execute_tms(struct jtag_command *cmd)
 {
-	LOG_DEBUG_IO("TMS: %d bits", cmd->cmd.tms->num_bits);
+	LOG_DEBUG_IO("TMS: %u bits", cmd->cmd.tms->num_bits);
 	cmsis_dap_cmd_dap_swj_sequence(cmd->cmd.tms->num_bits, cmd->cmd.tms->bits);
 }
 
@@ -1889,9 +1959,9 @@ static void cmsis_dap_execute_command(struct jtag_command *cmd)
 	}
 }
 
-static int cmsis_dap_execute_queue(void)
+static int cmsis_dap_execute_queue(struct jtag_command *cmd_queue)
 {
-	struct jtag_command *cmd = jtag_command_queue;
+	struct jtag_command *cmd = cmd_queue;
 
 	while (cmd) {
 		cmsis_dap_execute_command(cmd);
@@ -2088,7 +2158,7 @@ COMMAND_HANDLER(cmsis_dap_handle_cmd_command)
 {
 	uint8_t *command = cmsis_dap_handle->command;
 
-	for (unsigned i = 0; i < CMD_ARGC; i++)
+	for (unsigned int i = 0; i < CMD_ARGC; i++)
 		COMMAND_PARSE_NUMBER(u8, CMD_ARGV[i], command[i]);
 
 	int retval = cmsis_dap_xfer(cmsis_dap_handle, CMD_ARGC);
@@ -2108,19 +2178,19 @@ COMMAND_HANDLER(cmsis_dap_handle_cmd_command)
 COMMAND_HANDLER(cmsis_dap_handle_vid_pid_command)
 {
 	if (CMD_ARGC > MAX_USB_IDS * 2) {
-		LOG_WARNING("ignoring extra IDs in cmsis_dap_vid_pid "
+		LOG_WARNING("ignoring extra IDs in cmsis-dap vid_pid "
 			"(maximum is %d pairs)", MAX_USB_IDS);
 		CMD_ARGC = MAX_USB_IDS * 2;
 	}
 	if (CMD_ARGC < 2 || (CMD_ARGC & 1)) {
-		LOG_WARNING("incomplete cmsis_dap_vid_pid configuration directive");
+		LOG_WARNING("incomplete cmsis-dap vid_pid configuration directive");
 		if (CMD_ARGC < 2)
 			return ERROR_COMMAND_SYNTAX_ERROR;
 		/* remove the incomplete trailing id */
 		CMD_ARGC -= 1;
 	}
 
-	unsigned i;
+	unsigned int i;
 	for (i = 0; i < CMD_ARGC; i += 2) {
 		COMMAND_PARSE_NUMBER(u16, CMD_ARGV[i], cmsis_dap_vid[i >> 1]);
 		COMMAND_PARSE_NUMBER(u16, CMD_ARGV[i + 1], cmsis_dap_pid[i >> 1]);
@@ -2137,23 +2207,42 @@ COMMAND_HANDLER(cmsis_dap_handle_vid_pid_command)
 
 COMMAND_HANDLER(cmsis_dap_handle_backend_command)
 {
-	if (CMD_ARGC == 1) {
-		if (strcmp(CMD_ARGV[0], "auto") == 0) {
-			cmsis_dap_backend = -1; /* autoselect */
-		} else {
-			for (unsigned int i = 0; i < ARRAY_SIZE(cmsis_dap_backends); i++) {
-				if (strcasecmp(cmsis_dap_backends[i]->name, CMD_ARGV[0]) == 0) {
+	if (CMD_ARGC != 1)
+		return ERROR_COMMAND_SYNTAX_ERROR;
+
+	if (strcmp(CMD_ARGV[0], "auto") == 0) {
+		cmsis_dap_backend = -1; /* autoselect */
+	} else {
+		for (unsigned int i = 0; i < ARRAY_SIZE(cmsis_dap_backends); i++) {
+			if (strcasecmp(cmsis_dap_backends[i]->name, CMD_ARGV[0]) == 0) {
+				if (cmsis_dap_backends[i]->open) {
 					cmsis_dap_backend = i;
 					return ERROR_OK;
 				}
-			}
 
-			LOG_ERROR("invalid backend argument to cmsis_dap_backend <backend>");
+				command_print(CMD, "Requested cmsis-dap backend %s is disabled by configure",
+							  cmsis_dap_backends[i]->name);
+				return ERROR_NOT_IMPLEMENTED;
+			}
 		}
-	} else {
-		LOG_ERROR("expected exactly one argument to cmsis_dap_backend <backend>");
+
+		command_print(CMD, "invalid argument %s to cmsis-dap backend", CMD_ARGV[0]);
+		return ERROR_COMMAND_ARGUMENT_INVALID;
 	}
 
+	return ERROR_OK;
+}
+
+COMMAND_HANDLER(cmsis_dap_handle_quirk_command)
+{
+	if (CMD_ARGC > 1)
+		return ERROR_COMMAND_SYNTAX_ERROR;
+
+	if (CMD_ARGC == 1)
+		COMMAND_PARSE_ENABLE(CMD_ARGV[0], cmsis_dap_handle->quirk_mode);
+
+	command_print(CMD, "CMSIS-DAP quirk workarounds %s",
+				  cmsis_dap_handle->quirk_mode ? "enabled" : "disabled");
 	return ERROR_OK;
 }
 
@@ -2172,6 +2261,36 @@ static const struct command_registration cmsis_dap_subcommand_handlers[] = {
 		.usage = "",
 		.help = "issue cmsis-dap command",
 	},
+	{
+		.name = "vid_pid",
+		.handler = &cmsis_dap_handle_vid_pid_command,
+		.mode = COMMAND_CONFIG,
+		.help = "the vendor ID and product ID of the CMSIS-DAP device",
+		.usage = "(vid pid)*",
+	},
+	{
+		.name = "backend",
+		.handler = &cmsis_dap_handle_backend_command,
+		.mode = COMMAND_CONFIG,
+		.help = "set the communication backend to use (USB bulk or HID).",
+		.usage = "(auto | usb_bulk | hid)",
+	},
+	{
+		.name = "quirk",
+		.handler = &cmsis_dap_handle_quirk_command,
+		.mode = COMMAND_ANY,
+		.help = "allow expensive workarounds of known adapter quirks.",
+		.usage = "[enable | disable]",
+	},
+#if BUILD_CMSIS_DAP_USB
+	{
+		.name = "usb",
+		.chain = cmsis_dap_usb_subcommand_handlers,
+		.mode = COMMAND_ANY,
+		.help = "USB bulk backend-specific commands",
+		.usage = "<cmd>",
+	},
+#endif
 	COMMAND_REGISTRATION_DONE
 };
 
@@ -2184,29 +2303,6 @@ static const struct command_registration cmsis_dap_command_handlers[] = {
 		.usage = "<cmd>",
 		.chain = cmsis_dap_subcommand_handlers,
 	},
-	{
-		.name = "cmsis_dap_vid_pid",
-		.handler = &cmsis_dap_handle_vid_pid_command,
-		.mode = COMMAND_CONFIG,
-		.help = "the vendor ID and product ID of the CMSIS-DAP device",
-		.usage = "(vid pid)*",
-	},
-	{
-		.name = "cmsis_dap_backend",
-		.handler = &cmsis_dap_handle_backend_command,
-		.mode = COMMAND_CONFIG,
-		.help = "set the communication backend to use (USB bulk or HID).",
-		.usage = "(auto | usb_bulk | hid)",
-	},
-#if BUILD_CMSIS_DAP_USB
-	{
-		.name = "cmsis_dap_usb",
-		.chain = cmsis_dap_usb_subcommand_handlers,
-		.mode = COMMAND_ANY,
-		.help = "USB bulk backend-specific commands",
-		.usage = "<cmd>",
-	},
-#endif
 	COMMAND_REGISTRATION_DONE
 };
 
@@ -2218,8 +2314,6 @@ static const struct swd_driver cmsis_dap_swd_driver = {
 	.run = cmsis_dap_swd_run_queue,
 };
 
-static const char * const cmsis_dap_transport[] = { "swd", "jtag", NULL };
-
 static struct jtag_interface cmsis_dap_interface = {
 	.supported = DEBUG_CAP_TMS_SEQ,
 	.execute_queue = cmsis_dap_execute_queue,
@@ -2227,7 +2321,8 @@ static struct jtag_interface cmsis_dap_interface = {
 
 struct adapter_driver cmsis_dap_adapter_driver = {
 	.name = "cmsis-dap",
-	.transports = cmsis_dap_transport,
+	.transport_ids = TRANSPORT_SWD | TRANSPORT_JTAG,
+	.transport_preferred_id = TRANSPORT_SWD,
 	.commands = cmsis_dap_command_handlers,
 
 	.init = cmsis_dap_init,

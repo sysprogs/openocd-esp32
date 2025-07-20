@@ -15,19 +15,16 @@
 #include "rtos/rtos.h"
 #include <target/smp.h>
 #include <target/semihosting_common.h>
-#include <target/espressif/esp_semihosting.h>
+#include "esp_semihosting.h"
 #include "esp_xtensa_smp.h"
 #include "esp_xtensa_semihosting.h"
-
-#if IS_ESPIDF
-extern int examine_failed_ui_handler(struct command_invocation *cmd);
-#endif
+#include "esp_algorithm.h"
 
 /*
 Multiprocessor stuff common:
 
-The ESP Xtensa chip can have several cores in it, which can run in SMP-mode if an
-SMP-capable OS is running. The hardware has a few features which make
+The ESP Xtensa chip can have several cores in it, which can run in SMP mode if an
+SMP capable OS is running. The hardware has a few features which makes
 SMP debugging much easier.
 
 First of all, there's something called a 'break network', consisting of a
@@ -101,8 +98,11 @@ int esp_xtensa_smp_soft_reset_halt(struct target *target)
 	LOG_TARGET_DEBUG(target, "begin");
 	/* in SMP mode we need to ensure that at first we reset SOC on PRO-CPU
 	   and then call xtensa_assert_reset() for all cores */
-	if (target->smp && target->coreid != 0)
-		return ERROR_OK;
+	if (target->smp) {
+		head = list_first_entry(target->smp_targets, struct target_list, lh);
+		if (head->target != target)
+			return ERROR_OK;
+	}
 	/* Reset the SoC first */
 	if (esp_xtensa_smp->chip_ops->reset) {
 		res = esp_xtensa_smp->chip_ops->reset(target);
@@ -135,20 +135,6 @@ int esp_xtensa_smp_on_halt(struct target *target)
 	return ERROR_OK;
 }
 
-static struct target *get_halted_esp_xtensa_smp(struct target *target, int32_t coreid)
-{
-	struct target_list *head;
-	struct target *curr;
-
-	foreach_smp_target(head, target->smp_targets) {
-		curr = head->target;
-		if ((curr->coreid == coreid) && (curr->state == TARGET_HALTED))
-			return curr;
-	}
-
-	return target;
-}
-
 int esp_xtensa_smp_poll(struct target *target)
 {
 	enum target_state old_state = target->state;
@@ -158,17 +144,21 @@ int esp_xtensa_smp_poll(struct target *target)
 	struct target_list *head;
 	struct target *curr;
 	bool other_core_resume_req = false;
+	int ret;
 
 	if (target->state == TARGET_HALTED && target->smp && target->gdb_service && !target->gdb_service->target) {
-		target->gdb_service->target = get_halted_esp_xtensa_smp(target, target->gdb_service->core[1]);
+		target->gdb_service->target = esp_common_get_halted_target(target, target->gdb_service->core[1]);
 		LOG_INFO("Switch GDB target to '%s'", target_name(target->gdb_service->target));
-		if (esp_xtensa_smp->chip_ops->on_halt)
-			esp_xtensa_smp->chip_ops->on_halt(target);
+		if (esp_xtensa_smp->chip_ops->on_halt) {
+			ret = esp_xtensa_smp->chip_ops->on_halt(target);
+			if (ret != ERROR_OK)
+				return ret;
+		}
 		target_call_event_callbacks(target, TARGET_EVENT_HALTED);
 		return ERROR_OK;
 	}
 
-	int ret = esp_xtensa_poll(target);
+	ret = esp_xtensa_poll(target);
 	if (ret != ERROR_OK)
 		return ret;
 
@@ -266,7 +256,7 @@ int esp_xtensa_smp_poll(struct target *target)
 					!esp_xtensa_smp->other_core_does_resume) {
 					esp_xtensa->semihost.need_resume = false;
 					/* BREAK instruction will be handled in the xtensa_semihosting_post_result. */
-					ret = target_resume(target, 1, 0, 0, 0);
+					ret = target_resume(target, true, 0, false, false);
 					if (ret != ERROR_OK) {
 						LOG_ERROR("Failed to resume target");
 						return ret;
@@ -282,15 +272,18 @@ int esp_xtensa_smp_poll(struct target *target)
 			/* check whether any core polled by esp_xtensa_smp_update_halt_gdb() requested resume */
 			if (target->smp && other_core_resume_req) {
 				/* BREAK instruction will be handled in the xtensa_semihosting_post_result. */
-				ret = target_resume(target, 1, 0, 0, 0);
+				ret = target_resume(target, true, 0, false, false);
 				if (ret != ERROR_OK) {
 					LOG_ERROR("Failed to resume target");
 					return ret;
 				}
 				return ERROR_OK;
 			}
-			if (esp_xtensa_smp->chip_ops->on_halt)
-				esp_xtensa_smp->chip_ops->on_halt(target);
+			if (esp_xtensa_smp->chip_ops->on_halt) {
+				ret = esp_xtensa_smp->chip_ops->on_halt(target);
+				if (ret != ERROR_OK)
+					return ret;
+			}
 			target_call_event_callbacks(target, TARGET_EVENT_HALTED);
 		}
 	}
@@ -387,8 +380,7 @@ static inline int esp_xtensa_smp_smpbreak_restore(struct target *target, uint32_
 }
 
 static int esp_xtensa_smp_resume_cores(struct target *target,
-	int handle_breakpoints,
-	int debug_execution)
+		bool handle_breakpoints, bool debug_execution)
 {
 	struct target_list *head;
 	struct target *curr;
@@ -401,7 +393,7 @@ static int esp_xtensa_smp_resume_cores(struct target *target,
 		if ((curr != target) && (curr->state != TARGET_RUNNING) && target_was_examined(curr)) {
 			/*  resume current address, not in SMP mode */
 			curr->smp = 0;
-			int res = esp_xtensa_smp_resume(curr, 1, 0, handle_breakpoints, debug_execution);
+			int res = esp_xtensa_smp_resume(curr, true, 0, handle_breakpoints, debug_execution);
 			curr->smp = 1;
 			if (res != ERROR_OK)
 				return res;
@@ -411,10 +403,10 @@ static int esp_xtensa_smp_resume_cores(struct target *target,
 }
 
 int esp_xtensa_smp_resume(struct target *target,
-	int current,
+	bool current,
 	target_addr_t address,
-	int handle_breakpoints,
-	int debug_execution)
+	bool handle_breakpoints,
+	bool debug_execution)
 {
 	int res;
 	uint32_t smp_break;
@@ -473,9 +465,9 @@ int esp_xtensa_smp_resume(struct target *target,
 }
 
 int esp_xtensa_smp_step(struct target *target,
-	int current,
+	bool current,
 	target_addr_t address,
-	int handle_breakpoints)
+	bool handle_breakpoints)
 {
 	int res;
 	uint32_t smp_break = 0;
@@ -489,8 +481,11 @@ int esp_xtensa_smp_step(struct target *target,
 	res = xtensa_step(target, current, address, handle_breakpoints);
 
 	if (res == ERROR_OK) {
-		if (esp_xtensa_smp->chip_ops->on_halt)
-			esp_xtensa_smp->chip_ops->on_halt(target);
+		if (esp_xtensa_smp->chip_ops->on_halt) {
+			res = esp_xtensa_smp->chip_ops->on_halt(target);
+			if (res != ERROR_OK)
+				return res;
+		}
 		target_call_event_callbacks(target, TARGET_EVENT_HALTED);
 	}
 
@@ -552,10 +547,7 @@ int esp_xtensa_smp_watchpoint_remove(struct target *target, struct watchpoint *w
 	return ERROR_OK;
 }
 
-int esp_xtensa_smp_run_func_image(struct target *target,
-	struct algorithm_run_data *run,
-	uint32_t num_args,
-	...)
+int esp_xtensa_smp_run_func_image(struct target *target, struct esp_algorithm_run_data *run, uint32_t num_args, ...)
 {
 	struct target *run_target = target;
 	struct target_list *head;
@@ -570,7 +562,7 @@ int esp_xtensa_smp_run_func_image(struct target *target,
 			if (target_was_examined(run_target) && run_target->state == TARGET_HALTED)
 				break;
 		}
-		if (head == NULL) {
+		if (!head) {
 			LOG_ERROR("Failed to find HALTED core!");
 			return ERROR_FAIL;
 		}
@@ -590,7 +582,7 @@ int esp_xtensa_smp_run_func_image(struct target *target,
 	}
 
 	va_start(ap, num_args);
-	int algo_res = algorithm_run_func_image_va(run_target, run, num_args, ap);
+	int algo_res = esp_algorithm_run_func_image_va(run_target, run, num_args, ap);
 	va_end(ap);
 
 	if (target->smp) {
@@ -602,7 +594,7 @@ int esp_xtensa_smp_run_func_image(struct target *target,
 }
 
 int esp_xtensa_smp_run_onboard_func(struct target *target,
-	struct algorithm_run_data *run,
+	struct esp_algorithm_run_data *run,
 	uint32_t func_addr,
 	uint32_t num_args,
 	...)
@@ -620,7 +612,7 @@ int esp_xtensa_smp_run_onboard_func(struct target *target,
 			if (target_was_examined(run_target) && run_target->state == TARGET_HALTED)
 				break;
 		}
-		if (head == NULL) {
+		if (!head) {
 			LOG_ERROR("Failed to find HALTED core!");
 			return ERROR_FAIL;
 		}
@@ -630,7 +622,7 @@ int esp_xtensa_smp_run_onboard_func(struct target *target,
 	}
 
 	va_start(ap, num_args);
-	int algo_res = algorithm_run_onboard_func_va(run_target, run, func_addr, num_args, ap);
+	int algo_res = esp_algorithm_run_onboard_func_va(run_target, run, func_addr, num_args, ap);
 	va_end(ap);
 
 	if (target->smp) {
@@ -665,22 +657,6 @@ int esp_xtensa_smp_target_init(struct command_context *cmd_ctx, struct target *t
 
 	if (target->smp) {
 		struct target_list *head;
-		if (!target->working_area_phys_spec) {
-			/* Working areas are configured for one core only. Use the same config data for other cores.
-			It is safe to share config data because algorithms can not be ran on different cores concurrently. */
-			foreach_smp_target(head, target->smp_targets) {
-				struct target *curr = head->target;
-				if (curr == target)
-					continue;
-				if (curr->working_area_phys_spec) {
-					memcpy(&target->working_area,
-						&curr->working_area,
-						sizeof(curr->working_area));
-					break;
-				}
-			}
-		}
-		/* TODO: make one cycle instead of three */
 		foreach_smp_target(head, target->smp_targets) {
 			struct target *curr = head->target;
 			ret = esp_xtensa_semihosting_init(curr);
@@ -910,7 +886,7 @@ COMMAND_HANDLER(esp_xtensa_smp_cmd_perfmon_dump)
 		struct target *curr;
 		foreach_smp_target(head, target->smp_targets) {
 			curr = head->target;
-			LOG_INFO("CPU%d:", curr->coreid);
+			command_print(CMD, "CPU%d:", curr->coreid);
 			int ret = CALL_COMMAND_HANDLER(xtensa_cmd_perfmon_dump_do,
 				target_to_xtensa(curr));
 			if (ret != ERROR_OK)
@@ -918,6 +894,7 @@ COMMAND_HANDLER(esp_xtensa_smp_cmd_perfmon_dump)
 		}
 		return ERROR_OK;
 	}
+	command_print(CMD, "CPU0:");
 	return CALL_COMMAND_HANDLER(xtensa_cmd_perfmon_dump_do,
 		target_to_xtensa(target));
 }
@@ -1113,20 +1090,19 @@ const struct command_registration esp_xtensa_smp_xtensa_command_handlers[] = {
 
 const struct command_registration esp_xtensa_smp_esp_command_handlers[] = {
 	{
-		.name = "gdb_detach_handler",
-		.handler = esp_common_gdb_detach_command,
+		.name = "process_lazy_breakpoints",
+		.handler = esp_common_process_flash_breakpoints_command,
 		.mode = COMMAND_ANY,
-		.help = "Handles gdb-detach events and makes necessary cleanups such as removing flash breakpoints",
+		.help = "Set/clear all pending flash breakpoints",
 		.usage = "",
 	},
-#if IS_ESPIDF
 	{
-		.name = "examine_failed_handler",
-		.handler = examine_failed_ui_handler,
+		.name = "disable_lazy_breakpoints",
+		.handler = esp_common_disable_lazy_breakpoints_command,
 		.mode = COMMAND_ANY,
+		.help = "Process flash breakpoints on time",
 		.usage = "",
 	},
-#endif
 	COMMAND_REGISTRATION_DONE
 };
 

@@ -10,7 +10,6 @@
 
 #include "server/server.h"
 #include "target/target.h"
-#include <helper/jim-nvp.h>
 
 typedef int64_t threadid_t;
 typedef int64_t symbol_address_t;
@@ -115,7 +114,8 @@ struct rtos_register_stacking {
 
 #define GDB_THREAD_PACKET_NOT_CONSUMED (-40)
 
-int rtos_create(struct jim_getopt_info *goi, struct target *target);
+int rtos_create(struct command_invocation *cmd, struct target *target,
+		const char *rtos_name);
 void rtos_destroy(struct target *target);
 int rtos_set_reg(struct connection *connection, int reg_num,
 		uint8_t *reg_value);
@@ -138,6 +138,7 @@ int rtos_read_buffer(struct target *target, target_addr_t address,
 int rtos_write_buffer(struct target *target, target_addr_t address,
 		uint32_t size, const uint8_t *buffer);
 
+// Keep in alphabetic order this list of rtos
 extern const struct rtos_type chibios_rtos;
 extern const struct rtos_type chromium_ec_rtos;
 extern const struct rtos_type ecos_rtos;

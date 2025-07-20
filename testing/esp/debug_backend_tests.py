@@ -15,6 +15,7 @@ ESP_XTENSA_BLD_FLASH_OFF = 0x1000
 ESP32_PT_FLASH_OFF = 0x8000
 # TODO: get from partition table
 ESP32_APP_FLASH_OFF = 0x10000
+ESP_XTENSA_HW_BP_CNT = 2
 
 test_apps_dir = ''
 
@@ -119,10 +120,10 @@ class GDBUtils:
                             extended_remote_mode='127.0.0.1:%d' % dbg.Oocd.GDB_PORT,
                             log_level=log_level,
                             log_stream_handler=log_stream,
-                            log_file_handler=log_file)
-        if len(gdb_log):
-            _gdb_inst.gdb_set('remotelogfile', gdb_log)
-        if debug_oocd > 2:
+                            log_file_handler=log_file,
+                            gdb_log_folder=gdb_log)
+
+        if debug_oocd > 2 or os.getenv('TEST_SANITIZERS'):
             _gdb_inst.tmo_scale_factor = 5
         else:
             _gdb_inst.tmo_scale_factor = 3
@@ -133,13 +134,13 @@ class GDBUtils:
     def create_gdb_and_reconnect(self):
         debug_oocd = self.args[0]
         log_lev = self.args[1]
-        gdb_log_file = self.args[2]
+        gdb_log_folder = self.args[2]
         ch = self.args[3]
         fh = self.args[4]
         connect_tmo = 15
 
         _gdb_inst = self.create_gdb(testee_info.chip, self.toolchain[:-1], self.toolchain, log_lev,
-                                        ch, fh, gdb_log_file, debug_oocd)
+                                        ch, fh, gdb_log_folder, debug_oocd)
         _gdb_inst.connect(tmo=connect_tmo)
         _gdb_inst.exec_file_set(self.test_app_cfg.build_app_elf_path())
         self.gdb = _gdb_inst
@@ -147,13 +148,19 @@ class GDBUtils:
 testee_info = TesteeInfo()
 
 
-def idf_ver_min(ver_str):
-    return unittest.skipIf(testee_info.idf_ver < IdfVersion.fromstr(ver_str), "requires min IDF_VER='%s', current IDF_VER='%s'" % (ver_str, testee_info.idf_ver))
+def idf_ver_min(ver_str, reason=None):
+    if reason is None:
+        reason = "requires min IDF_VER='%s', current IDF_VER='%s'" % (ver_str, testee_info.idf_ver)
+    return unittest.skipIf(testee_info.idf_ver < IdfVersion.fromstr(ver_str), reason)
 
-def run_with_version(ver_str):
-    return unittest.skipIf(testee_info.idf_ver != IdfVersion.fromstr(ver_str), "Not Applicable to this version")
+def run_with_version(ver_str, reason=None):
+    if reason is None:
+        reason = "Not Applicable to this version"
+    return unittest.skipIf(testee_info.idf_ver != IdfVersion.fromstr(ver_str), reason)
 
-def skip_for_hw_id(hw_ids_to_skip):
+def skip_for_hw_id(hw_ids_to_skip, reason=None):
+    if reason is None:
+        reason = "skipped due to HW ID '%s' matches to '%s'" % (testee_info.hw_id, hw_id_to_skip)
     skip = False
     hw_id_to_skip = ''
     for id in hw_ids_to_skip:
@@ -161,28 +168,30 @@ def skip_for_hw_id(hw_ids_to_skip):
             skip = True
             hw_id_to_skip = id
             break
-    return unittest.skipIf(skip, "skipped due to HW ID '%s' matches to '%s'" % (testee_info.hw_id, hw_id_to_skip))
+    return unittest.skipIf(skip, reason)
 
-def skip_for_chip(chips_to_skip):
+def skip_for_chip(chips_to_skip, reason=None):
+    if reason is None:
+        reason = "skipped for chip '%s'" % (testee_info.chip)
     skip = False
     for id in chips_to_skip:
         if id == testee_info.chip:
             skip = True
             break
-    return unittest.skipIf(skip, "skipped for chip '%s'" % (testee_info.chip))
+    return unittest.skipIf(skip, reason)
 
-def skip_for_chip_and_ver(ver_str, chips_to_skip):
-    skip = False
-    for id in chips_to_skip:
-        if id == testee_info.chip:
-            v1 = repr(testee_info.idf_ver).split('.')
-            v2 = ver_str.split('.')
-            # check major and minor numbers only.
-            if v1[0] == v2[0] and v1[1] == v2[1]:
-                skip = True
-    return unittest.skipIf(skip, "for the '%s' for the IDF_VER='%s'" % (id, testee_info.idf_ver))
+def skip_for_chip_and_ver(ver_strs, chips_to_skip, reason=None):
+    if reason is None:
+        reason = "for the '%s' for the IDF_VER='%s'" % (id, testee_info.idf_ver)
+    # check major and minor numbers only.
+    v1 = repr(testee_info.idf_ver).split('.')[:2]
+    v2 = [ver_str.split('.')[:2] for ver_str in ver_strs]
+    skip = testee_info.chip in chips_to_skip and v1 in v2
+    return unittest.skipIf(skip, reason)
 
-def skip_for_arch(archs_to_skip):
+def skip_for_arch(archs_to_skip, reason=None):
+    if reason is None:
+        reason = "skipped due to arch '%s' matches to '%s'" % (testee_info.arch, arch_to_skip)
     skip = False
     arch_to_skip = ''
     for id in archs_to_skip:
@@ -190,30 +199,46 @@ def skip_for_arch(archs_to_skip):
             skip = True
             arch_to_skip = id
             break
-    return unittest.skipIf(skip, "skipped due to arch '%s' matches to '%s'" % (testee_info.arch, arch_to_skip))
+    return unittest.skipIf(skip, reason)
 
-def only_for_arch(archs_to_run):
+def only_for_arch(archs_to_run, reason=None):
+    if reason is None:
+        reason = "skipped due to arch '%s' does not match to '%s'" % (testee_info.arch, archs_to_run)
     skip = True
     for id in archs_to_run:
         if re.match(id, testee_info.arch):
             skip = False
             break
-    return unittest.skipIf(skip, "skipped due to arch '%s' does not match to '%s'" % (testee_info.arch, archs_to_run))
+    return unittest.skipIf(skip, reason)
 
-def idf_ver_min_for_arch(ver_str, archs_to_run):
+def only_for_chip(chips_to_run, reason=None):
+    if reason is None:
+        reason = "skipped for chip '%s'" % (testee_info.chip)
+    skip = True
+    for id in chips_to_run:
+        if id == testee_info.chip:
+            skip = False
+            break
+    return unittest.skipIf(skip, reason)
+
+def idf_ver_min_for_arch(ver_str, archs_to_run, reason=None):
     skip = True
     for id in archs_to_run:
         if re.match(id, testee_info.arch):
-            return idf_ver_min(ver_str)
+            return idf_ver_min(ver_str, reason)
     # do not skip if arch is not found
     return unittest.skipIf(False, "")
 
-def idf_ver_min_for_chip(ver_str, chips_to_skip):
+def idf_ver_min_for_chip(ver_str, chips_to_skip, reason=None):
     for chip in chips_to_skip:
         if chip == testee_info.chip:
-            return idf_ver_min(ver_str)
+            return idf_ver_min(ver_str, reason)
     # do not skip if chip is not found
     return unittest.skipIf(False, "")
+
+def run_all_cores(func):
+    func._run_all_cores = True
+    return func
 
 class DebuggerTestError(RuntimeError):
     """ Base class for debugger's test errors
@@ -234,7 +259,7 @@ class DebuggerTestAppConfig:
         self.build_dir = build_dir
         # App name
         self.app_name = app_name
-        # App binary offeset in flash
+        # App binary offset in flash
         self.app_off = app_off
         # Path for bootloader binary, relative $test_apps_dir/$app_name/$bin_dir
         self.bld_path = None
@@ -253,12 +278,20 @@ class DebuggerTestAppConfig:
         # name of test app variable which holds sub-test string ID (name) to run
         # used for string-based tests selection
         self.test_id_var = None
+        # name of app variable used to indicate which core to use for test, if applicable
+        self.core_select_var = None
+        # currently tested core, if applicable
+        self.active_core = None
         # Program's entry point ("app_main" is IDF's default)
         self.entry_point = entry_point
         # File containing commands to execute at startup
         self.startup_script = ''
         # Execute the script only.
         self.only_startup = True
+        # All binaries merged into single file
+        self.merged_bin = False
+        # Merged binary offset in flash
+        self.merged_bin_off = 0
 
     def __repr__(self):
         return '%s/%x-%s/%x-%s/%x-%s' % (self.bin_dir, self.app_off, self.app_name, self.bld_off, self.bld_path, self.pt_off, self.pt_path)
@@ -349,7 +382,7 @@ class DebuggerTestsBunch(unittest.BaseTestSuite):
                 # load only if app bins are configured (used) for these tests
                 if self.load_app_bins and self._groupped_suites[app_cfg_id][0]:
                     try:
-                        self._load_app(self._groupped_suites[app_cfg_id][0])
+                        self._load_app(self._groupped_suites[app_cfg_id][0], not self._groupped_suites[app_cfg_id][0].merged_bin)
                     except:
                         get_logger().critical('Failed to load %s!', app_cfg_id)
                         for test in self._groupped_suites[app_cfg_id][1]:
@@ -404,15 +437,17 @@ class DebuggerTestsBunch(unittest.BaseTestSuite):
             else:
                 self._group_tests(test)
 
-    def _load_app(self, app_cfg):
+    def _load_app(self, app_cfg, use_flasher_args_json = True):
         """ Loads application binaries to target.
         """
         state,_ = self.gdb.get_target_state()
         if state != dbg.TARGET_STATE_STOPPED:
             self.gdb.exec_interrupt()
             self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 5)
-        # flash using 'flasher_args.json'
-        self.gdb.target_program_bins(app_cfg.build_bins_dir())
+        if use_flasher_args_json:
+            self.gdb.target_program_bins(app_cfg.build_bins_dir())
+        else:
+            self.gdb.target_program(app_cfg.build_app_bin_path(), app_cfg.merged_bin_off)
         self.gdb.target_reset()
 
 
@@ -517,6 +552,7 @@ class DebuggerTestAppTests(DebuggerTestsBase):
     def tearDown(self):
         self.clear_bps()
         self.clear_wps()
+        self.oocd.process_lazy_bps()
 
     def prepare_app_for_debugging(self, app_flash_off):
         self.gdb.target_reset()
@@ -526,7 +562,7 @@ class DebuggerTestAppTests(DebuggerTestsBase):
         # TODO: chip dependent
         self.oocd.set_appimage_offset(app_flash_off)
         self.gdb.connect()
-        bp = self.gdb.add_bp(self.test_app_cfg.entry_point)
+        bp = self.gdb.add_bp(self.test_app_cfg.entry_point, hw=True)
         self.resume_exec()
         rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 10)
         # workarounds for strange debugger's behaviour
@@ -540,6 +576,22 @@ class DebuggerTestAppTests(DebuggerTestsBase):
         self.assertEqual(frame['func'], self.test_app_cfg.entry_point)
         self.gdb.delete_bp(bp)
 
+    def get_hw_bp_count(self):
+        if testee_info.arch == 'riscv32':
+            info = self.oocd.cmd_exec('riscv info')
+            match = re.search(r'hart.trigger_count *([0-9]+)', info)
+            return int(match.group(1))
+        return ESP_XTENSA_HW_BP_CNT
+
+    def fill_hw_bps(self, keep_avail=0):
+        dummy_bps = [
+            'unused_func0', 'unused_func1', 'unused_func2', 'unused_func3',
+            'unused_func4', 'unused_func5', 'unused_func6', 'unused_func7'
+        ]
+        dummy_bp_count = self.get_hw_bp_count() - keep_avail
+        self.assertTrue(dummy_bp_count <= len(dummy_bps) and dummy_bp_count >= 0)
+        for i in range(dummy_bp_count):
+            self.add_bp(dummy_bps[i])
 
     def add_bp(self, loc, ignore_count=0, cond='', hw=False, tmp=False):
         self.bpns.append(self.gdb.add_bp(loc, ignore_count=ignore_count, cond=cond, hw=hw, tmp=tmp))
@@ -560,11 +612,18 @@ class DebuggerTestAppTests(DebuggerTestsBase):
     def select_sub_test(self, sub_test_id):
         """ Selects sub test in app running on target
         """
+        if self.test_app_cfg.test_select_var is None and self.test_app_cfg.test_id_var is None:
+            # Nuttx does not use test_select_var and test_id_var
+            return
+
         if type(sub_test_id) is str:
             self.gdb.data_eval_expr('%s=%d' % (self.test_app_cfg.test_select_var, -1))
             self.gdb.data_eval_expr('%s=\\"%s\\"' % (self.test_app_cfg.test_id_var, sub_test_id))
         else:
             self.gdb.data_eval_expr('%s=%d' % (self.test_app_cfg.test_select_var, sub_test_id))
+
+        if self.test_app_cfg.active_core is not None:
+            self.gdb.data_eval_expr('%s=%d' % (self.test_app_cfg.core_select_var, self.test_app_cfg.active_core))
 
 
     def run_to_bp(self, exp_rsn, func_name, tmo=20):
@@ -586,12 +645,13 @@ class DebuggerTestAppTests(DebuggerTestsBase):
             raise e
         return cur_frame
 
-    def run_to_bp_and_check_basic(self, exp_rsn, func_name, run_bt=False):
+    def run_to_bp_and_check_basic(self, exp_rsn, func_name, check_line=True, run_bt=False):
         cur_frame = self.run_to_bp(exp_rsn, func_name)
         frames = self.gdb.get_backtrace(run_bt)
         self.assertTrue(len(frames) > 0)
         self.assertEqual(frames[0]['func'], cur_frame['func'])
-        self.assertEqual(frames[0]['line'], cur_frame['line'])
+        if check_line:
+            self.assertEqual(frames[0]['line'], cur_frame['line'])
         return frames
 
     def run_to_bp_and_check(self, exp_rsn, func_name, lineno_var_prefs, outmost_func_name='blink_task'):
@@ -645,6 +705,7 @@ class DebuggerGenericTestAppTests(DebuggerTestAppTests):
         self.test_app_cfg.pt_path = os.path.join('partition_table', 'partition-table.bin')
         self.test_app_cfg.test_select_var = 's_run_test'
         self.test_app_cfg.test_id_var = 's_run_test_str'
+        self.test_app_cfg.core_select_var = 's_run_core'
 
 
 class DebuggerGenericTestAppTestsDual(DebuggerGenericTestAppTests):
@@ -658,6 +719,27 @@ class DebuggerGenericTestAppTestsDual(DebuggerGenericTestAppTests):
         self.test_app_cfg.bin_dir = os.path.join('output', 'default')
         self.test_app_cfg.build_dir = os.path.join('builds', 'default')
         self.args = []
+
+    def __init_subclass__(cls):
+        # Only apply for esp32p4 to run tests also on cpu0, until single core tesets are enabled (OCD-1005)
+        if testee_info.chip != "esp32p4":
+            return
+        for fname in dir(cls):
+            f = getattr(cls, fname)
+            if getattr(f, '_run_all_cores', False):
+                setattr(cls, fname, cls._runtest_all_cores(f))
+
+    def _runtest_all_cores(func):
+        def test_wrapper_dual(self):
+            # setup was already called
+            self.test_app_cfg.active_core = 0
+            func(self) # run on cpu0
+            self.tearDown()
+            self.setUp()
+            self.test_app_cfg.active_core = 1
+            func(self) # run on cpu1
+            # teaddown gets called after
+        return test_wrapper_dual
 
 
 class DebuggerGenericTestAppTestsSingle(DebuggerGenericTestAppTests):

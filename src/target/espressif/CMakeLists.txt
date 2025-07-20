@@ -17,6 +17,9 @@ target_sources(espressif PRIVATE
 	esp32c6.c
 	esp32h2.c
 	esp32p4.c
+	esp32h4.c
+	esp32c5.c
+	esp32c61.c
 	esp.c
 	esp.h
 	esp_riscv.c
@@ -30,6 +33,8 @@ target_sources(espressif PRIVATE
 	segger_sysview.h
 	esp_algorithm.c
 	esp_algorithm.h
+	esp_xtensa_algorithm.c
+	esp_xtensa_algorithm.h
 	esp_riscv_algorithm.c
 	esp_riscv_algorithm.h
 	esp_semihosting.c
@@ -39,5 +44,7 @@ target_sources(espressif PRIVATE
 if(IS_ESPIDF)
 	target_sources(espressif PRIVATE esp_ui_dispatcher.c)
 	target_include_directories(espressif PRIVATE ${PROJECT_SOURCE_DIR})
-	target_link_libraries(espressif PRIVATE idf::lvgl__lvgl)
+	if(CONFIG_UI_ENABLE)
+		target_link_libraries(espressif PRIVATE idf::lvgl__lvgl)
+	endif()
 endif()

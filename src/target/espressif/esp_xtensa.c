@@ -12,16 +12,12 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <target/smp.h>
-#include <target/xtensa/xtensa_algorithm.h>
-#include <target/espressif/esp_semihosting.h>
+#include <target/register.h>
+#include "esp_semihosting.h"
+#include "esp_xtensa_algorithm.h"
 #include "esp_xtensa.h"
 #include "esp_xtensa_apptrace.h"
 #include "esp_xtensa_semihosting.h"
-#include <target/register.h>
-
-#if IS_ESPIDF
-extern int examine_failed_ui_handler(struct command_invocation *cmd);
-#endif
 
 #define XTENSA_EXCCAUSE(reg_val)         ((reg_val) & 0x3F)
 
@@ -172,7 +168,7 @@ int esp_xtensa_init_arch_info(struct target *target,
 	int ret = xtensa_init_arch_info(target, &esp_xtensa->xtensa, dm_cfg);
 	if (ret != ERROR_OK)
 		return ret;
-	ret = esp_common_init(&esp_xtensa->esp, esp_ops->flash_brps_ops, &xtensa_algo_hw);
+	ret = esp_common_init(target, &esp_xtensa->esp, esp_ops->flash_brps_ops, &xtensa_algo_hw);
 	if (ret != ERROR_OK)
 		return ret;
 
@@ -247,9 +243,8 @@ int esp_xtensa_reset_reason_read(struct target *target)
 				return ret;
 			}
 			if (timeval_ms() >= timeout) {
-				LOG_TARGET_ERROR(target,
-					"Timed out waiting for CPU to be reset, target state=%d",
-					target->state);
+				LOG_TARGET_ERROR(target, "Timed out waiting for CPU to be reset, target state %s",
+					target_state_name(target));
 				break;
 			}
 		}
@@ -309,14 +304,14 @@ static void esp_xtensa_dbgstubs_addr_check(struct target *target)
 
 	int res = esp_xtensa_apptrace_status_reg_read(target, &vec_addr);
 	if (res != ERROR_OK) {
-		LOG_ERROR("Failed to read debug stubs address location (%d)!", res);
+		LOG_TARGET_ERROR(target, "Failed to read debug stubs address location (%d)!", res);
 		return;
 	}
 	if (xtensa_data_addr_valid(target, vec_addr)) {
-		LOG_INFO("%s: Detected debug stubs @ %x", target_name(target), vec_addr);
+		LOG_TARGET_INFO(target, "Detected debug stubs entry @ %x", vec_addr);
 		res = esp_xtensa_apptrace_status_reg_write(target, 0);
 		if (res != ERROR_OK)
-			LOG_ERROR("Failed to clear debug stubs address location (%d)!", res);
+			LOG_TARGET_ERROR(target, "Failed to clear debug stubs address location (%d)!", res);
 		esp_xtensa->esp.dbg_stubs.base = vec_addr;
 	}
 }
@@ -335,19 +330,17 @@ static void esp_xtensa_dbgstubs_info_update(struct target *target)
 		return;
 
 	/* read debug stubs descriptor */
-	ESP_XTENSA_DBGSTUBS_UPDATE_DATA_ENTRY(esp_xtensa->esp.dbg_stubs.entries[ESP_DBG_STUB_DESC]);
-	res =
-		target_read_buffer(target, esp_xtensa->esp.dbg_stubs.entries[ESP_DBG_STUB_DESC],
-		sizeof(struct esp_dbg_stubs_desc),
-		(uint8_t *)&esp_xtensa->esp.dbg_stubs.desc);
+	ESP_XTENSA_DBGSTUBS_UPDATE_DATA_ENTRY(esp_xtensa->esp.dbg_stubs.entries[ESP_DBG_STUB_CONTROL_DATA]);
+	res = target_read_buffer(target, esp_xtensa->esp.dbg_stubs.entries[ESP_DBG_STUB_CONTROL_DATA],
+		sizeof(struct esp_dbg_stubs_ctl_data), (uint8_t *)&esp_xtensa->esp.dbg_stubs.ctl_data);
 	if (res != ERROR_OK) {
-		LOG_ERROR("Failed to read debug stubs descriptor (%d)!", res);
+		LOG_TARGET_ERROR(target, "Failed to read debug stubs descriptor (%d)!", res);
 		return;
 	}
-	ESP_XTENSA_DBGSTUBS_UPDATE_CODE_ENTRY(esp_xtensa->esp.dbg_stubs.desc.tramp_addr);
-	ESP_XTENSA_DBGSTUBS_UPDATE_DATA_ENTRY(esp_xtensa->esp.dbg_stubs.desc.min_stack_addr);
-	ESP_XTENSA_DBGSTUBS_UPDATE_CODE_ENTRY(esp_xtensa->esp.dbg_stubs.desc.data_alloc);
-	ESP_XTENSA_DBGSTUBS_UPDATE_CODE_ENTRY(esp_xtensa->esp.dbg_stubs.desc.data_free);
+	ESP_XTENSA_DBGSTUBS_UPDATE_CODE_ENTRY(esp_xtensa->esp.dbg_stubs.ctl_data.tramp_addr);
+	ESP_XTENSA_DBGSTUBS_UPDATE_DATA_ENTRY(esp_xtensa->esp.dbg_stubs.ctl_data.min_stack_addr);
+	ESP_XTENSA_DBGSTUBS_UPDATE_CODE_ENTRY(esp_xtensa->esp.dbg_stubs.ctl_data.data_alloc);
+	ESP_XTENSA_DBGSTUBS_UPDATE_CODE_ENTRY(esp_xtensa->esp.dbg_stubs.ctl_data.data_free);
 }
 
 int esp_xtensa_breakpoint_add(struct target *target, struct breakpoint *breakpoint)
@@ -388,21 +381,92 @@ int esp_xtensa_breakpoint_remove(struct target *target, struct breakpoint *break
 	return res;
 }
 
+int esp_xtensa_profiling(struct target *target, uint32_t *samples,
+	uint32_t max_num_samples, uint32_t *num_samples, uint32_t seconds)
+{
+	struct timeval timeout, now;
+	struct xtensa *xtensa = target_to_xtensa(target);
+	int retval = ERROR_OK;
+	int res;
+
+	/* Vary samples per pass to avoid sampling a periodic function periodically */
+	#define MIN_PASS 200
+	#define MAX_PASS 1000
+
+	gettimeofday(&timeout, NULL);
+	timeval_add_time(&timeout, seconds, 0);
+
+	uint8_t buf[sizeof(uint32_t) * MAX_PASS];
+
+	/* Capture one sample to verify the register is present and working */
+	xtensa_queue_dbg_reg_read(xtensa, XDMREG_DEBUGPC, buf);
+	res = xtensa_dm_queue_execute(&xtensa->dbg_mod);
+	if (res != ERROR_OK) {
+		LOG_TARGET_INFO(target, "Failed to read DEBUGPC, fallback to stop-and-go");
+		return target_profiling_default(target, samples, max_num_samples, num_samples, seconds);
+	} else if (buf[0] == 0 && buf[1] == 0 && buf[2] == 0 && buf[3] == 0) {
+		LOG_TARGET_INFO(target, "NULL DEBUGPC, fallback to stop-and-go");
+		return target_profiling_default(target, samples, max_num_samples, num_samples, seconds);
+	}
+
+	LOG_TARGET_INFO(target, "Starting XTENSA DEBUGPC profiling. Sampling as fast as we can...");
+
+	/* Make sure the target is running */
+	target_poll(target);
+	if (target->state == TARGET_HALTED)
+		retval = target_resume(target, true, 0, false, false);
+
+	if (retval != ERROR_OK) {
+		LOG_TARGET_ERROR(target, "Error while resuming target");
+		return retval;
+	}
+
+	uint32_t sample_count = 0;
+
+	for (;;) {
+		uint32_t remaining = max_num_samples - sample_count;
+		uint32_t this_pass = rand() % (MAX_PASS - MIN_PASS) + MIN_PASS;
+		this_pass = this_pass > remaining ? remaining : this_pass;
+		for (uint32_t i = 0; i < this_pass; ++i)
+			xtensa_queue_dbg_reg_read(xtensa, XDMREG_DEBUGPC, buf + i * sizeof(uint32_t));
+		res = xtensa_dm_queue_execute(&xtensa->dbg_mod);
+		if (res != ERROR_OK) {
+			LOG_TARGET_ERROR(target, "Failed to read DEBUGPC!");
+			return res;
+		}
+
+		for (uint32_t i = 0; i < this_pass; ++i) {
+			uint32_t sample32 = buf_get_u32(buf + i * sizeof(uint32_t), 0, 32);
+			samples[sample_count++] = sample32;
+		}
+		gettimeofday(&now, NULL);
+		if (sample_count >= max_num_samples || timeval_compare(&now, &timeout) > 0) {
+			LOG_TARGET_INFO(target, "Profiling completed. %" PRIu32 " samples.", sample_count);
+			break;
+		}
+	}
+
+	*num_samples = sample_count;
+	return retval;
+
+	#undef MIN_PASS
+	#undef MAX_PASS
+}
+
 const struct command_registration esp_command_handlers[] = {
 	{
-		.name = "gdb_detach_handler",
-		.handler = esp_common_gdb_detach_command,
+		.name = "process_lazy_breakpoints",
+		.handler = esp_common_process_flash_breakpoints_command,
 		.mode = COMMAND_ANY,
-		.help = "Handles gdb-detach events and makes necessary cleanups such as removing flash breakpoints",
+		.help = "Set/clear all pending flash breakpoints",
 		.usage = "",
 	},
-#if IS_ESPIDF
 	{
-		.name = "examine_failed_handler",
-		.handler = examine_failed_ui_handler,
+		.name = "disable_lazy_breakpoints",
+		.handler = esp_common_disable_lazy_breakpoints_command,
 		.mode = COMMAND_ANY,
+		.help = "Process flash breakpoints on time",
 		.usage = "",
 	},
-#endif
 	COMMAND_REGISTRATION_DONE
 };

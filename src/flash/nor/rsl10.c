@@ -155,11 +155,6 @@ static int rsl10_get_probed_chip_if_halted(struct flash_bank *bank, struct rsl10
 
 static int rsl10_protect_check(struct flash_bank *bank)
 {
-	struct rsl10_bank *nbank = bank->driver_priv;
-	struct rsl10_info *chip  = nbank->chip;
-
-	assert(chip);
-
 	uint32_t status;
 
 	int retval = target_read_u32(bank->target, RSL10_FLASH_REG_IF_STATUS, &status);
@@ -815,7 +810,8 @@ static const struct command_registration rsl10_exec_command_handlers[] = {
 		.help    = "Mass erase all unprotected flash areas",
 		.usage   = "",
 	},
-	COMMAND_REGISTRATION_DONE};
+	COMMAND_REGISTRATION_DONE
+};
 
 static const struct command_registration rsl10_command_handlers[] = {
 	{
@@ -825,7 +821,8 @@ static const struct command_registration rsl10_command_handlers[] = {
 		.usage = "",
 		.chain = rsl10_exec_command_handlers,
 	},
-	COMMAND_REGISTRATION_DONE};
+	COMMAND_REGISTRATION_DONE
+};
 
 const struct flash_driver rsl10_flash = {
 	.name               = "rsl10",

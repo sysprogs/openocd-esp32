@@ -234,7 +234,8 @@ static int esp32s3_soc_reset(struct target *target)
 	LOG_DEBUG("Resuming the target");
 	xtensa = target_to_xtensa(target);
 	xtensa->suppress_dsr_errors = true;
-	res = xtensa_resume(target, 0, ESP32_S3_RTC_SLOW_MEM_BASE + 4, 0, 0);
+	res = xtensa_resume(target, false, ESP32_S3_RTC_SLOW_MEM_BASE + 4, false,
+		false);
 	xtensa->suppress_dsr_errors = false;
 	if (res != ERROR_OK) {
 		LOG_ERROR("Failed to run stub (%d)!", res);
@@ -251,8 +252,8 @@ static int esp32s3_soc_reset(struct target *target)
 		xtensa_poll(target);
 		if (timeval_ms() >= timeout) {
 			LOG_TARGET_ERROR(target,
-				"Timed out waiting for CPU to be reset, target state=%d",
-				target->state);
+				"Timed out waiting for CPU to be reset, target state %s",
+				target_state_name(target));
 			get_timeout = true;
 			break;
 		}
@@ -460,8 +461,9 @@ static const struct xtensa_power_ops esp32s3_pwr_ops = {
 };
 
 static const struct esp_flash_breakpoint_ops esp32s3_flash_brp_ops = {
+	.breakpoint_prepare = esp_algo_flash_breakpoint_prepare,
 	.breakpoint_add = esp_algo_flash_breakpoint_add,
-	.breakpoint_remove = esp_algo_flash_breakpoint_remove
+	.breakpoint_remove = esp_algo_flash_breakpoint_remove,
 };
 
 static const struct esp_xtensa_smp_chip_ops esp32s3_chip_ops = {
@@ -474,7 +476,7 @@ static const struct esp_semihost_ops esp32s3_semihost_ops = {
 	.post_reset = esp_semihosting_post_reset
 };
 
-static int esp32s3_target_create(struct target *target, Jim_Interp *interp)
+static int esp32s3_target_create(struct target *target)
 {
 	struct xtensa_debug_module_config esp32s3_dm_cfg = {
 		.dbg_ops = &esp32s3_dbg_ops,
@@ -515,6 +517,16 @@ static int esp32s3_target_create(struct target *target, Jim_Interp *interp)
 	target->state = TARGET_RUNNING;
 	target->debug_reason = DBG_REASON_NOTHALTED;
 	return ERROR_OK;
+}
+
+static int esp32s3_get_gdb_memory_map(struct target *target, struct target_memory_map *memory_map)
+{
+	struct target_memory_region region = { 0 };
+
+	region.type = MEMORY_TYPE_ROM;
+	region.start = ESP32_S3_IROM_MASK_LOW;
+	region.length = ESP32_S3_IROM_MASK_HIGH - ESP32_S3_IROM_MASK_LOW;
+	return target_add_memory_region(memory_map, &region);
 }
 
 static const struct command_registration esp32s3_command_handlers[] = {
@@ -569,6 +581,7 @@ struct target_type esp32s3_target = {
 
 	.get_gdb_arch = xtensa_get_gdb_arch,
 	.get_gdb_reg_list = xtensa_get_gdb_reg_list,
+	.get_gdb_memory_map = esp32s3_get_gdb_memory_map,
 
 	.run_algorithm = xtensa_run_algorithm,
 	.start_algorithm = xtensa_start_algorithm,
@@ -587,4 +600,5 @@ struct target_type esp32s3_target = {
 	.deinit_target = esp_xtensa_target_deinit,
 
 	.commands = esp32s3_command_handlers,
+	.profiling = esp_xtensa_profiling,
 };

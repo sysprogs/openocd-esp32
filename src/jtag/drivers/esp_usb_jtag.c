@@ -322,18 +322,8 @@ static int esp_usb_jtag_revive_device(struct libusb_device_handle *usb_device)
 
 	while (tries-- >= 0) {
 		new_dev = jtag_libusb_find_device(vids, pids, esp_usb_jtag_serial);
-		if (new_dev) {
-			if (esp_usb_jtag_libusb_location_equal(cur_dev, new_dev)) {
-				/* device is still at the same location on bus and with the same address,
-				        try to reset it */
-				int rc = libusb_reset_device(usb_device);
-				if (rc == LIBUSB_ERROR_NOT_FOUND || rc == LIBUSB_ERROR_NO_DEVICE) {
-					/* re-enumeration is necessary */
-					break;
-				}
-				libusb_unref_device(new_dev);
-				return rc == 0 ? ERROR_OK : ERROR_WAIT;
-			}
+		if (new_dev && esp_usb_jtag_libusb_location_equal(cur_dev, new_dev)) {
+			/* device is still at the same location on bus and with the same address, try to re-init it */
 			break;
 		}
 		jtag_sleep(100000);
@@ -641,7 +631,7 @@ static int esp_usb_jtag_init(void)
 	bitq_interface->in_rdy = esp_usb_jtag_in_rdy;
 	bitq_interface->in = esp_usb_jtag_in;
 
-	int r = jtag_libusb_open(vids, pids, &priv->usb_device, NULL);
+	int r = jtag_libusb_open(vids, pids, NULL, &priv->usb_device, NULL);
 	if (r != ERROR_OK) {
 		LOG_ERROR("esp_usb_jtag: could not find or open device!");
 		goto out;
@@ -925,6 +915,40 @@ COMMAND_HANDLER(esp_usb_jtag_chip_id)
 	return ERROR_OK;
 }
 
+COMMAND_HANDLER(esp_usb_jtag_get_location)
+{
+	char dev_loc[128];
+
+	if (!priv->usb_device) {
+		command_print(CMD, "Can not get device location! No open device.");
+		return ERROR_FAIL;
+	}
+
+	if (jtag_libusb_get_dev_location_by_handle(priv->usb_device, dev_loc, sizeof(dev_loc)) != ERROR_OK) {
+		command_print(CMD, "Cannot get location for open usb device!");
+		return ERROR_FAIL;
+	}
+
+	command_print(CMD, "%s", dev_loc);
+	return ERROR_OK;
+}
+
+COMMAND_HANDLER(esp_usb_jtag_dev_list)
+{
+	const uint16_t vids[] = { esp_usb_vid, 0 };		/* must be null terminated */
+	const uint16_t pids[] = { esp_usb_pid, 0 };		/* must be null terminated */
+	int cnt, i;
+	char **locations;
+
+	cnt = jtag_libusb_get_devs_locations(vids, pids, &locations);
+	for (i = 0; i < cnt; i++)
+		command_print(CMD, "%s", locations[i]);
+
+	jtag_libusb_free_devs_locations(locations, cnt);
+
+	return ERROR_OK;
+}
+
 static const struct command_registration esp_usb_jtag_subcommands[] = {
 	{
 		.name = "tdo",
@@ -968,6 +992,20 @@ static const struct command_registration esp_usb_jtag_subcommands[] = {
 		.help = "set chip_id to transfer to the bridge",
 		.usage = "chip_id",
 	},
+	{
+		.name = "list_devs",
+		.handler = &esp_usb_jtag_dev_list,
+		.mode = COMMAND_ANY,
+		.help = "list devices",
+		.usage = "list_devs",
+	},
+	{
+		.name = "get_location",
+		.handler = &esp_usb_jtag_get_location,
+		.mode = COMMAND_ANY,
+		.help = "get device location",
+		.usage = "get_location",
+	},
 	COMMAND_REGISTRATION_DONE
 };
 
@@ -989,7 +1027,8 @@ static struct jtag_interface esp_usb_jtag_interface = {
 
 struct adapter_driver esp_usb_adapter_driver = {
 	.name = "esp_usb_jtag",
-	.transports = jtag_only,
+	.transport_ids = TRANSPORT_JTAG,
+	.transport_preferred_id = TRANSPORT_JTAG,
 	.commands = esp_usb_jtag_commands,
 
 	.init = esp_usb_jtag_init,

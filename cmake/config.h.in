@@ -73,11 +73,14 @@
 /* 0 if you don't want the Buspirate JTAG driver */
 #cmakedefine01 BUILD_BUSPIRATE
 
-/* 0 if you don't want the Remote Bitbang JTAG driver */
+/* 0 if you don't want the Remote Bitbang driver */
 #cmakedefine01 BUILD_REMOTE_BITBANG
 
 /* 0 if you don't want SysfsGPIO driver */
 #cmakedefine01 BUILD_SYSFSGPIO
+
+/* 0 if you don't want Linux SPI SWD adapter driver */
+#cmakedefine01 BUILD_LINUXSPIDEV
 
 /* 0 if you don't want Xilinx XVC/PCIe driver */
 #cmakedefine01 BUILD_XLNX_PCIE_XVC
@@ -92,7 +95,7 @@
 #cmakedefine01 BUILD_ESP_GPIO
 
 /* 0 if you don't want OpenOCD source code coverage support */
-#cmakedefine01 BUILD_GCOV
+#cmakedefine01 USE_GCOV
 
 /* 0 if you don't want MPSSE mode of FTDI based devices */
 #cmakedefine01 BUILD_FTDI

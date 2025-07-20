@@ -30,6 +30,7 @@
 
 #include <helper/log.h>
 
+#include <target/smp.h>
 #include "target/target.h"
 #include "riscv.h"
 
@@ -64,6 +65,20 @@ enum semihosting_result riscv_semihosting(struct target *target, int *retval)
 	if (!semihosting->is_active) {
 		LOG_TARGET_DEBUG(target, "   -> NONE (!semihosting->is_active)");
 		return SEMIHOSTING_NONE;
+	}
+
+	/* ESPRESSIF */
+	if (target->smp) {
+		struct target_list *tlist;
+		foreach_smp_target(tlist, target->smp_targets) {
+			struct target *t = tlist->target;
+			if (t->semihosting->hit_fileio) {
+				LOG_TARGET_DEBUG(target,
+					"semihosting->hit_fileio is already set for (%s). Skip semihosting for this target",
+					target_name(t));
+				return SEMIHOSTING_NONE;
+			}
+		}
 	}
 
 	riscv_reg_t pc;
@@ -123,19 +138,11 @@ enum semihosting_result riscv_semihosting(struct target *target, int *retval)
 		semihosting->param = r1;
 		semihosting->word_size_bytes = riscv_xlen(target) / 8;
 
-		/* Check for ARM operation numbers. */
-		if ((semihosting->op >= 0 && semihosting->op <= 0x31) ||
-			(semihosting->op >= 0x100 && semihosting->op <= 0x116)) { /* Espressif custom */
-
-			*retval = semihosting_common(target);
-			if (*retval != ERROR_OK) {
-				LOG_TARGET_ERROR(target, "Failed semihosting operation (0x%02X)", semihosting->op);
-				return SEMIHOSTING_ERROR;
-			}
-		} else {
-			/* Unknown operation number, not a semihosting call. */
-			LOG_TARGET_ERROR(target, "Unknown semihosting operation requested (op = 0x%x)", semihosting->op);
-			return SEMIHOSTING_NONE;
+		/* Espressif: do not check opcodes here, handled in semihosting_common */
+		*retval = semihosting_common(target);
+		if (*retval != ERROR_OK) {
+			LOG_TARGET_ERROR(target, "Failed semihosting operation (0x%02X)", semihosting->op);
+			return SEMIHOSTING_ERROR;
 		}
 	}
 

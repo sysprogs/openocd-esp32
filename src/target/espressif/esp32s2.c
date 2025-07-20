@@ -20,12 +20,12 @@
 #include "esp_xtensa.h"
 #include "esp_semihosting.h"
 
+#define ESP32_S2_IROM_MASK_LOW          0x40000000
+#define ESP32_S2_IROM_MASK_HIGH         0x40020000
 #define ESP32_S2_RTC_DATA_LOW           0x50000000
 #define ESP32_S2_RTC_DATA_HIGH          0x50002000
 #define ESP32_S2_DR_REG_LOW             0x3f400000
 #define ESP32_S2_DR_REG_HIGH            0x3f4d3FFC
-#define ESP32_S2_SYS_RAM_LOW            0x60000000UL
-#define ESP32_S2_SYS_RAM_HIGH           (ESP32_S2_SYS_RAM_LOW + 0x20000000UL)
 
 /* ESP32 WDT */
 #define ESP32_S2_WDT_WKEY_VALUE         0x50d83aa1
@@ -305,8 +305,8 @@ static int esp32s2_soc_reset(struct target *target)
 		alive_sleep(10);
 		xtensa_poll(target);
 		if (timeval_ms() >= timeout) {
-			LOG_TARGET_ERROR(target, "Timed out waiting for CPU to be reset, target state=%d",
-				target->state);
+			LOG_TARGET_ERROR(target, "Timed out waiting for CPU to be reset, target state %s",
+				target_state_name(target));
 			return ERROR_TARGET_TIMEOUT;
 		}
 	}
@@ -412,7 +412,8 @@ static int esp32s2_on_halt(struct target *target)
 	return ret;
 }
 
-static int esp32s2_step(struct target *target, int current, target_addr_t address, int handle_breakpoints)
+static int esp32s2_step(struct target *target, bool current,
+		target_addr_t address, bool handle_breakpoints)
 {
 	int ret = xtensa_step(target, current, address, handle_breakpoints);
 	if (ret == ERROR_OK) {
@@ -440,7 +441,7 @@ static int esp32s2_poll(struct target *target)
 				if (ret == ERROR_OK && esp_xtensa->semihost.need_resume) {
 					esp_xtensa->semihost.need_resume = false;
 					/* BREAK instruction will be handled in the xtensa_semihosting_post_result. */
-					ret = target_resume(target, 1, 0, 0, 0);
+					ret = target_resume(target, true, 0, false, false);
 					if (ret != ERROR_OK) {
 						LOG_ERROR("Failed to resume target");
 						return ret;
@@ -544,8 +545,9 @@ static const struct xtensa_power_ops esp32s2_pwr_ops = {
 };
 
 static const struct esp_flash_breakpoint_ops esp32s2_spec_brp_ops = {
+	.breakpoint_prepare = esp_algo_flash_breakpoint_prepare,
 	.breakpoint_add = esp_algo_flash_breakpoint_add,
-	.breakpoint_remove = esp_algo_flash_breakpoint_remove
+	.breakpoint_remove = esp_algo_flash_breakpoint_remove,
 };
 
 static const struct esp_semihost_ops esp32s2_semihost_ops = {
@@ -553,7 +555,7 @@ static const struct esp_semihost_ops esp32s2_semihost_ops = {
 	.post_reset = esp_semihosting_post_reset
 };
 
-static int esp32s2_target_create(struct target *target, Jim_Interp *interp)
+static int esp32s2_target_create(struct target *target)
 {
 	struct xtensa_debug_module_config esp32s2_dm_cfg = {
 		.dbg_ops = &esp32s2_dbg_ops,
@@ -592,6 +594,16 @@ static int esp32s2_target_create(struct target *target, Jim_Interp *interp)
 	target->state = TARGET_RUNNING;
 	target->debug_reason = DBG_REASON_NOTHALTED;
 	return ERROR_OK;
+}
+
+static int esp32s2_get_gdb_memory_map(struct target *target, struct target_memory_map *memory_map)
+{
+	struct target_memory_region region = { 0 };
+
+	region.type = MEMORY_TYPE_ROM;
+	region.start = ESP32_S2_IROM_MASK_LOW;
+	region.length = ESP32_S2_IROM_MASK_HIGH - ESP32_S2_IROM_MASK_LOW;
+	return target_add_memory_region(memory_map, &region);
 }
 
 static const struct command_registration esp_any_command_handlers[] = {
@@ -656,6 +668,7 @@ struct target_type esp32s2_target = {
 
 	.get_gdb_arch = xtensa_get_gdb_arch,
 	.get_gdb_reg_list = xtensa_get_gdb_reg_list,
+	.get_gdb_memory_map = esp32s2_get_gdb_memory_map,
 
 	.run_algorithm = xtensa_run_algorithm,
 	.start_algorithm = xtensa_start_algorithm,

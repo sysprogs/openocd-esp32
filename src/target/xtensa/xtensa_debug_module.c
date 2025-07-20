@@ -34,6 +34,16 @@ static const struct xtensa_dm_pwr_reg_offsets xdm_pwr_regs[XDMREG_PWRNUM] =
 static const struct xtensa_dm_reg_offsets xdm_regs[XDMREG_NUM] =
 	XTENSA_DM_REG_OFFSETS;
 
+static enum xtensa_dm_reg xtensa_dm_regaddr_to_id(uint32_t addr)
+{
+	enum xtensa_dm_reg id;
+	uint32_t addr_masked = (addr & (XTENSA_DM_APB_ALIGN - 1));
+	for (id = XDMREG_TRAXID; id < XDMREG_NUM; id++)
+		if (xdm_regs[id].apb == addr_masked)
+			break;
+	return id;
+}
+
 static void xtensa_dm_add_set_ir(struct xtensa_debug_module *dm, uint8_t value)
 {
 	struct scan_field field;
@@ -50,7 +60,7 @@ static void xtensa_dm_add_dr_scan(struct xtensa_debug_module *dm,
 	int len,
 	const uint8_t *src,
 	uint8_t *dest,
-	tap_state_t endstate)
+	enum tap_state endstate)
 {
 	struct scan_field field;
 
@@ -274,8 +284,12 @@ int xtensa_dm_core_status_read(struct xtensa_debug_module *dm)
 	int res = xtensa_dm_queue_execute(dm);
 	if (res != ERROR_OK)
 		return res;
-	dm->core_status.dsr = buf_get_u32(dsr_buf, 0, 32);
-	return res;
+	uint32_t dsr = buf_get_u32(dsr_buf, 0, 32);
+	/* sanity check */
+	if (dsr == 0xffffffff)
+		return ERROR_FAIL;
+	dm->core_status.dsr = dsr;
+	return ERROR_OK;
 }
 
 int xtensa_dm_core_status_clear(struct xtensa_debug_module *dm, xtensa_dsr_t bits)
@@ -283,6 +297,34 @@ int xtensa_dm_core_status_clear(struct xtensa_debug_module *dm, xtensa_dsr_t bit
 	dm->dbg_ops->queue_reg_write(dm, XDMREG_DSR, bits);
 	xtensa_dm_queue_tdi_idle(dm);
 	return xtensa_dm_queue_execute(dm);
+}
+
+int xtensa_dm_read(struct xtensa_debug_module *dm, uint32_t addr, uint32_t *val)
+{
+	enum xtensa_dm_reg reg = xtensa_dm_regaddr_to_id(addr);
+	uint8_t buf[sizeof(uint32_t)];
+	if (reg < XDMREG_NUM) {
+		xtensa_dm_queue_enable(dm);
+		dm->dbg_ops->queue_reg_read(dm, reg, buf);
+		xtensa_dm_queue_tdi_idle(dm);
+		int res = xtensa_dm_queue_execute(dm);
+		if (res == ERROR_OK && val)
+			*val = buf_get_u32(buf, 0, 32);
+		return res;
+	}
+	return ERROR_FAIL;
+}
+
+int xtensa_dm_write(struct xtensa_debug_module *dm, uint32_t addr, uint32_t val)
+{
+	enum xtensa_dm_reg reg = xtensa_dm_regaddr_to_id(addr);
+	if (reg < XDMREG_NUM) {
+		xtensa_dm_queue_enable(dm);
+		dm->dbg_ops->queue_reg_write(dm, reg, val);
+		xtensa_dm_queue_tdi_idle(dm);
+		return xtensa_dm_queue_execute(dm);
+	}
+	return ERROR_FAIL;
 }
 
 int xtensa_dm_trace_start(struct xtensa_debug_module *dm, struct xtensa_trace_start_config *cfg)

@@ -13,12 +13,14 @@
 #include <target/algorithm.h>
 #include <target/target.h>
 #include "esp_algorithm.h"
+#include "../../../contrib/loaders/flash/espressif/stub_flasher.h"
 
-#define ALGO_ALGORITHM_EXIT_TMO    40000	/* ms */
+/* 3 sec will be enough for the regular commands. Flash erase will take time but it has another timer value */
+#define DEFAULT_ALGORITHM_TIMEOUT_MS    3000	/* ms */
 
-static int algorithm_read_stub_logs(struct target *target, struct algorithm_stub *stub)
+static int esp_algorithm_read_stub_logs(struct target *target, struct esp_algorithm_stub *stub)
 {
-	if (stub->log_buff_addr == 0 || stub->log_buff_size == 0)
+	if (!stub || stub->log_buff_addr == 0 || stub->log_buff_size == 0)
 		return ERROR_FAIL;
 
 	uint32_t len = 0;
@@ -32,8 +34,8 @@ static int algorithm_read_stub_logs(struct target *target, struct algorithm_stub
 
 	uint8_t *log_buff = calloc(1, len);
 	if (!log_buff) {
-		LOG_ERROR("Failed to allocate memory for the stub log (%d)!", retval);
-		return retval;
+		LOG_ERROR("Failed to allocate memory for the stub log!");
+		return ERROR_FAIL;
 	}
 	retval = target_read_memory(target, stub->log_buff_addr + 4, 1, len, log_buff);
 	if (retval == ERROR_OK)
@@ -42,9 +44,68 @@ static int algorithm_read_stub_logs(struct target *target, struct algorithm_stub
 	return retval;
 }
 
-static int algorithm_run_image(struct target *target, struct algorithm_run_data *run, uint32_t num_args, va_list ap)
+#ifdef ESP_STACK_HIGH_WATER_MARK
+char *hexdump(uint8_t *buf, int size)
 {
-	void **mem_handles = NULL;
+	int lines = (size + 15) / 16;
+	int line_length = 8 + 1 + 3 * 16 + 1;
+	int str_size = lines * line_length + 1;
+	char *str = calloc(str_size, 1);
+
+	if (!str)
+		return NULL;
+
+	char *current = str;
+	for (int i = 0; i < lines; i++) {
+		/* Print the address line */
+		current += sprintf(current, "%08x: ", i * 16);
+		/* Print the hex bytes */
+		for (int j = 0; j < 16 && (i * 16 + j) < size; j++)
+			current += sprintf(current, "%02x ", buf[i * 16 + j]);
+		/* Add newline at the end of each line */
+		*current++ = '\n';
+	}
+
+	return str;
+}
+
+static int esp_algorithm_calculate_stack_usage(struct target *target, struct esp_algorithm_stub *stub)
+{
+	if (!stub || stub->stack->address == 0)
+		return ERROR_FAIL;
+
+	uint8_t *stack_content = calloc(1, stub->stack->size);
+	if (!stack_content) {
+		LOG_ERROR("Failed to allocate memory for the stack memory!");
+		return ERROR_FAIL;
+	}
+	int retval = target_read_memory(target, stub->stack->address, 1, stub->stack->size, stack_content);
+	if (retval == ERROR_OK) {
+		LOG_OUTPUT("=================================================\n");
+		//LOG_OUTPUT("%s", hexdump(stack_content, stub->stack->size));
+		/* find first non 0xA5 address */
+		for (size_t i = 0; i < stub->stack->size; ++i) {
+			if (stack_content[i] != 0xA5) {
+				LOG_OUTPUT("(%zu) bytes used in (%d) bytes stack\n", stub->stack->size - i, stub->stack->size);
+				LOG_OUTPUT("=================================================\n");
+				break;
+			}
+		}
+	}
+	free(stack_content);
+	return retval;
+}
+#endif
+
+static int esp_algorithm_run_image(struct target *target,
+	struct esp_algorithm_run_data *run,
+	uint32_t num_args,
+	va_list ap)
+{
+	struct working_area **mem_handles = NULL;
+
+	if (!run || !run->hw)
+		return ERROR_FAIL;
 
 	int retval = run->hw->algo_init(target, run, num_args, ap);
 	if (retval != ERROR_OK)
@@ -52,29 +113,44 @@ static int algorithm_run_image(struct target *target, struct algorithm_run_data 
 
 	/* allocate memory arguments and fill respective reg params */
 	if (run->mem_args.count > 0) {
-		mem_handles = calloc(run->mem_args.count, sizeof(void *));
-		if (!mem_handles) {
-			LOG_ERROR("Failed to alloc target mem handles!");
-			retval = ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
-			goto _cleanup;
-		}
-		/* alloc memory args target buffers */
-		for (uint32_t i = 0; i < run->mem_args.count; i++) {
-			/* small hack: if we need to update some reg param this field holds
-			 * appropriate user argument number, */
-			/* otherwise should hold UINT_MAX */
-			uint32_t usr_param_num = run->mem_args.params[i].address;
-			static struct working_area *area;
-			retval = target_alloc_working_area(target, run->mem_args.params[i].size, &area);
-			if (retval != ERROR_OK) {
-				LOG_ERROR("Failed to alloc target buffer!");
-				retval = ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
+		if (!run->run_preloaded_binary) {
+			mem_handles = calloc(run->mem_args.count, sizeof(*mem_handles));
+			if (!mem_handles) {
+				LOG_ERROR("Failed to alloc target mem handles!");
+				retval = ERROR_FAIL;
 				goto _cleanup;
 			}
-			mem_handles[i] = area;
-			run->mem_args.params[i].address = area->address;
-			if (usr_param_num != UINT_MAX) /* if we need update some register param with mem param value */
-				algorithm_user_arg_set_uint(run, usr_param_num, run->mem_args.params[i].address);
+			/* alloc memory args target buffers */
+			for (uint32_t i = 0; i < run->mem_args.count; i++) {
+				/* small hack: if we need to update some reg param this field holds
+				* appropriate user argument number, */
+				/* otherwise should hold UINT_MAX */
+				uint32_t usr_param_num = run->mem_args.params[i].address;
+				static struct working_area *area;
+				retval = target_alloc_working_area(target, run->mem_args.params[i].size, &area);
+				if (retval != ERROR_OK) {
+					LOG_ERROR("Failed to alloc target buffer!");
+					retval = ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
+					goto _cleanup;
+				}
+				mem_handles[i] = area;
+				run->mem_args.params[i].address = area->address;
+				if (usr_param_num != UINT_MAX) /* if we need update some register param with mem param value */
+					esp_algorithm_user_arg_set_uint(run, usr_param_num, run->mem_args.params[i].address);
+			}
+		} else {
+			target_addr_t base_address = run->stub.stack_addr;
+			for (uint32_t i = 0; i < run->mem_args.count; i++) {
+				/* small hack: if we need to update some reg param this field holds
+				* appropriate user argument number, */
+				/* otherwise should hold UINT_MAX */
+				uint32_t usr_param_num = run->mem_args.params[i].address;
+				run->mem_args.params[i].address = base_address;
+				if (usr_param_num != UINT_MAX) /* if we need update some register param with mem param value */
+					esp_algorithm_user_arg_set_uint(run, usr_param_num, base_address);
+				/* only allocate multiples of 4 byte */
+				base_address += ALIGN_UP(run->mem_args.params[i].size, 4);
+			}
 		}
 	}
 
@@ -105,20 +181,24 @@ static int algorithm_run_image(struct target *target, struct algorithm_run_data 
 		if (retval != ERROR_OK)
 			LOG_ERROR("Failed to exec algorithm user func (%d)!", retval);
 	}
-	uint32_t tmo = 0;	/* do not wait if 'usr_func' returned error */
+	uint32_t timeout_ms = 0;	/* do not wait if 'usr_func' returned error */
 	if (retval == ERROR_OK)
-		tmo = run->tmo ? run->tmo : ALGO_ALGORITHM_EXIT_TMO;
+		timeout_ms = run->timeout_ms ? run->timeout_ms : DEFAULT_ALGORITHM_TIMEOUT_MS;
 	LOG_DEBUG("Wait algorithm completion");
 	retval = target_wait_algorithm(target,
 		run->mem_args.count, run->mem_args.params,
 		run->reg_args.count, run->reg_args.params,
-		0, tmo,
+		0, timeout_ms,
 		run->stub.ainfo);
 	if (retval != ERROR_OK) {
 		LOG_ERROR("Failed to wait algorithm (%d)!", retval);
 		/* target has been forced to stop in target_wait_algorithm() */
 	}
-	algorithm_read_stub_logs(target, &run->stub);
+	esp_algorithm_read_stub_logs(target, &run->stub);
+
+#ifdef ESP_STACK_HIGH_WATER_MARK
+	esp_algorithm_calculate_stack_usage(target, &run->stub);
+#endif
 
 	if (run->usr_func_done)
 		run->usr_func_done(target, run, run->usr_func_arg);
@@ -126,7 +206,7 @@ static int algorithm_run_image(struct target *target, struct algorithm_run_data 
 	if (retval != ERROR_OK) {
 		LOG_ERROR("Algorithm run failed (%d)!", retval);
 	} else {
-		run->ret_code = algorithm_user_arg_get_uint(run, 0);
+		run->ret_code = esp_algorithm_user_arg_get_uint(run, 0);
 		LOG_DEBUG("Got algorithm RC 0x%" PRIx32, run->ret_code);
 	}
 
@@ -134,23 +214,25 @@ _cleanup:
 	/* free memory arguments */
 	if (mem_handles) {
 		for (uint32_t i = 0; i < run->mem_args.count; i++) {
-			if (mem_handles[i]) {
+			if (mem_handles[i])
 				target_free_working_area(target, mem_handles[i]);
-			}
 		}
 		free(mem_handles);
 	}
-	run->hw->algo_cleanup(target, run);
 
+	run->hw->algo_cleanup(target, run);
+	/* Clear the flag to ensure algo state is properly reset in case a timeout occurs */
+	target->running_alg = false;
 	return retval;
 }
 
-static int algorithm_run_debug_stub(struct target *target,
-	struct algorithm_run_data *run,
+static int esp_algorithm_run_debug_stub(struct target *target,
+	struct esp_algorithm_run_data *run,
 	uint32_t num_args,
 	va_list ap)
 {
-	void **mem_handles = NULL;
+	if (!run || !run->hw)
+		return ERROR_FAIL;
 
 	int retval = run->hw->algo_init(target, run, num_args, ap);
 	if (retval != ERROR_OK)
@@ -168,14 +250,14 @@ static int algorithm_run_debug_stub(struct target *target,
 		goto _cleanup;
 	}
 
-	uint32_t tmo = 0;	/* do not wait if 'usr_func' returned error */
+	uint32_t timeout_ms = 0;	/* do not wait if 'usr_func' returned error */
 	if (retval == ERROR_OK)
-		tmo = run->tmo ? run->tmo : ALGO_ALGORITHM_EXIT_TMO;
+		timeout_ms = run->timeout_ms ? run->timeout_ms : DEFAULT_ALGORITHM_TIMEOUT_MS;
 	LOG_DEBUG("Wait algorithm completion");
 	retval = target_wait_algorithm(target,
 		run->mem_args.count, run->mem_args.params,
 		run->reg_args.count, run->reg_args.params,
-		0, tmo,
+		0, timeout_ms,
 		run->stub.ainfo);
 	if (retval != ERROR_OK) {
 		LOG_ERROR("Failed to wait algorithm (%d)!", retval);
@@ -185,13 +267,11 @@ static int algorithm_run_debug_stub(struct target *target,
 	if (retval != ERROR_OK) {
 		LOG_ERROR("Algorithm run failed (%d)!", retval);
 	} else {
-		run->ret_code = algorithm_user_arg_get_uint(run, 0);
+		run->ret_code = esp_algorithm_user_arg_get_uint(run, 0);
 		LOG_DEBUG("Got algorithm RC 0x%" PRIx32, run->ret_code);
 	}
 
 _cleanup:
-	free(mem_handles);
-
 	run->hw->algo_cleanup(target, run);
 
 	return retval;
@@ -221,8 +301,13 @@ static void reverse_binary(const uint8_t *src, uint8_t *dest, size_t length)
 }
 
 static int load_section_from_image(struct target *target,
-	struct algorithm_run_data *run, int section_num, bool reverse)
+	struct esp_algorithm_run_data *run,
+	int section_num,
+	bool reverse)
 {
+	if (!run)
+		return ERROR_FAIL;
+
 	struct imagesection *section = &run->image.image.sections[section_num];
 	uint32_t sec_wr = 0;
 	uint8_t buf[1024];
@@ -245,6 +330,21 @@ static int load_section_from_image(struct target *target,
 			/* Send original size to allow padding */
 			reverse_binary(buf, reversed_buf, size_read);
 
+			/*
+				The address range accessed via the instruction bus is in reverse order (word-wise) compared to access
+				via the data bus. That is to say, address
+				0x3FFE_0000 and 0x400B_FFFC access the same word
+				0x3FFE_0004 and 0x400B_FFF8 access the same word
+				0x3FFE_0008 and 0x400B_FFF4 access the same word
+				...
+				The data bus and instruction bus of the CPU are still both little-endian,
+				so the byte order of individual words is not reversed between address spaces.
+				For example, address
+				0x3FFE_0000 accesses the least significant byte in the word accessed by 0x400B_FFFC.
+				0x3FFE_0001 accesses the second least significant byte in the word accessed by 0x400B_FFFC.
+				0x3FFE_0002 accesses the second most significant byte in the word accessed by 0x400B_FFFC.
+				For more details, please refer to ESP32 TRM, Internal SRAM1 section.
+			*/
 			retval = target_write_buffer(target, run->image.dram_org - sec_wr - aligned_len, aligned_len, reversed_buf);
 			if (retval != ERROR_OK) {
 				LOG_ERROR("Failed to write stub section!");
@@ -264,13 +364,80 @@ static int load_section_from_image(struct target *target,
 	return ERROR_OK;
 }
 
-int algorithm_load_func_image(struct target *target, struct algorithm_run_data *run)
+int esp_algorithm_check_preloaded_image(struct target *target, struct esp_algorithm_run_data *run)
+{
+	uint8_t buffer[ESP_STUB_FLASHER_DESC_SIZE];
+
+	if (!run || !run->hw)
+		return ERROR_FAIL;
+
+	run->run_preloaded_binary = false;
+
+	int retval = target_read_buffer(target, run->image.iram_org, ESP_STUB_FLASHER_DESC_SIZE, buffer);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("Failed to read stub description!");
+		return retval;
+	}
+
+	uint32_t magic_num = target_buffer_get_u32(target, buffer + ESP_STUB_FLASHER_DESC_MAGIC_NUM);
+	uint32_t stub_version = target_buffer_get_u32(target, buffer + ESP_STUB_FLASHER_DESC_MAGIC_VERSION);
+	uint32_t idf_key = target_buffer_get_u32(target, buffer + ESP_STUB_FLASHER_DESC_IDF_KEY);
+
+	LOG_DEBUG("Stub code magic_num(0x%" PRIX32 ") stub_version(%" PRIX32 ") idf_key(%" PRIX32 ")",
+		magic_num, stub_version, idf_key);
+
+	if (magic_num != ESP_STUB_FLASHER_MAGIC_NUM || stub_version != ESP_STUB_FLASHER_VERSION
+		|| idf_key != ESP_STUB_FLASHER_IDF_KEY)
+		return ERROR_FAIL;
+
+	LOG_TARGET_INFO(target, "Stub flasher will be running from preloaded image (%" PRIX32 ")", idf_key);
+
+	/*  code and data is already loaded and we know code is at the beginning of iram_org.
+		data is at the begginning of dram_org
+	*/
+	run->stub.entry = run->image.image.start_address;
+	LOG_DEBUG("stub preloaded entry address " TARGET_ADDR_FMT, run->stub.entry);
+
+	/* memory map in the idf application */
+	/* code + tramp + [padding until dram_org] + data + bss + stack + params + [padding to aligned mem ] + 2 sectors */
+	LOG_DEBUG("stub preloaded code size %d", run->image.code_size);
+
+	/* set tramp code address */
+	if (run->hw->stub_tramp_get) {
+		run->stub.tramp_addr = run->image.iram_org + ALIGN_UP(run->image.code_size, 4);
+		run->stub.tramp_mapped_addr = run->stub.tramp_addr;
+		LOG_DEBUG("stub preloaded tramp address " TARGET_ADDR_FMT, run->stub.tramp_addr);
+	}
+
+	/* set stack address */
+	run->stub.stack_addr = run->image.dram_org + ALIGN_UP(run->image.data_size, 4) + ALIGN_UP(run->image.bss_size, 4);
+	run->stub.stack_addr += run->stack_size;
+
+	LOG_DEBUG("stub preloaded stack address " TARGET_ADDR_FMT, run->stub.stack_addr);
+
+	run->run_preloaded_binary = true;
+
+	return ERROR_OK;
+}
+
+/*
+ * Configuration:
+ * ----------------------------
+ * The linker scripts defines the memory layout for the stub code.
+ * The OpenOCD script specifies the workarea address and it's size
+ * Sections defined in the linker are organized to share the same addresses with the workarea.
+ * Code and data sections are located in Internal SRAM1 and OpenOCD fills these sections using the data bus.
+ */
+int esp_algorithm_load_func_image(struct target *target, struct esp_algorithm_run_data *run)
 {
 	int retval;
 	size_t tramp_sz = 0;
 	const uint8_t *tramp = NULL;
 	struct duration algo_time;
-	bool alloc_working_area = true;
+	bool alloc_code_working_area = true;
+
+	if (!run || !run->hw)
+		return ERROR_FAIL;
 
 	if (duration_start(&algo_time) != 0) {
 		LOG_ERROR("Failed to start algo time measurement!");
@@ -302,7 +469,7 @@ int algorithm_load_func_image(struct target *target, struct algorithm_run_data *
 			retval = ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
 			goto _on_error;
 		}
-		alloc_working_area = false;
+		alloc_code_working_area = false;
 	}
 
 	uint32_t code_size = 0;
@@ -318,7 +485,7 @@ int algorithm_load_func_image(struct target *target, struct algorithm_run_data *
 			LOG_DEBUG("addr " TARGET_ADDR_FMT ", sz %d, flags %" PRIx64,
 				section->base_address, section->size, section->flags);
 
-			if (alloc_working_area) {
+			if (alloc_code_working_area) {
 				retval = target_alloc_working_area(target, section->size, &run->stub.code);
 				if (retval != ERROR_OK) {
 					LOG_ERROR("no working area available, can't alloc space for stub code!");
@@ -351,7 +518,7 @@ int algorithm_load_func_image(struct target *target, struct algorithm_run_data *
 	/* If exists, load trampoline to the code area */
 	if (tramp) {
 		if (run->stub.tramp_addr == 0) {
-			if (alloc_working_area) {
+			if (alloc_code_working_area) {
 				/* alloc trampoline in code working area */
 				if (target_alloc_working_area(target, tramp_sz, &run->stub.tramp) != ERROR_OK) {
 					LOG_ERROR("no working area available, can't alloc space for stub jumper!");
@@ -389,7 +556,7 @@ int algorithm_load_func_image(struct target *target, struct algorithm_run_data *
 	}
 
 	/* allocate dummy space until the data address */
-	if (alloc_working_area) {
+	if (alloc_code_working_area) {
 		/* we dont need to restore padding area. */
 		uint32_t backup_working_area_prev = target->backup_working_area;
 		target->backup_working_area = 0;
@@ -450,6 +617,15 @@ int algorithm_load_func_image(struct target *target, struct algorithm_run_data *
 			goto _on_error;
 		}
 		run->stub.stack_addr = run->stub.stack->address + run->stack_size;
+
+#ifdef ESP_STACK_HIGH_WATER_MARK
+		/* For development purpose only */
+		uint8_t buff[run->stack_size];
+		memset(buff, 0xA5, sizeof(buff));
+		retval = target_write_memory(target, run->stub.stack->address, 1, run->stack_size, buff);
+		if (retval != ERROR_OK)
+			return retval;
+#endif
 	}
 
 	if (duration_measure(&algo_time) != 0) {
@@ -461,13 +637,17 @@ int algorithm_load_func_image(struct target *target, struct algorithm_run_data *
 	return ERROR_OK;
 
 _on_error:
-	algorithm_unload_func_image(target, run);
+	esp_algorithm_unload_func_image(target, run);
 	return retval;
 }
 
-int algorithm_unload_func_image(struct target *target, struct algorithm_run_data *run)
+int esp_algorithm_unload_func_image(struct target *target, struct esp_algorithm_run_data *run)
 {
+	if (!run)
+		return ERROR_FAIL;
+
 	target_free_all_working_areas(target);
+
 	run->stub.tramp = NULL;
 	run->stub.stack = NULL;
 	run->stub.code = NULL;
@@ -477,23 +657,26 @@ int algorithm_unload_func_image(struct target *target, struct algorithm_run_data
 	return ERROR_OK;
 }
 
-int algorithm_exec_func_image_va(struct target *target,
-	struct algorithm_run_data *run,
+int esp_algorithm_exec_func_image_va(struct target *target,
+	struct esp_algorithm_run_data *run,
 	uint32_t num_args,
 	va_list ap)
 {
-	if (!run->image.image.start_address_set || run->image.image.start_address == 0)
+	if (!run || !run->image.image.start_address_set || run->image.image.start_address == 0)
 		return ERROR_FAIL;
 
-	return algorithm_run_image(target, run, num_args, ap);
+	return esp_algorithm_run_image(target, run, num_args, ap);
 }
 
-int algorithm_load_onboard_func(struct target *target, target_addr_t func_addr, struct algorithm_run_data *run)
+int esp_algorithm_load_onboard_func(struct target *target, target_addr_t func_addr, struct esp_algorithm_run_data *run)
 {
 	int res;
 	const uint8_t *tramp = NULL;
 	size_t tramp_sz = 0;
 	struct duration algo_time;
+
+	if (!run || !run->hw)
+		return ERROR_FAIL;
 
 	if (duration_start(&algo_time) != 0) {
 		LOG_ERROR("Failed to start algo time measurement!");
@@ -507,8 +690,8 @@ int algorithm_load_onboard_func(struct target *target, target_addr_t func_addr, 
 	}
 
 	if (tramp_sz > run->on_board.code_buf_size) {
-		LOG_ERROR("Stub tramp size %u bytes exceeds target buf size %d bytes!",
-			(uint32_t)tramp_sz, run->on_board.code_buf_size);
+		LOG_ERROR("Stub tramp size %zu bytes exceeds target buf size %d bytes!",
+			tramp_sz, run->on_board.code_buf_size);
 		return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
 	}
 
@@ -526,7 +709,7 @@ int algorithm_load_onboard_func(struct target *target, target_addr_t func_addr, 
 		res = target_write_buffer(target, run->stub.tramp_addr, tramp_sz, tramp);
 		if (res != ERROR_OK) {
 			LOG_ERROR("Failed to write stub jumper!");
-			algorithm_unload_onboard_func(target, run);
+			esp_algorithm_unload_onboard_func(target, run);
 			return res;
 		}
 	}
@@ -540,15 +723,15 @@ int algorithm_load_onboard_func(struct target *target, target_addr_t func_addr, 
 	return ERROR_OK;
 }
 
-int algorithm_unload_onboard_func(struct target *target, struct algorithm_run_data *run)
+int esp_algorithm_unload_onboard_func(struct target *target, struct esp_algorithm_run_data *run)
 {
 	return ERROR_OK;
 }
 
-int algorithm_exec_onboard_func_va(struct target *target,
-	struct algorithm_run_data *run,
+int esp_algorithm_exec_onboard_func_va(struct target *target,
+	struct esp_algorithm_run_data *run,
 	uint32_t num_args,
 	va_list ap)
 {
-	return algorithm_run_debug_stub(target, run, num_args, ap);
+	return esp_algorithm_run_debug_stub(target, run, num_args, ap);
 }

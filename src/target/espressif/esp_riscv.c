@@ -14,6 +14,7 @@
 #include <stdint.h>
 
 #include <helper/bits.h>
+#include <helper/align.h>
 #include <target/target.h>
 #include <target/target_type.h>
 #include <target/smp.h>
@@ -22,10 +23,6 @@
 
 #include "esp_riscv.h"
 #include "esp_semihosting.h"
-
-#if IS_ESPIDF
-extern int examine_failed_ui_handler(struct command_invocation *cmd);
-#endif
 
 /* Argument indexes for ESP_SEMIHOSTING_SYS_BREAKPOINT_SET */
 enum {
@@ -63,6 +60,10 @@ enum esp_riscv_exception_cause {
 };
 
 #define ESP_RISCV_EXCEPTION_CAUSE(reg_val)  ((reg_val) & 0x1F)
+
+#define ESP_RISCV_LOAD_FP     0x07
+#define ESP_RISCV_STORE_FP    0x27
+#define ESP_RISCV_OP_FP       0x53
 
 #define ESP_SEMIHOSTING_WP_FLG_RD   (1UL << 0)
 #define ESP_SEMIHOSTING_WP_FLG_WR   (1UL << 1)
@@ -135,20 +136,43 @@ static void esp_riscv_print_exception_reason(struct target *target)
 	int result = riscv_get_register(target, &mcause, GDB_REGNO_MCAUSE);
 	if (result != ERROR_OK) {
 		LOG_ERROR("Failed to read mcause register. Unknown exception reason!");
-	} else {
-		/* Exception ID 0x0 (instruction access misaligned) is not present because CPU always masks the lowest
-		 * bit of the address during instruction fetch.
-		 * And (mcause(31) is 1 for interrupts and 0 for exceptions). We will print only exception reasons */
-		LOG_TARGET_DEBUG(target, "mcause=%" PRIx64, mcause);
-		if (mcause & BIT(31) || mcause == 0)
-			return;
-		LOG_TARGET_INFO(target, "Halt cause (%d) - (%s)", (int)ESP_RISCV_EXCEPTION_CAUSE(mcause),
-			esp_riscv_get_exception_reason(mcause));
+		return;
 	}
+
+	/* Exception ID 0x0 (instruction access misaligned) is not present because CPU always masks the lowest
+	* bit of the address during instruction fetch.
+	* And (mcause(31) is 1 for interrupts and 0 for exceptions). We will print only exception reasons */
+	LOG_TARGET_DEBUG(target, "mcause=0x%" PRIx64, mcause);
+	if (mcause & BIT(31) || ESP_RISCV_EXCEPTION_CAUSE(mcause) == 0)
+		return;
+
+	if (ESP_RISCV_EXCEPTION_CAUSE(mcause) == ILLEGAL_INSTRUCTION) {
+		riscv_reg_t mtval;
+		result = riscv_get_register(target, &mtval, CSR_MTVAL + GDB_REGNO_CSR0);
+		if (result != ERROR_OK) {
+			LOG_ERROR("Failed to read mtval register!");
+			return;
+		}
+		uint32_t opcode = (mtval >> 0) & ((1U << 7) - 1);
+		LOG_TARGET_DEBUG(target, "mtval=0x%" PRIx64 " opcode=0x%" PRIx32, mtval, opcode);
+		/*
+			These floating point instruction faults are handled in the idf _panic_handler and returned
+			without terminating the program.
+			Therefore, printing the exception cause here could provide incorrect information to users.
+		*/
+		if (opcode == ESP_RISCV_LOAD_FP || opcode == ESP_RISCV_STORE_FP || opcode == ESP_RISCV_OP_FP)
+			return;
+	}
+
+	LOG_TARGET_INFO(target, "Halt cause (%d) - (%s)", (int)ESP_RISCV_EXCEPTION_CAUSE(mcause),
+		esp_riscv_get_exception_reason(mcause));
 }
 
 static bool esp_riscv_is_wp_set_by_program(struct target *target)
 {
+	if (target->debug_reason != DBG_REASON_WATCHPOINT)
+		return false;
+
 	RISCV_INFO(r);
 
 	for (struct watchpoint *wp = target->watchpoints; wp; wp = wp->next) {
@@ -169,6 +193,9 @@ static bool esp_riscv_is_wp_set_by_program(struct target *target)
 
 static bool esp_riscv_is_bp_set_by_program(struct target *target)
 {
+	if (target->debug_reason != DBG_REASON_BREAKPOINT)
+		return false;
+
 	RISCV_INFO(r);
 
 	for (struct breakpoint *bp = target->breakpoints; bp; bp = bp->next) {
@@ -187,6 +214,49 @@ static bool esp_riscv_is_bp_set_by_program(struct target *target)
 	return false;
 }
 
+/* General purpose registers */
+static const char *esp_riscv_gprs[] = {
+	"zero", "ra", "sp", "gp", "tp", "t0", "t1", "t2", "fp", "s1",
+	"a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "s2", "s3", "s4",
+	"s5", "s6", "s7", "s8", "s9", "s10", "s11", "t3", "t4", "t5", "t6",
+	"pc", "priv",
+};
+
+/* Floating point registers */
+static const char *esp_riscv_fprs[] = {
+	"ft0", "ft1", "ft2", "ft3", "ft4", "ft5", "ft6", "ft7", "fs0", "fs1",
+	"fa0", "fa1", "fa2", "fa3", "fa4", "fa5", "fa6", "fa7", "fs2", "fs3",
+	"fs4", "fs5", "fs6", "fs7", "fs8", "fs9", "fs10", "fs11", "ft8", "ft9",
+	"ft10", "ft11",
+};
+
+/* Common CSRs for all chips */
+static const char *esp_riscv_csrs[] = {
+	"mstatus", "misa", "mtvec", "mscratch", "mepc", "mcause", "mtval",
+	"pmpcfg0", "pmpcfg1", "pmpcfg2", "pmpcfg3",
+	"pmpaddr0", "pmpaddr1", "pmpaddr2", "pmpaddr3", "pmpaddr4", "pmpaddr5", "pmpaddr6", "pmpaddr7",
+	"pmpaddr8", "pmpaddr9", "pmpaddr10", "pmpaddr11", "pmpaddr12", "pmpaddr13", "pmpaddr14", "pmpaddr15",
+	"tselect", "tdata1", "tdata2", "tcontrol",
+	"dcsr", "dpc", "dscratch0", "dscratch1",
+	"csr_mpcer",  "csr_mpcmr", "csr_mpccr",
+	"csr_cpu_gpio_oen", "csr_cpu_gpio_in", "csr_cpu_gpio_out",
+};
+
+/* Read only registers */
+static const char *esp_riscv_ro_csrs[] = {
+	"mvendorid", "marchid", "mimpid", "mhartid",
+};
+
+static const struct esp_riscv_reg_class *esp_riscv_find_reg_class(const char *reg_name,
+	const struct esp_riscv_reg_class *classes, unsigned int num_classes)
+{
+	for (unsigned int i = 0; i < num_classes; i++)
+		for (unsigned int j = 0; j < classes[i].reg_array_size; j++)
+			if (!strcmp(reg_name, classes[i].reg_array[j]))
+				return &classes[i];
+	return NULL;
+}
+
 int esp_riscv_examine(struct target *target)
 {
 	int ret = riscv_target.examine(target);
@@ -194,99 +264,125 @@ int esp_riscv_examine(struct target *target)
 		return ret;
 
 	struct esp_riscv_common *esp_riscv = target_to_esp_riscv(target);
-	if (!esp_riscv->existent_regs)
-		return ERROR_FAIL;
 
 	/*
-		RISCV code initializes registers upon target examination.
-		Disable some registers because their reading or writing causes exception.
-		TODO: check if it is still valid for all RISCV chips
+		RISCV code initializes all registers upon target examination.
+		Espressif chips don't support all of them.
+		Disable not supported registers and avoid writing to read only registers during algorithm run
 	*/
+
+	struct esp_riscv_reg_class esp_riscv_registers[] = {
+		{ esp_riscv_gprs, ARRAY_SIZE(esp_riscv_gprs), true, NULL },
+		/* FPRs can't be read via abstract command in ESP32-P4 ECO version */
+		{ esp_riscv_fprs, ARRAY_SIZE(esp_riscv_fprs), false, NULL },
+		{ esp_riscv_csrs, ARRAY_SIZE(esp_riscv_csrs), true, NULL },
+		{ esp_riscv_ro_csrs, ARRAY_SIZE(esp_riscv_ro_csrs), false, NULL },
+	};
+
 	for (unsigned int i = 0; i < target->reg_cache->num_regs; i++) {
 		if (target->reg_cache->reg_list[i].exist) {
-			target->reg_cache->reg_list[i].exist = false;
-			for (unsigned int j = 0; j < esp_riscv->existent_regs_size; j++)
-				if (!strcmp(target->reg_cache->reg_list[i].name, esp_riscv->existent_regs[j])) {
-					target->reg_cache->reg_list[i].exist = true;
-					break;
-				}
+			struct reg *reg = &target->reg_cache->reg_list[i];
+			reg->exist = false;
+			const struct esp_riscv_reg_class *reg_class = esp_riscv_find_reg_class(reg->name,
+				esp_riscv_registers, ARRAY_SIZE(esp_riscv_registers));
+			if (!reg_class)
+				reg_class = esp_riscv_find_reg_class(reg->name,
+					esp_riscv->chip_specific_registers, esp_riscv->chip_specific_registers_size);
+			if (!reg_class)
+				continue;
+			reg->exist = true;
+			reg->caller_save = reg_class->save_restore;
+			if (reg_class->arch_type)
+				reg->type = reg_class->arch_type;
 		}
 	}
+
 	return ERROR_OK;
 }
+
+int esp_riscv_csr_access_enable(struct reg *reg, uint8_t *buf, enum gdb_regno enable_reg,
+	riscv_reg_t enable_field_mask, riscv_reg_t enable_field_off, riscv_reg_t enable_field_on)
+{
+	struct target *target = ((riscv_reg_info_t *)(reg->arch_info))->target;
+	riscv_reg_t reg_val;
+	riscv_get_register(target, &reg_val, enable_reg);
+	riscv_reg_t state = get_field(reg_val, enable_field_mask);
+	if (state == enable_field_off)
+		riscv_set_register(target, enable_reg, set_field(reg_val, enable_field_mask, enable_field_on));
+	int ret;
+	if (buf)
+		ret = target->reg_cache->reg_list[GDB_REGNO_A0].type->set(reg, buf);
+	else
+		ret = target->reg_cache->reg_list[GDB_REGNO_A0].type->get(reg);
+	if (state == enable_field_off)
+		riscv_set_register(target, enable_reg, reg_val);
+	return ret;
+}
+
+static int esp_riscv_user_counter_get(struct reg *reg)
+{
+	unsigned int mcounteren_bit = 1 << ((reg->number - GDB_REGNO_CSR0) & 0x1f);
+	return esp_riscv_csr_access_enable(reg, NULL, GDB_REGNO_CSR0 + CSR_MCOUNTEREN, mcounteren_bit, 0, 1);
+}
+
+static int esp_riscv_user_counter_set(struct reg *reg, uint8_t *buf)
+{
+	unsigned int mcounteren_bit = 1 << ((reg->number - GDB_REGNO_CSR0) & 0x1f);
+	return esp_riscv_csr_access_enable(reg, buf, GDB_REGNO_CSR0 + CSR_MCOUNTEREN, mcounteren_bit, 0, 1);
+}
+
+struct reg_arch_type esp_riscv_user_counter_type = {
+	.get = esp_riscv_user_counter_get,
+	.set = esp_riscv_user_counter_set
+};
+
+static int esp_riscv_fpu_csr_get(struct reg *reg)
+{
+	return esp_riscv_csr_access_enable(reg, NULL, GDB_REGNO_MSTATUS, MSTATUS_FS, 0, 1);
+}
+
+static int esp_riscv_fpu_csr_set(struct reg *reg, uint8_t *buf)
+{
+	return esp_riscv_csr_access_enable(reg, buf, GDB_REGNO_MSTATUS, MSTATUS_FS, 0, 1);
+}
+
+struct reg_arch_type esp_riscv_fpu_csr_type = {
+	.get = esp_riscv_fpu_csr_get,
+	.set = esp_riscv_fpu_csr_set
+};
 
 int esp_riscv_poll(struct target *target)
 {
 	struct esp_riscv_common *esp_riscv = target_to_esp_riscv(target);
 	int res = ERROR_OK;
 
-	RISCV_INFO(r);
-	if (esp_riscv->was_reset && r->dmi_read && r->dmi_write) {
-		uint32_t dmstatus;
-		res = r->dmi_read(target, &dmstatus, DM_DMSTATUS);
-		if (res != ERROR_OK) {
-			LOG_TARGET_ERROR(target, "Failed to read DMSTATUS (%d)!", res);
-		} else {
-			if (esp_riscv->get_reset_reason) {
-				uint32_t reset_buffer = 0;
-				res = target_read_u32(target, esp_riscv->rtccntl_reset_state_reg, &reset_buffer);
-				if (res != ERROR_OK) {
-					LOG_TARGET_WARNING(target, "Failed to read reset cause register (%d)!", res);
-				} else {
-					LOG_TARGET_INFO(target, "Reset cause (%ld) - (%s)", reset_buffer & esp_riscv->reset_cause_mask,
-						esp_riscv->get_reset_reason((reset_buffer)));
-				}
-			}
+	if (target->state == TARGET_HALTED && target->smp && target->gdb_service && !target->gdb_service->target) {
+		target->gdb_service->target = esp_common_get_halted_target(target, target->gdb_service->core[1]);
+		LOG_INFO("Switch GDB target to '%s'", target_name(target->gdb_service->target));
+		target_call_event_callbacks(target, TARGET_EVENT_HALTED);
+		return ERROR_OK;
+	}
 
-			uint32_t strap_reg = 0;
-			if (esp_riscv->is_flash_boot) {
-				LOG_TARGET_DEBUG(target, "Core is out of reset: dmstatus 0x%x", dmstatus);
-				esp_riscv->was_reset = false;
-				res = target_read_u32(target, esp_riscv->gpio_strap_reg, &strap_reg);
-				if (res != ERROR_OK) {
-					LOG_TARGET_WARNING(target, "Failed to read GPIO_STRAP_REG (%d)!", res);
-					strap_reg = ESP_FLASH_BOOT_MODE;
-				}
-
-				if (esp_riscv->is_flash_boot(strap_reg) &&
-					get_field(dmstatus, DM_DMSTATUS_ALLHALTED) == 0) {
-					LOG_TARGET_DEBUG(target, "Halt core");
-					res = esp_riscv_core_halt(target);
-					if (res != ERROR_OK)
-						LOG_TARGET_ERROR(target, "Failed to halt core (%d)!", res);
-					else
-						/* We don't want GDB involved to halted event. But at the same we want to invoke TCL event
-							handler to disable watchdog. Thats why we call DEBUG_HALTED event here.
-						*/
-						target_call_event_callbacks(target, TARGET_EVENT_DEBUG_HALTED);
-				}
-			}
-
-			if (esp_riscv->semi_ops->post_reset)
-				esp_riscv->semi_ops->post_reset(target);
-			/* Clear memory which is used by RTOS layer to get the task count */
-			if (target->rtos && target->rtos->type->post_reset_cleanup) {
-				res = (*target->rtos->type->post_reset_cleanup)(target);
-				if (res != ERROR_OK)
-					LOG_WARNING("Failed to do rtos-specific cleanup (%d)", res);
-			}
-			/* clear previous apptrace ctrl_addr to avoid invalid tracing control block usage in the long
-			 *run. */
-			esp_riscv->apptrace.ctrl_addr = 0;
-
-			if (esp_riscv->is_flash_boot && esp_riscv->is_flash_boot(strap_reg)) {
-				if (get_field(dmstatus, DM_DMSTATUS_ALLHALTED) == 0) {
-					LOG_TARGET_DEBUG(target, "Resume core");
-					res = esp_riscv_core_resume(target);
-					if (res != ERROR_OK) {
-						LOG_TARGET_ERROR(target, "Failed to resume core (%d)!", res);
-					} else {
-						LOG_TARGET_DEBUG(target, "resumed core");
-						target_call_event_callbacks(target, TARGET_EVENT_DEBUG_RESUMED);
-					}
-				}
-			}
+	if (esp_riscv->was_reset) {
+		if (esp_riscv->print_reset_reason) {
+			uint32_t reset_reason_reg_val = 0;
+			res = target_read_u32(target, esp_riscv->rtccntl_reset_state_reg, &reset_reason_reg_val);
+			if (res != ERROR_OK)
+				LOG_TARGET_WARNING(target, "Failed to read reset cause register (%d)!", res);
+			else
+				esp_riscv->print_reset_reason(target, reset_reason_reg_val);
 		}
+
+		if (esp_riscv->semi_ops->post_reset)
+			esp_riscv->semi_ops->post_reset(target);
+
+		/* Clear memory which is used by RTOS layer to get the task count */
+		if (target->rtos && target->rtos->type->post_reset_cleanup) {
+			res = (*target->rtos->type->post_reset_cleanup)(target);
+			if (res != ERROR_OK)
+				LOG_WARNING("Failed to do rtos-specific cleanup (%d)", res);
+		}
+		esp_riscv->was_reset = false;
 	}
 
 	return riscv_openocd_poll(target);
@@ -313,7 +409,21 @@ int esp_riscv_semihosting(struct target *target)
 	struct esp_riscv_common *esp_riscv = target_to_esp_riscv(target);
 	struct semihosting *semihosting = target->semihosting;
 
-	LOG_DEBUG("op:(%x) param: (%" PRIx64 ")", semihosting->op, semihosting->param);
+	/*
+		If a bp/wp set request comes from Core1, the other cores may continue running.
+		We need to ensure that all harts are in a halted state.
+	*/
+	if (target->smp && (semihosting->op == ESP_SEMIHOSTING_SYS_BREAKPOINT_SET ||
+		semihosting->op == ESP_SEMIHOSTING_SYS_WATCHPOINT_SET)) {
+		/* Do not report internal halt, set flag for target with active GDB service (keep in mind for OCD-1132) */
+		struct riscv_info *info = riscv_info(target->gdb_service ? target->gdb_service->target : target);
+		info->pause_gdb_callbacks = true;
+		/* Halt all harts in the SMP group. Resume-all will be handled in riscv_semihosting() return */
+		res = riscv_halt(target);
+		info->pause_gdb_callbacks = false;
+		if (res != ERROR_OK)
+			return res;
+	}
 
 	switch (semihosting->op) {
 	case ESP_SEMIHOSTING_SYS_APPTRACE_INIT:
@@ -343,7 +453,7 @@ int esp_riscv_semihosting(struct target *target)
 			return ERROR_FAIL;
 		}
 		int set = semihosting_get_field(target,
-				ESP_RISCV_SET_WATCHPOINT_ARG_SET,
+				ESP_RISCV_SET_BREAKPOINT_ARG_SET,
 				fields);
 		if (set) {
 			if (esp_riscv->target_bp_addr[id]) {
@@ -442,7 +552,7 @@ static int esp_riscv_debug_stubs_info_init(struct target *target,
 {
 	struct esp_riscv_common *esp_riscv = target_to_esp_riscv(target);
 
-	LOG_INFO("%s: Detected debug stubs @ " TARGET_ADDR_FMT, target_name(target), vec_addr);
+	LOG_TARGET_INFO(target, "Detected debug stubs entry @ " TARGET_ADDR_FMT, vec_addr);
 
 	memset(&esp_riscv->esp.dbg_stubs, 0, sizeof(esp_riscv->esp.dbg_stubs));
 
@@ -454,19 +564,17 @@ static int esp_riscv_debug_stubs_info_init(struct target *target,
 		return ERROR_OK;
 
 	/* read debug stubs descriptor */
-	ESP_RISCV_DBGSTUBS_UPDATE_DATA_ENTRY(esp_riscv->esp.dbg_stubs.entries[ESP_DBG_STUB_DESC]);
-	res =
-		target_read_buffer(target, esp_riscv->esp.dbg_stubs.entries[ESP_DBG_STUB_DESC],
-		sizeof(struct esp_dbg_stubs_desc),
-		(uint8_t *)&esp_riscv->esp.dbg_stubs.desc);
+	ESP_RISCV_DBGSTUBS_UPDATE_DATA_ENTRY(esp_riscv->esp.dbg_stubs.entries[ESP_DBG_STUB_CONTROL_DATA]);
+	res = target_read_buffer(target, esp_riscv->esp.dbg_stubs.entries[ESP_DBG_STUB_CONTROL_DATA],
+		sizeof(struct esp_dbg_stubs_ctl_data), (uint8_t *)&esp_riscv->esp.dbg_stubs.ctl_data);
 	if (res != ERROR_OK) {
-		LOG_ERROR("Failed to read debug stubs descriptor (%d)!", res);
+		LOG_TARGET_ERROR(target, "Failed to read debug stubs descriptor (%d)!", res);
 		return res;
 	}
-	ESP_RISCV_DBGSTUBS_UPDATE_CODE_ENTRY(esp_riscv->esp.dbg_stubs.desc.tramp_addr);
-	ESP_RISCV_DBGSTUBS_UPDATE_DATA_ENTRY(esp_riscv->esp.dbg_stubs.desc.min_stack_addr);
-	ESP_RISCV_DBGSTUBS_UPDATE_CODE_ENTRY(esp_riscv->esp.dbg_stubs.desc.data_alloc);
-	ESP_RISCV_DBGSTUBS_UPDATE_CODE_ENTRY(esp_riscv->esp.dbg_stubs.desc.data_free);
+	ESP_RISCV_DBGSTUBS_UPDATE_CODE_ENTRY(esp_riscv->esp.dbg_stubs.ctl_data.tramp_addr);
+	ESP_RISCV_DBGSTUBS_UPDATE_DATA_ENTRY(esp_riscv->esp.dbg_stubs.ctl_data.min_stack_addr);
+	ESP_RISCV_DBGSTUBS_UPDATE_CODE_ENTRY(esp_riscv->esp.dbg_stubs.ctl_data.data_alloc);
+	ESP_RISCV_DBGSTUBS_UPDATE_CODE_ENTRY(esp_riscv->esp.dbg_stubs.ctl_data.data_free);
 
 	return ERROR_OK;
 }
@@ -476,37 +584,38 @@ int esp_riscv_breakpoint_add(struct target *target, struct breakpoint *breakpoin
 	struct esp_riscv_common *esp_riscv;
 
 	int res = riscv_add_breakpoint(target, breakpoint);
-	if (res == ERROR_TARGET_RESOURCE_NOT_AVAILABLE && breakpoint->type == BKPT_HARD) {
-		/* For SMP target return OK if SW flash breakpoint is already set using another
-		 *core; GDB causes call to esp_algo_flash_breakpoint_add() for every core, since it
-		 *treats flash breakpoints as HW ones */
-		if (target->smp) {
-			struct target_list *curr;
-			foreach_smp_target(curr, target->smp_targets) {
-				esp_riscv = target_to_esp_riscv(curr->target);
-				if (esp_common_flash_breakpoint_exists(&esp_riscv->esp, breakpoint))
-					return ERROR_OK;
+
+	if (breakpoint->type == BKPT_HARD) {
+		if (res == ERROR_OK) {
+			RISCV_INFO(info);
+			/* manual_hwbp_set is required to be set for all harts.
+			 * Otherwise bps coming from hart1 will not be handled properly during step.
+			 * TODO: Check if needs to be set earlier in the first TDATA1 or TDATA2 modification.
+			*/
+			info->manual_hwbp_set = true;
+		} else if (res == ERROR_TARGET_RESOURCE_NOT_AVAILABLE) {
+			/* For SMP target return OK if SW flash breakpoint is already set using another
+			*core; GDB causes call to esp_algo_flash_breakpoint_add() for every core, since it
+			*treats flash breakpoints as HW ones */
+			if (target->smp) {
+				struct target_list *curr;
+				foreach_smp_target(curr, target->smp_targets) {
+					esp_riscv = target_to_esp_riscv(curr->target);
+					if (esp_common_flash_breakpoint_exists(&esp_riscv->esp, breakpoint))
+						return ERROR_OK;
+				}
 			}
+			esp_riscv = target_to_esp_riscv(target);
+			return esp_common_flash_breakpoint_add(target, &esp_riscv->esp, breakpoint);
 		}
-		esp_riscv = target_to_esp_riscv(target);
-		return esp_common_flash_breakpoint_add(target, &esp_riscv->esp, breakpoint);
 	}
+
 	return res;
 }
 
 int esp_riscv_breakpoint_remove(struct target *target, struct breakpoint *breakpoint)
 {
 	struct esp_riscv_common *esp_riscv = target_to_esp_riscv(target);
-
-	enum target_state prev_state = target->state;
-
-	/* TODO: Workaround solution for OCD-749. Remove below lines after it is done */
-	if (target->state != TARGET_HALTED) {
-		LOG_TARGET_DEBUG(target, "Target must be in halted state. Try to halt it");
-		if (esp_riscv_core_halt(target) != ERROR_OK)
-			return ERROR_FAIL;
-	}
-	/**************************************************/
 
 	int res = riscv_remove_breakpoint(target, breakpoint);
 	if (res == ERROR_TARGET_RESOURCE_NOT_AVAILABLE && breakpoint->type == BKPT_HARD) {
@@ -519,13 +628,60 @@ int esp_riscv_breakpoint_remove(struct target *target, struct breakpoint *breakp
 		}
 	}
 
-	/* TODO: Workaround solution for OCD-749. Remove below lines after it is done */
-	if (res == ERROR_OK && prev_state == TARGET_RUNNING) {
-		LOG_TARGET_DEBUG(target, "Restore target state");
-		res = esp_riscv_core_resume(target);
-	}
-
 	return res;
+}
+
+int esp_riscv_smp_watchpoint_add(struct target *target, struct watchpoint *watchpoint)
+{
+	int res = riscv_add_watchpoint(target, watchpoint);
+	if (res != ERROR_OK)
+		return res;
+
+	if (!target->smp)
+		return ERROR_OK;
+
+	struct target_list *head;
+	foreach_smp_target(head, target->smp_targets) {
+		struct target *curr = head->target;
+		if (curr == target || !target_was_examined(curr))
+			continue;
+		/* Need to use high level API here because every target for core contains list of watchpoints.
+		 * GDB works with active core only, so we need to duplicate every watchpoint on other cores,
+		 * otherwise watchpoint_free() on active core can fail if WP has been initially added on another core. */
+		unsigned int tmp_smp = curr->smp;
+		curr->smp = 0;
+		res = watchpoint_add(curr, watchpoint->address, watchpoint->length,
+			watchpoint->rw, watchpoint->value, watchpoint->mask);
+		curr->smp = tmp_smp;
+		if (res != ERROR_OK)
+			return res;
+	}
+	return ERROR_OK;
+}
+
+int esp_riscv_smp_watchpoint_remove(struct target *target, struct watchpoint *watchpoint)
+{
+	int res = riscv_remove_watchpoint(target, watchpoint);
+	if (res != ERROR_OK)
+		return res;
+
+	if (!target->smp)
+		return ERROR_OK;
+
+	struct target_list *head;
+	foreach_smp_target(head, target->smp_targets) {
+		struct target *curr = head->target;
+		if (curr == target)
+			continue;
+		/* see big comment in esp_riscv_watchpoint_add() */
+		unsigned int tmp_smp = curr->smp;
+		curr->smp = 0;
+		res = watchpoint_remove(curr, watchpoint->address);
+		curr->smp = tmp_smp;
+		if (res != ERROR_OK)
+			return res;
+	}
+	return ERROR_OK;
 }
 
 int esp_riscv_hit_watchpoint(struct target *target, struct watchpoint **hit_watchpoint)
@@ -539,19 +695,34 @@ int esp_riscv_hit_watchpoint(struct target *target, struct watchpoint **hit_watc
 	return riscv_hit_watchpoint(target, hit_watchpoint);
 }
 
-int esp_riscv_resume(struct target *target, int current, target_addr_t address,
-		int handle_breakpoints, int debug_execution)
+int esp_riscv_resume(struct target *target, bool current, target_addr_t address,
+		bool handle_breakpoints, bool debug_execution)
 {
-	/* If the target stopped due to breakpoint/watchpoint set by program,
+	/* On Riscv targets we change gdb service target only for gdb fileio requests
+	 * After getting the fileio response it is ok to switch it to the default target which is core0
+	 * Resume request is sent in the gdb_fileio_response_packet() after fileio command processed
+	*/
+	if (target->smp && target->gdb_service) {
+		struct target_list *head;
+		head = list_first_entry(target->smp_targets, struct target_list, lh);
+		target->gdb_service->target = head->target;
+	}
+
+	/* If one of the target stopped due to breakpoint/watchpoint set by program,
 	 * we need to handle_breakpoints to make single step
 	 */
-	if (!handle_breakpoints && target->debug_reason == DBG_REASON_BREAKPOINT) {
-		if (esp_riscv_is_bp_set_by_program(target))
-			handle_breakpoints = true;
-	}
-	if (!handle_breakpoints && target->debug_reason == DBG_REASON_WATCHPOINT) {
-		if (esp_riscv_is_wp_set_by_program(target))
-			handle_breakpoints = true;
+	if (!handle_breakpoints) {
+		if (target->smp) {
+			struct target_list *head;
+			foreach_smp_target(head, target->smp_targets) {
+				if (esp_riscv_is_bp_set_by_program(head->target) || esp_riscv_is_wp_set_by_program(head->target)) {
+					handle_breakpoints = true;
+					break;
+				}
+			}
+		} else {
+			handle_breakpoints = esp_riscv_is_bp_set_by_program(target) || esp_riscv_is_wp_set_by_program(target);
+		}
 	}
 
 	return riscv_target_resume(target, current, address, handle_breakpoints, debug_execution);
@@ -559,8 +730,21 @@ int esp_riscv_resume(struct target *target, int current, target_addr_t address,
 
 static int esp_riscv_on_halt(struct target *target)
 {
+	riscv_reg_t reg_value;
+	if (riscv_get_register(target, &reg_value, GDB_REGNO_DPC) == ERROR_OK)
+		LOG_TARGET_INFO(target, "Target halted, PC=0x%08" PRIX64 ", debug_reason=%08x",
+			reg_value, target->debug_reason);
 	esp_riscv_print_exception_reason(target);
 	return ERROR_OK;
+}
+
+static int esp_riscv_single_hart_poll(struct target *target)
+{
+	int smp = target->smp;
+	target->smp = 0;
+	int res = riscv_openocd_poll(target);
+	target->smp = smp;
+	return res;
 }
 
 int esp_riscv_start_algorithm(struct target *target,
@@ -573,7 +757,7 @@ int esp_riscv_start_algorithm(struct target *target,
 	size_t max_saved_reg = algorithm_info->max_saved_reg;
 
 	if (target->state != TARGET_HALTED) {
-		LOG_WARNING("target not halted");
+		LOG_TARGET_ERROR(target, "Not halted. Can not start target algo!");
 		return ERROR_TARGET_NOT_HALTED;
 	}
 
@@ -583,20 +767,20 @@ int esp_riscv_start_algorithm(struct target *target,
 		struct reg *r = &target->reg_cache->reg_list[number];
 
 		algorithm_info->valid_saved_registers[r->number] = r->exist;
-		if (!r->exist)
+		if (!r->exist || !r->caller_save)
 			continue;
 
-		LOG_DEBUG("save %s", r->name);
+		LOG_TARGET_DEBUG(target, "save %s", r->name);
 
 		if (r->size > 64) {
-			LOG_ERROR("Register %s is %d bits! Max 64-bits are supported.",
+			LOG_TARGET_ERROR(target, "Register %s is %d bits! Max 64-bits are supported.",
 				r->name,
 				r->size);
 			return ERROR_FAIL;
 		}
 
 		if (r->type->get(r) != ERROR_OK) {
-			LOG_ERROR("get(%s) failed", r->name);
+			LOG_TARGET_ERROR(target, "get(%s) failed", r->name);
 			r->exist = false;
 			return ERROR_FAIL;
 		}
@@ -615,30 +799,27 @@ int esp_riscv_start_algorithm(struct target *target,
 	}
 
 	for (int i = 0; i < num_reg_params; i++) {
-		LOG_DEBUG("set %s", reg_params[i].reg_name);
-		struct reg *r = register_get_by_name(target->reg_cache,
-			reg_params[i].reg_name,
-			false);
+		LOG_TARGET_DEBUG(target, "set %s", reg_params[i].reg_name);
+		struct reg *r = register_get_by_name(target->reg_cache, reg_params[i].reg_name, false);
 		if (!r) {
-			LOG_ERROR("Couldn't find register named '%s'", reg_params[i].reg_name);
+			LOG_TARGET_ERROR(target, "Couldn't find register named '%s'", reg_params[i].reg_name);
 			return ERROR_FAIL;
 		}
 
 		if (r->size != reg_params[i].size) {
-			LOG_ERROR("Register %s is %d bits instead of %d bits.",
+			LOG_TARGET_ERROR(target, "Register %s is %d bits instead of %d bits.",
 				reg_params[i].reg_name, r->size, reg_params[i].size);
 			return ERROR_FAIL;
 		}
 
 		if (r->number > GDB_REGNO_XPR31) {
-			LOG_ERROR("Only GPRs can be use as argument registers.");
+			LOG_TARGET_ERROR(target, "Only GPRs can be use as argument registers.");
 			return ERROR_FAIL;
 		}
 
-		if (reg_params[i].direction == PARAM_OUT || reg_params[i].direction ==
-			PARAM_IN_OUT) {
+		if (reg_params[i].direction == PARAM_OUT || reg_params[i].direction == PARAM_IN_OUT) {
 			if (r->type->set(r, reg_params[i].value) != ERROR_OK) {
-				LOG_ERROR("set(%s) failed", reg_params[i].reg_name);
+				LOG_TARGET_ERROR(target, "set(%s) failed", reg_params[i].reg_name);
 				return ERROR_FAIL;
 			}
 		}
@@ -647,12 +828,12 @@ int esp_riscv_start_algorithm(struct target *target,
 	/* Disable Interrupts before attempting to run the algorithm. */
 	int retval = riscv_interrupts_disable(target,
 		MSTATUS_MIE | MSTATUS_HIE | MSTATUS_SIE | MSTATUS_UIE,
-		NULL);
+		&algorithm_info->masked_mstatus);
 	if (retval != ERROR_OK)
 		return retval;
 
 	/* Run algorithm */
-	LOG_DEBUG("resume at 0x%" TARGET_PRIxADDR, entry_point);
+	LOG_TARGET_DEBUG(target, "resume at 0x%" TARGET_PRIxADDR, entry_point);
 	return riscv_resume(target, 0, entry_point, 0, 1, true);
 }
 
@@ -672,9 +853,9 @@ int esp_riscv_wait_algorithm(struct target *target,
 		LOG_DEBUG_IO("poll()");
 		int64_t now = timeval_ms();
 		if (now - start > timeout_ms) {
-			LOG_ERROR("Algorithm timed out after %" PRId64 " ms.", now - start);
+			LOG_TARGET_ERROR(target, "Algorithm timed out after %" PRId64 " ms.", now - start);
 			riscv_halt(target);
-			riscv_openocd_poll(target);
+			esp_riscv_single_hart_poll(target);
 			enum gdb_regno regnums[] = {
 				GDB_REGNO_RA, GDB_REGNO_SP, GDB_REGNO_GP, GDB_REGNO_TP,
 				GDB_REGNO_T0, GDB_REGNO_T1, GDB_REGNO_T2, GDB_REGNO_FP,
@@ -692,12 +873,12 @@ int esp_riscv_wait_algorithm(struct target *target,
 				riscv_reg_t reg_value;
 				if (riscv_get_register(target, &reg_value, regno) != ERROR_OK)
 					break;
-				LOG_ERROR("%s = 0x%" PRIx64, gdb_regno_name(regno), reg_value);
+				LOG_TARGET_ERROR(target, "%s = 0x%" PRIx64, gdb_regno_name(target, regno), reg_value);
 			}
 			return ERROR_TARGET_TIMEOUT;
 		}
 
-		int result = riscv_openocd_poll(target);
+		int result = esp_riscv_single_hart_poll(target);
 		if (result != ERROR_OK)
 			return result;
 	}
@@ -707,7 +888,7 @@ int esp_riscv_wait_algorithm(struct target *target,
 		return ERROR_FAIL;
 	uint64_t final_pc = buf_get_u64(reg_pc->value, 0, reg_pc->size);
 	if (exit_point && final_pc != exit_point) {
-		LOG_ERROR("PC ended up at 0x%" PRIx64 " instead of 0x%"
+		LOG_TARGET_ERROR(target, "PC ended up at 0x%" PRIx64 " instead of 0x%"
 			TARGET_PRIxADDR, final_pc, exit_point);
 		return ERROR_FAIL;
 	}
@@ -719,18 +900,18 @@ int esp_riscv_wait_algorithm(struct target *target,
 				reg_params[i].reg_name,
 				false);
 			if (r->type->get(r) != ERROR_OK) {
-				LOG_ERROR("get(%s) failed", r->name);
+				LOG_TARGET_ERROR(target, "get(%s) failed", r->name);
 				return ERROR_FAIL;
 			}
 			buf_cpy(r->value, reg_params[i].value, reg_params[i].size);
 		}
 	}
 	/* Read memory values to mem_params */
-	LOG_DEBUG("Read mem params");
+	LOG_TARGET_DEBUG(target, "Read mem params");
 	for (int i = 0; i < num_mem_params; i++) {
-		LOG_DEBUG("Check mem param @ " TARGET_ADDR_FMT, mem_params[i].address);
+		LOG_TARGET_DEBUG(target, "Check mem param @ " TARGET_ADDR_FMT, mem_params[i].address);
 		if (mem_params[i].direction != PARAM_OUT) {
-			LOG_DEBUG("Read mem param @ " TARGET_ADDR_FMT, mem_params[i].address);
+			LOG_TARGET_DEBUG(target, "Read mem param @ " TARGET_ADDR_FMT, mem_params[i].address);
 			int retval = target_read_buffer(target, mem_params[i].address,
 				mem_params[i].size,
 				mem_params[i].value);
@@ -744,17 +925,22 @@ int esp_riscv_wait_algorithm(struct target *target,
 		number <= max_saved_reg && number < target->reg_cache->num_regs; number++) {
 		struct reg *r = &target->reg_cache->reg_list[number];
 
-		if (!algorithm_info->valid_saved_registers[r->number])
+		if (!algorithm_info->valid_saved_registers[r->number] || !r->caller_save || !r->exist)
 			continue;
 
-		LOG_DEBUG("restore %s", r->name);
+		LOG_TARGET_DEBUG(target, "restore %s", r->name);
 		uint8_t buf[8];
 		buf_set_u64(buf, 0, info->xlen, algorithm_info->saved_registers[r->number]);
 		if (r->type->set(r, buf) != ERROR_OK) {
-			LOG_ERROR("set(%s) failed", r->name);
+			LOG_TARGET_ERROR(target, "set(%s) failed", r->name);
 			return ERROR_FAIL;
 		}
 	}
+
+	/* We restore mstatus above, but writing to other m registers can changes it's original value */
+	if (riscv_interrupts_restore(target, algorithm_info->masked_mstatus) != ERROR_OK)
+		return ERROR_FAIL;
+
 	if (riscv_flush_registers(target) != ERROR_OK)
 		return ERROR_FAIL;
 	return ERROR_OK;
@@ -784,24 +970,42 @@ int esp_riscv_run_algorithm(struct target *target, int num_mem_params,
 	return retval;
 }
 
+int esp_riscv_smp_run_func_image(struct target *target, struct esp_algorithm_run_data *run, uint32_t num_args, ...)
+{
+	struct target *run_target = target;
+	struct target_list *head;
+	va_list ap;
+
+	if (target->smp) {
+		head = list_first_entry(target->smp_targets, struct target_list, lh);
+		run_target = head->target;
+	}
+
+	if (run_target->coreid != 0 || !target_was_examined(run_target) || run_target->state != TARGET_HALTED) {
+		LOG_ERROR("Algorithm only can be run on examined and halted Core0");
+		return ERROR_FAIL;
+	}
+
+	va_start(ap, num_args);
+	int res = esp_algorithm_run_func_image_va(run_target, run, num_args, ap);
+	va_end(ap);
+	return res;
+}
+
 int esp_riscv_read_memory(struct target *target, target_addr_t address,
 	uint32_t size, uint32_t count, uint8_t *buffer)
 {
-	/* TODO: find out the widest system bus access size. For now we are assuming it is equal to xlen */
-	uint32_t sba_access_size = target_data_bits(target) / 8;
+	RISCV_INFO(r);
+	uint32_t sba_access_size = r->data_bits(target) / 8;
 
-	if (size < sba_access_size) {
+	if (size < sba_access_size || !IS_ALIGNED(address, sba_access_size)) {
 		LOG_DEBUG("Use %d-bit access: size: %d\tcount:%d\tstart address: 0x%08"
 			TARGET_PRIxADDR, sba_access_size * 8, size, count, address);
-		target_addr_t al_addr = address & ~(sba_access_size - 1);
+		target_addr_t al_addr = ALIGN_DOWN(address, sba_access_size);
 		uint32_t al_len = (size * count) + address - al_addr;
-		uint32_t al_cnt = (al_len + sba_access_size - 1) & ~(sba_access_size - 1);
+		uint32_t al_cnt = ALIGN_UP(al_len, sba_access_size);
 		uint8_t al_buf[al_cnt];
-		int ret = riscv_target.read_memory(target,
-			al_addr,
-			sba_access_size,
-			al_cnt / sba_access_size,
-			al_buf);
+		int ret = riscv_target.read_memory(target, al_addr, sba_access_size, al_cnt / sba_access_size, al_buf);
 		if (ret == ERROR_OK)
 			memcpy(buffer, &al_buf[address & (sba_access_size - 1)], size * count);
 		return ret;
@@ -813,111 +1017,24 @@ int esp_riscv_read_memory(struct target *target, target_addr_t address,
 int esp_riscv_write_memory(struct target *target, target_addr_t address,
 	uint32_t size, uint32_t count, const uint8_t *buffer)
 {
-	/* TODO: find out the widest system bus access size. For now we are assuming it is equal to xlen */
-	uint32_t sba_access_size = target_data_bits(target) / 8;
+	RISCV_INFO(r);
+	uint32_t sba_access_size = r->data_bits(target) / 8;
 
-	/* Emulate using 32-bit SBA access */
-	if (size < sba_access_size) {
+	if (size < sba_access_size || !IS_ALIGNED(address, sba_access_size)) {
 		LOG_DEBUG("Use %d-bit access: size: %d\tcount:%d\tstart address: 0x%08"
 			TARGET_PRIxADDR, sba_access_size * 8, size, count, address);
-		target_addr_t al_addr = address & ~(sba_access_size - 1);
+		target_addr_t al_addr = ALIGN_DOWN(address, sba_access_size);
 		uint32_t al_len = (size * count) + address - al_addr;
-		uint32_t al_cnt = (al_len + sba_access_size - 1) & ~(sba_access_size - 1);
+		uint32_t al_cnt = ALIGN_UP(al_len, sba_access_size);
 		uint8_t al_buf[al_cnt];
-		int ret = riscv_target.read_memory(target,
-			al_addr,
-			sba_access_size,
-			al_cnt / sba_access_size,
-			al_buf);
+		int ret = riscv_target.read_memory(target, al_addr, sba_access_size, al_cnt / sba_access_size, al_buf);
 		if (ret == ERROR_OK) {
-			memcpy(&al_buf[address & (sba_access_size - 1)],
-				buffer,
-				size * count);
-			ret = riscv_target.write_memory(target,
-				address,
-				sba_access_size,
-				al_cnt / sba_access_size,
-				al_buf);
+			memcpy(&al_buf[address & (sba_access_size - 1)], buffer, size * count);
+			ret = riscv_target.write_memory(target, al_addr, sba_access_size, al_cnt / sba_access_size, al_buf);
 		}
 		return ret;
 	}
 	return riscv_target.write_memory(target, address, size, count, buffer);
-}
-
-static bool esp_riscv_core_is_halted(struct target *target)
-{
-	enum riscv_hart_state state;
-	if (riscv_get_hart_state(target, &state) != ERROR_OK)
-		return false;
-	return state == RISCV_STATE_HALTED;
-}
-
-int esp_riscv_core_halt(struct target *target)
-{
-	RISCV_INFO(r);
-
-	/* Issue the halt command, and then wait for the current hart to halt. */
-	uint32_t dmcontrol = DM_DMCONTROL_DMACTIVE | DM_DMCONTROL_HALTREQ;
-	r->dmi_write(target, DM_DMCONTROL, dmcontrol);
-	for (size_t i = 0; i < 256; ++i)
-		if (esp_riscv_core_is_halted(target))
-			break;
-
-	if (!esp_riscv_core_is_halted(target)) {
-		uint32_t dmstatus;
-		if (r->dmi_read(target, &dmstatus, DM_DMSTATUS) != ERROR_OK)
-			return ERROR_FAIL;
-		if (r->dmi_read(target, &dmcontrol, DM_DMCONTROL) != ERROR_OK)
-			return ERROR_FAIL;
-
-		LOG_ERROR("unable to halt core");
-		LOG_ERROR("  dmcontrol=0x%08x", dmcontrol);
-		LOG_ERROR("  dmstatus =0x%08x", dmstatus);
-		return ERROR_FAIL;
-	}
-
-	dmcontrol = set_field(dmcontrol, DM_DMCONTROL_HALTREQ, 0);
-	r->dmi_write(target, DM_DMCONTROL, dmcontrol);
-	return ERROR_OK;
-}
-
-int esp_riscv_core_resume(struct target *target)
-{
-	RISCV_INFO(r);
-
-	/* Issue the resume command, and then wait for the current hart to resume. */
-	uint32_t dmcontrol = DM_DMCONTROL_DMACTIVE | DM_DMCONTROL_RESUMEREQ;
-	r->dmi_write(target, DM_DMCONTROL, dmcontrol);
-
-	dmcontrol = set_field(dmcontrol, DM_DMCONTROL_HASEL, 0);
-	dmcontrol = set_field(dmcontrol, DM_DMCONTROL_RESUMEREQ, 0);
-
-	uint32_t dmstatus;
-	for (size_t i = 0; i < 256; ++i) {
-		usleep(10);
-		int res = r->dmi_read(target, &dmstatus, DM_DMSTATUS);
-		if (res != ERROR_OK) {
-			LOG_ERROR("Failed to read dmstatus!");
-			return res;
-		}
-		if (get_field(dmstatus, DM_DMSTATUS_ALLRESUMEACK) == 0)
-			continue;
-		res = r->dmi_write(target, DM_DMCONTROL, dmcontrol);
-		if (res != ERROR_OK) {
-			LOG_ERROR("Failed to write dmcontrol!");
-			return res;
-		}
-		return ERROR_OK;
-	}
-
-	r->dmi_write(target, DM_DMCONTROL, dmcontrol);
-
-	LOG_ERROR("unable to resume core");
-	if (r->dmi_read(target, &dmstatus, DM_DMSTATUS) != ERROR_OK)
-		return ERROR_FAIL;
-	LOG_ERROR("  dmstatus =0x%08x", dmstatus);
-
-	return ERROR_FAIL;
 }
 
 void esp_riscv_deinit_target(struct target *target)
@@ -930,6 +1047,29 @@ void esp_riscv_deinit_target(struct target *target)
 	free(esp_riscv->target_wp_addr);
 
 	riscv_target.deinit_target(target);
+}
+
+int esp_riscv_assert_reset(struct target *target)
+{
+	struct esp_riscv_common *esp_riscv = target_to_esp_riscv(target);
+	/* clear previous apptrace ctrl_addr to avoid invalid tracing control block usage during/after reset */
+	esp_riscv->apptrace.ctrl_addr = 0;
+	return riscv_assert_reset(target);
+}
+
+int esp_riscv_get_gdb_reg_list(struct target *target,
+		struct reg **reg_list[], int *reg_list_size,
+		enum target_register_class reg_class)
+{
+	if (target->state == TARGET_HALTED) {
+		return riscv_get_gdb_reg_list(target, reg_list, reg_list_size, reg_class);
+	} else if (target->state == TARGET_RUNNING) {
+		/* GDB can send 'g' packet when target is running. This is unexpected behavior explained in the OCD-749 */
+		return riscv_get_gdb_reg_list_noread(target, reg_list, reg_list_size, reg_class);
+	}
+
+	LOG_TARGET_ERROR(target, "Unexpected target state %s!", target_state_name(target));
+	return ERROR_FAIL;
 }
 
 COMMAND_HANDLER(esp_riscv_halted_command)
@@ -948,10 +1088,17 @@ COMMAND_HANDLER(esp_riscv_halted_command)
 
 const struct command_registration esp_riscv_command_handlers[] = {
 	{
-		.name = "gdb_detach_handler",
-		.handler = esp_common_gdb_detach_command,
+		.name = "process_lazy_breakpoints",
+		.handler = esp_common_process_flash_breakpoints_command,
 		.mode = COMMAND_ANY,
-		.help = "Handles gdb-detach events and makes necessary cleanups such as removing flash breakpoints",
+		.help = "Set/clear all pending flash breakpoints",
+		.usage = "",
+	},
+	{
+		.name = "disable_lazy_breakpoints",
+		.handler = esp_common_disable_lazy_breakpoints_command,
+		.mode = COMMAND_ANY,
+		.help = "Process flash breakpoints on time",
 		.usage = "",
 	},
 	{
@@ -961,13 +1108,5 @@ const struct command_registration esp_riscv_command_handlers[] = {
 		.help = "Handles halted event and prints exception reason",
 		.usage = "",
 	},
-#if IS_ESPIDF
-	{
-		.name = "examine_failed_handler",
-		.handler = examine_failed_ui_handler,
-		.mode = COMMAND_EXEC,
-		.usage = "",
-	},
-#endif
 	COMMAND_REGISTRATION_DONE
 };

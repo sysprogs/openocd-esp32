@@ -170,7 +170,8 @@ COMMAND_HANDLER(handle_init_command)
 	jtag_poll_unmask(save_poll_mask);
 
 	/* initialize telnet subsystem */
-	gdb_target_add_all(all_targets);
+	if (gdb_target_add_all(all_targets) != ERROR_OK)
+		return ERROR_FAIL;
 
 	target_register_event_callback(log_target_callback_event_handler, CMD_CTX);
 
@@ -232,6 +233,23 @@ static int openocd_register_commands(struct command_context *cmd_ctx)
 
 struct command_context *global_cmd_ctx;
 
+static int (* const command_registrants[])(struct command_context *cmd_ctx_value) = {
+	openocd_register_commands,
+	server_register_commands,
+	gdb_register_commands,
+	log_register_commands,
+	rtt_server_register_commands,
+	transport_register_commands,
+	adapter_register_commands,
+	target_register_commands,
+	flash_register_commands,
+	nand_register_commands,
+	pld_register_commands,
+	cti_register_commands,
+	dap_register_commands,
+	arm_tpiu_swo_register_commands,
+};
+
 static struct command_context *setup_command_handler(Jim_Interp *interp)
 {
 	log_init();
@@ -240,25 +258,7 @@ static struct command_context *setup_command_handler(Jim_Interp *interp)
 	struct command_context *cmd_ctx = command_init(openocd_startup_tcl, interp);
 
 	/* register subsystem commands */
-	typedef int (*command_registrant_t)(struct command_context *cmd_ctx_value);
-	static const command_registrant_t command_registrants[] = {
-		&openocd_register_commands,
-		&server_register_commands,
-		&gdb_register_commands,
-		&log_register_commands,
-		&rtt_server_register_commands,
-		&transport_register_commands,
-		&adapter_register_commands,
-		&target_register_commands,
-		&flash_register_commands,
-		&nand_register_commands,
-		&pld_register_commands,
-		&cti_register_commands,
-		&dap_register_commands,
-		&arm_tpiu_swo_register_commands,
-		NULL
-	};
-	for (unsigned i = 0; command_registrants[i]; i++) {
+	for (unsigned int i = 0; i < ARRAY_SIZE(command_registrants); i++) {
 		int retval = (*command_registrants[i])(cmd_ctx);
 		if (retval != ERROR_OK) {
 			command_done(cmd_ctx);
@@ -376,15 +376,17 @@ int openocd_main(int argc, char *argv[])
 
 	log_exit();
 
+#if USE_GCOV
+	/* Always explicitly dump coverage data before terminating.
+	 * Otherwise coverage would not be dumped when exit_on_signal occurs. */
+	void __gcov_dump(void);
+	__gcov_dump();
+#endif
+
 	if (ret == ERROR_FAIL)
 		return EXIT_FAILURE;
-#if !BUILD_GCOV
-	/* We want openocd to exit normally in order to 
-	generate coverage and profiling data. Killing openocd with
-	signals prevents data generation */
 	else if (ret != ERROR_OK)
 		exit_on_signal(ret);
-#endif
 
 	return ret;
 }

@@ -22,7 +22,7 @@
 
 #if IS_MINGW
 #define mkdir(fname, mode) mkdir(fname)
-#define fsync(fd) FlushFileBuffers((HANDLE)fd)
+#define fsync(fd) FlushFileBuffers((HANDLE)(uintptr_t)(fd))
 #define link(src, dest) CreateHardLink(dest, src, NULL)
 #endif
 
@@ -206,13 +206,13 @@ int esp_semihosting_post_reset(struct target *target)
 	return clean_dir_map_list(target);
 }
 
-static int esp_semihosting_sys_seek(struct target *target, uint64_t fd, uint32_t pos, size_t whence)
+static int esp_semihosting_sys_seek(struct target *target, uint64_t fd, int pos, size_t whence)
 {
 	struct semihosting *semihosting = target->semihosting;
 
 	semihosting->result = lseek(fd, pos, whence);
 	semihosting->sys_errno = errno;
-	LOG_TARGET_DEBUG(target, "lseek(%" PRIx64 ", %" PRIu32 " %" PRId64 ")=%d", fd, pos, semihosting->result, errno);
+	LOG_TARGET_DEBUG(target, "lseek(%" PRIx64 ", %" PRId32 " %" PRId64 ")=%d", fd, pos, semihosting->result, errno);
 	return ERROR_OK;
 }
 
@@ -241,6 +241,60 @@ static int esp_semihosting_sys_drv_info(struct target *target, int addr, int siz
 	return retval;
 }
 
+static const char *esp_semihosting_opcode_to_str(const int opcode)
+{
+	switch (opcode) {
+		case ESP_SEMIHOSTING_SYS_DRV_INFO:
+			return "SYS_DRV_INFO";
+		case ESP_SEMIHOSTING_SYS_SEEK:
+			return "ESP_SYS_SEEK";
+		case ESP_SEMIHOSTING_SYS_APPTRACE_INIT:
+			return "APPTRACE_INIT";
+		case ESP_SEMIHOSTING_SYS_DEBUG_STUBS_INIT:
+			return "DEBUG_STUBS_INIT";
+		case ESP_SEMIHOSTING_SYS_BREAKPOINT_SET:
+			return "BP_ADD_REMOVE";
+		case ESP_SEMIHOSTING_SYS_WATCHPOINT_SET:
+			return "WP_ADD_REMOVE";
+		case ESP_SEMIHOSTING_SYS_PANIC_REASON:
+			return "SYS_PANIC_REASON";
+		case ESP_SEMIHOSTING_SYS_MKDIR:
+			return "SYS_MKDIR";
+		case ESP_SEMIHOSTING_SYS_OPENDIR:
+			return "SYS_OPENDIR";
+		case ESP_SEMIHOSTING_SYS_READDIR:
+			return "SYS_READDIR";
+		case ESP_SEMIHOSTING_SYS_READDIR_R:
+			return "SYS_READDIR_R";
+		case ESP_SEMIHOSTING_SYS_SEEKDIR:
+			return "SYS_SEEKDIR";
+		case ESP_SEMIHOSTING_SYS_TELLDIR:
+			return "SYS_TELLDIR";
+		case ESP_SEMIHOSTING_SYS_CLOSEDIR:
+			return "SYS_CLOSEDIR";
+		case ESP_SEMIHOSTING_SYS_RMDIR:
+			return "SYS_RMDIR";
+		case ESP_SEMIHOSTING_SYS_ACCESS:
+			return "SYS_ACCESS";
+		case ESP_SEMIHOSTING_SYS_TRUNCATE:
+			return "SYS_TRUNCATE";
+		case ESP_SEMIHOSTING_SYS_UTIME:
+			return "SYS_UTIME";
+		case ESP_SEMIHOSTING_SYS_FSTAT:
+			return "SYS_FSTAT";
+		case ESP_SEMIHOSTING_SYS_STAT:
+			return "SYS_STAT";
+		case ESP_SEMIHOSTING_SYS_FSYNC:
+			return "SYS_FSYNC";
+		case ESP_SEMIHOSTING_SYS_LINK:
+			return "SYS_LINK";
+		case ESP_SEMIHOSTING_SYS_UNLINK:
+			return "SYS_UNLINK";
+		default:
+			return "<unknown>";
+	}
+}
+
 int esp_semihosting_common(struct target *target)
 {
 	struct semihosting *semihosting = target->semihosting;
@@ -264,7 +318,7 @@ int esp_semihosting_common(struct target *target)
 	semihosting->sys_errno = EIO;
 
 	LOG_TARGET_DEBUG(target, "op=0x%x (%s), param=0x%" PRIx64,
-		semihosting->op, semihosting_opcode_to_str(semihosting->op), semihosting->param);
+		semihosting->op, esp_semihosting_opcode_to_str(semihosting->op), semihosting->param);
 
 	switch (semihosting->op) {
 	case ESP_SEMIHOSTING_SYS_DRV_INFO:
@@ -672,10 +726,10 @@ int esp_semihosting_common(struct target *target)
 		}
 		retval = semihosting_read_fields(target, 1, fields);
 		if (retval == ERROR_OK) {
-			int fd = semihosting_get_field(target, 0, fields);
+			uint64_t fd = semihosting_get_field(target, 0, fields);
 			semihosting->result = fsync(fd);
 			semihosting->sys_errno = errno;
-			LOG_DEBUG("fsync('%d')=%" PRId64, fd, semihosting->result);
+			LOG_DEBUG("fsync('%'" PRIu64 "')=%" PRId64, fd, semihosting->result);
 		}
 		break;
 

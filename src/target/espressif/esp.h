@@ -20,24 +20,23 @@
 /* must be in sync with ESP-IDF version */
 /** Size of the pre-compiled target buffer for stub trampoline.
  * @note Must be in sync with ESP-IDF version */
-#define ESP_DBG_STUBS_CODE_BUF_SIZE         32	/* TODO: move this info to esp_dbg_stubs_desc */
+#define ESP_DBG_STUBS_CODE_BUF_SIZE         32	/* TODO: move this info to esp_dbg_stubs_ctl_data */
 /** Size of the pre-compiled target buffer for stack.
  * @note Must be in sync with ESP-IDF version */
-#define ESP_DBG_STUBS_STACK_MIN_SIZE        2048/* TODO: move this info to esp_dbg_stubs_desc */
+#define ESP_DBG_STUBS_STACK_MIN_SIZE        2048 /* TODO: move this info to esp_dbg_stubs_ctl_data */
 
 /**
  * Debug stubs table entries IDs
  *
- * @note Must be in sync with ESP-IDF version
+ * @note Must be in sync with ESP-IDF version in dbg_stubs.h
  */
 enum esp_dbg_stub_id {
-	ESP_DBG_STUB_ENTRY_MAGIC_NUM,
+	ESP_DBG_STUB_MAGIC_NUM,
 	ESP_DBG_STUB_TABLE_SIZE,
-	ESP_DBG_STUB_TABLE_START,
-	ESP_DBG_STUB_DESC = ESP_DBG_STUB_TABLE_START,	/*< Stubs descriptor ID */
-	ESP_DBG_STUB_ENTRY_FIRST,
-	ESP_DBG_STUB_ENTRY_GCOV = ESP_DBG_STUB_ENTRY_FIRST,	/*< GCOV stub ID */
-	ESP_DBG_STUB_CAPABILITIES,
+	ESP_DBG_STUB_CONTROL_DATA,
+	ESP_DBG_STUB_ENTRY_FIRST, /*< Stubs descriptor entry */
+	ESP_DBG_STUB_ENTRY_GCOV = ESP_DBG_STUB_ENTRY_FIRST,	/*< GCOV entry */
+	ESP_DBG_STUB_ENTRY_CAPABILITIES,
 	/* add new stub entries here */
 	ESP_DBG_STUB_ENTRY_MAX,
 };
@@ -47,11 +46,11 @@ enum esp_dbg_stub_id {
 
 
 /**
- * Debug stubs descriptor. ID: ESP_DBG_STUB_DESC
+ * Debug stubs control data. ID: ESP_DBG_STUB_CONTROL_DATA
  *
  * @note Must be in sync with ESP-IDF version
  */
-struct esp_dbg_stubs_desc {
+struct esp_dbg_stubs_ctl_data {
 	/** Address of pre-compiled target buffer for stub trampoline.
 	 * Size of the buffer is ESP_DBG_STUBS_CODE_BUF_SIZE
 	 */
@@ -79,8 +78,8 @@ struct esp_dbg_stubs {
 	uint32_t entries[ESP_DBG_STUB_ENTRY_MAX];
 	/** Number of table entries. */
 	uint32_t entries_count;
-	/** Debug stubs decsriptor. */
-	struct esp_dbg_stubs_desc desc;
+	/** Debug stubs control data. */
+	struct esp_dbg_stubs_ctl_data ctl_data;
 };
 
 struct esp_panic_reason {
@@ -106,10 +105,15 @@ struct esp_semihost_data {
 };
 
 struct esp_flash_breakpoint_ops {
-	int (*breakpoint_add)(struct target *target, struct breakpoint *breakpoint,
+	int (*breakpoint_prepare)(struct target *target,
+		struct breakpoint *breakpoint,
 		struct esp_flash_breakpoint *bp);
+	int (*breakpoint_add)(struct target *target,
+		struct esp_flash_breakpoint *bp,
+		size_t num_bps);
 	int (*breakpoint_remove)(struct target *target,
-		struct esp_flash_breakpoint *bp);
+		struct esp_flash_breakpoint *bp,
+		size_t num_bps);
 };
 
 struct esp_flash_breakpoints {
@@ -119,9 +123,10 @@ struct esp_flash_breakpoints {
 
 struct esp_common {
 	struct esp_flash_breakpoints flash_brps;
-	const struct algorithm_hw *algo_hw;
+	const struct esp_algorithm_hw *algo_hw;
 	struct esp_dbg_stubs dbg_stubs;
 	struct esp_panic_reason panic_reason;
+	bool breakpoint_lazy_process;
 };
 
 struct esp_ops {
@@ -132,9 +137,9 @@ struct esp_ops {
 };
 
 struct esp_common *target_to_esp_common(struct target *target);
-int esp_common_init(struct esp_common *esp,
+int esp_common_init(struct target *target, struct esp_common *esp,
 	const struct esp_flash_breakpoint_ops *flash_brps_ops,
-	const struct algorithm_hw *algo_hw);
+	const struct esp_algorithm_hw *algo_hw);
 int esp_common_flash_breakpoint_add(struct target *target,
 	struct esp_common *esp,
 	struct breakpoint *breakpoint);
@@ -144,13 +149,14 @@ int esp_common_flash_breakpoint_remove(struct target *target,
 bool esp_common_flash_breakpoint_exists(struct esp_common *esp,
 	struct breakpoint *breakpoint);
 int esp_common_handle_gdb_detach(struct target *target);
-int esp_common_gdb_detach_command(struct command_invocation *cmd);
-
+int esp_common_process_flash_breakpoints_command(struct command_invocation *cmd);
+int esp_common_disable_lazy_breakpoints_command(struct command_invocation *cmd);
 int esp_dbgstubs_table_read(struct target *target, struct esp_dbg_stubs *dbg_stubs);
 
 void esp_common_assist_debug_monitor_disable(struct target *target, uint32_t address, uint32_t *value);
 void esp_common_assist_debug_monitor_restore(struct target *target, uint32_t address, uint32_t value);
 int esp_common_read_pseudo_ex_reason(struct target *target);
+struct target *esp_common_get_halted_target(struct target *target, int32_t coreid);
 
 static inline bool esp_is_flash_boot(uint32_t strap_reg)
 {

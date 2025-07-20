@@ -67,6 +67,7 @@ my %use_type = ();
 my @use = ();
 my %ignore_type = ();
 my @ignore = ();
+my @exclude = ();
 my $help = 0;
 my $configuration_file = ".checkpatch.conf";
 my $max_line_length = 100;
@@ -123,6 +124,7 @@ Options:
   --list-types               list the possible message types
   --types TYPE(,TYPE2...)    show only these comma separated message types
   --ignore TYPE(,TYPE2...)   ignore various comma separated message types
+  --exclude DIR(,DIR2...)    exclude directories
   --show-types               show the specific message type in the output
   --max-line-length=n        set the maximum line length, (default $max_line_length)
                              if exceeded, warn on patches
@@ -320,6 +322,7 @@ GetOptions(
 	'subjective!'	=> \$check,
 	'strict!'	=> \$check,
 	'ignore=s'	=> \@ignore,
+	'exclude=s'	=> \@exclude,
 	'types=s'	=> \@use,
 	'show-types!'	=> \$show_types,
 	'list-types!'	=> \$list_types,
@@ -2384,6 +2387,10 @@ sub show_type {
 sub report {
 	my ($level, $type, $msg) = @_;
 
+	# OpenOCD specific: Begin: Flatten ERROR, WARNING and CHECK as ERROR
+	$level = 'ERROR';
+	# OpenOCD specific: End
+
 	if (!show_type($type) ||
 	    (defined $tst_only && $msg !~ /\Q$tst_only\E/)) {
 		return 0;
@@ -2926,6 +2933,16 @@ sub process {
 			$found_file = 1;
 		}
 
+		my $excluded = 0;
+		foreach (@exclude) {
+			if ($realfile =~ m@^(?:$_/)@) {
+				$excluded = 1;
+			}
+		}
+		if ($excluded) {
+			next;
+		}
+
 #make up the handle for any error we report on this line
 		if ($showfile) {
 			$prefix = "$realfile:$realline: "
@@ -3247,6 +3264,9 @@ sub process {
 
 # Check for Gerrit Change-Ids not in any patch context
 		if ($realfile eq '' && !$has_patch_separator && $line =~ /^\s*change-id:/i) {
+			# OpenOCD specific: Begin: exclude gerrit's Change-Id line from commit description
+			$in_commit_log = 0;
+			# OpenOCD specific: End
 			if (ERROR("GERRIT_CHANGE_ID",
 			          "Remove Gerrit Change-Id's before submitting upstream\n" . $herecurr) &&
 			    $fix) {
@@ -3724,8 +3744,10 @@ sub process {
 				} elsif ($realfile =~ /\.rst$/) {
 					$comment = '..';
 				# OpenOCD specific: Begin
-				} elsif ($realfile =~ /\.(am|cfg|tcl)$/) {
+				} elsif (($realfile =~ /\.(am|cfg|tcl)$/) || ($realfile =~ /\/Makefile$/)) {
 					$comment = '#';
+				} elsif ($realfile =~ /\.(ld)$/) {
+					$comment = '/*';
 				# OpenOCD specific: End
 				}
 
@@ -3769,7 +3791,11 @@ sub process {
 		}
 
 # check we are in a valid source file if not then ignore this hunk
+		if (!$OpenOCD) {
 		next if ($realfile !~ /\.(h|c|s|S|sh|dtsi|dts)$/);
+		} else { # !$OpenOCD
+		next if ($realfile !~ /\.(h|c|s|S|sh|dtsi|dts|tcl|cfg|ac|am)$/);
+		} # !$OpenOCD
 
 # check for using SPDX-License-Identifier on the wrong line number
 		if ($realline != $checklicenseline &&
@@ -7634,9 +7660,15 @@ sub process {
 	print report_dump();
 	if ($summary && !($clean == 1 && $quiet == 1)) {
 		print "$filename " if ($summary_file);
+		if (!$OpenOCD) {
 		print "total: $cnt_error errors, $cnt_warn warnings, " .
 			(($check)? "$cnt_chk checks, " : "") .
 			"$cnt_lines lines checked\n";
+		} # $OpenOCD
+		# OpenOCD specific: Begin: Report total as errors
+		my $total = $cnt_error + $cnt_warn + $cnt_chk;
+		print "total: $total errors, $cnt_lines lines checked\n";
+		# OpenOCD specific: End
 	}
 
 	if ($quiet == 0) {

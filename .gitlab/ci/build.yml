@@ -80,6 +80,18 @@
   make install
   popd
 
+.buildx_jimtcl: &buildx_jimtcl |
+  export JIMTCL_VER=jimtcl-0.83
+  wget https://dl.espressif.com/dl/$JIMTCL_VER.tar.gz -O $JIMTCL_VER.tar.gz
+  tar xzf $JIMTCL_VER.tar.gz && rm $JIMTCL_VER.tar.gz
+  pushd $JIMTCL_VER
+  ./configure --prefix="$PWD/dist" --host=${CONF_HOST} --disable-shared --with-ext=json --minimal --disable-ssl CC=${HOST_CC}
+  make
+  # Running "make" does not create this file for static builds on Windows but "make install" still expects it
+  touch build-jim-ext
+  make install
+  popd
+
 .buildx_openocd: &buildx_openocd |
   ./bootstrap
   mkdir _build && pushd _build/
@@ -96,20 +108,17 @@
   artifacts:
     paths:
       - ${DIST_ART_DIR}
-    reports:
-      junit:
-        - _build/*.log
     when: always
     expire_in: 2 weeks
-  needs:
-    - job: style_check
+  needs: []
   script:
     - *get_release_name
-    - !reference [.add_gitlab_key, script]
-    - !reference [.submodules_mirror_update, script]
+    - export HOST_CC=${CONF_HOST}-gcc
+    - *buildx_jimtcl
+    - export PKG_CONFIG_PATH=$PWD/$JIMTCL_VER/dist/lib/pkgconfig
     - ./bootstrap
     - mkdir _build && pushd _build/
-    - ../configure CFLAGS="${TEST_CFLAGS}" --prefix=$PWD/../$DIST_INSTALLED_DIR --host=${CONF_HOST}  $OPENOCD_CONFIGURE_OPTS $GCOV_BUILD_OPTS
+    - ../configure CFLAGS="${TEST_CFLAGS:-}" --prefix=$PWD/../$DIST_INSTALLED_DIR --host=${CONF_HOST}  $OPENOCD_CONFIGURE_OPTS $GCOV_BUILD_OPTS
     - make -j `nproc`
     - MAKEFLAGS= make install-strip
     - popd
@@ -117,6 +126,7 @@
       if [[ "${GCOV_BUILD_OPTS}" != "" ]]; then
         echo coverage enabled
         rsync -a --prune-empty-dirs --include '*/' --include '*.gcno' --exclude '*' _build/ ${DIST_INSTALLED_DIR}/_build
+        cp `which ${CONF_HOST}-gcov` ${DIST_INSTALLED_DIR}/bin/gcov
       fi
     - *dist_archive
 
@@ -129,17 +139,15 @@
     paths:
       - ${DIST_ART_DIR}
     expire_in: 2 weeks
-  needs:
-    - job: style_check
+  needs: []
   script:
     - *get_release_name
-    - !reference [.add_gitlab_key, script]
-    - !reference [.submodules_mirror_update, script]
     - *buildx_libusb
     - export OSXCROSS_PKG_CONFIG_PATH=$PWD/$LIBUSB_VER/dist/lib/pkgconfig
     - *buildx_hidapi
     - *buildx_libjaylink
-    - export OSXCROSS_PKG_CONFIG_PATH=$PWD/hidapi-$HIDAPI_VER/dist/lib/pkgconfig/:$PWD/$LIBJAYLINK_VER/dist/lib/pkgconfig:$OSXCROSS_PKG_CONFIG_PATH
+    - *buildx_jimtcl
+    - export OSXCROSS_PKG_CONFIG_PATH=$PWD/hidapi-$HIDAPI_VER/dist/lib/pkgconfig/:$PWD/$LIBJAYLINK_VER/dist/lib/pkgconfig:$PWD/$JIMTCL_VER/dist/lib/pkgconfig:$OSXCROSS_PKG_CONFIG_PATH
     - export LDFLAGS="-Wl,-framework,CoreFoundation -Wl,-framework,IOKit -Wl,-framework,Security"
     - *buildx_openocd
     - *dist_archive
@@ -157,17 +165,15 @@ build_linux:
     PLATFORM_NAME: "linux-amd64"
     CONF_HOST: "x86_64-linux-gnu"
     HOST_CC: ${CONF_HOST}-gcc
-  needs:
-    - job: style_check
+  needs: []
   script:
     - *get_release_name
-    - !reference [.add_gitlab_key, script]
-    - !reference [.submodules_mirror_update, script]
     - apt-get update || true
     - apt-get install systemd libudev-dev --force-yes -y # needed for hidapi build
     - *buildx_hidapi
     - *buildx_libjaylink
-    - export PKG_CONFIG_PATH=$PWD/hidapi-$HIDAPI_VER/dist/lib/pkgconfig/:$PWD/$LIBJAYLINK_VER/dist/lib/pkgconfig
+    - *buildx_jimtcl
+    - export PKG_CONFIG_PATH=$PWD/hidapi-$HIDAPI_VER/dist/lib/pkgconfig/:$PWD/$LIBJAYLINK_VER/dist/lib/pkgconfig:$PWD/$JIMTCL_VER/dist/lib/pkgconfig
     - ./bootstrap
     - mkdir _build
     - pushd _build/
@@ -183,12 +189,13 @@ build_linux_gcc_latest:
   stage: build_openocd
   tags:
     - build
-  allow_failure: true
-  needs:
-    - job: style_check
+  needs: []
+  variables:
+    CONF_HOST: ""
+    HOST_CC: "gcc"
   script:
-    - !reference [.add_gitlab_key, script]
-    - !reference [.submodules_mirror_update, script]
+    - *buildx_jimtcl
+    - export PKG_CONFIG_PATH=$PWD/$JIMTCL_VER/dist/lib/pkgconfig
     - ./bootstrap
     - ./configure ${OPENOCD_CONFIGURE_OPTS}
     - make -j`nproc`
@@ -198,38 +205,53 @@ build_linux_armhf_test:
   variables:
     CONF_HOST: "arm-linux-gnueabihf"
     PLATFORM_NAME: "linux-armhf-test"
-    TEST_CFLAGS: ""
-    GCOV_BUILD_OPTS: "--enable-build-gcov"
-
-build_linux_armhf_sanitizer_test:
-  extends: .build_linux_arm_template
-  variables:
-    CONF_HOST: "arm-linux-gnueabihf"
-    PLATFORM_NAME: "linux-armhf-test"
-    TEST_CFLAGS: "-Wl,--no-as-needed -ldl -fsanitize=address -fsanitize=undefined -fsanitize-recover=address -ggdb3"
+    GCOV_BUILD_OPTS: "--enable-gcov"
+  before_script:
+    - >
+      if [[ $CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_TYPE == "run_sanitizer_tests" ]] ; then
+        export TEST_CFLAGS="-Wl,--no-as-needed -ldl -fsanitize=address -fsanitize=undefined -fsanitize-recover=address -ggdb3"
+      fi
+  after_script:
+    - >
+      if [[ $CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_TYPE == "run_sanitizer_tests" ]] ; then
+        libasan=$(${CONF_HOST}-gcc -print-file-name=libasan.so);
+        libubsan=$(${CONF_HOST}-gcc -print-file-name=libubsan.so);
+        mkdir ${CONF_HOST};
+        cp $(dirname $libasan)/$(readlink $libasan) ${CONF_HOST};
+        cp $(dirname $libubsan)/$(readlink $libubsan) ${CONF_HOST};
+      fi
+  artifacts:
+    paths:
+      - ${DIST_ART_DIR}
+      - ${CONF_HOST}/lib*
+    when: always
+    expire_in: 2 weeks
 
 build_linux_armhf:
   extends: .build_linux_arm_template
   variables:
     CONF_HOST: "arm-linux-gnueabihf"
     PLATFORM_NAME: "linux-armhf"
-    TEST_CFLAGS: ""
 
 build_linux_armel:
   extends: .build_linux_arm_template
   variables:
     CONF_HOST: "arm-linux-gnueabi"
     PLATFORM_NAME: "linux-armel"
-    TEST_CFLAGS: ""
 
 build_linux_arm64:
   extends: .build_linux_arm_template
   variables:
     CONF_HOST: "aarch64-linux-gnu"
     PLATFORM_NAME: "linux-arm64"
-    TEST_CFLAGS: ""
 
-build_windows:
+build_linux_arm64_test:
+  extends: build_linux_armhf_test
+  variables:
+    CONF_HOST: "aarch64-linux-gnu"
+    PLATFORM_NAME: "linux-arm64-test"
+
+.build_windows_template: &build_windows_template
   stage: build_openocd
   image: $CI_DOCKER_REGISTRY/esp32-toolchain-win-cross
   tags:
@@ -239,28 +261,35 @@ build_windows:
       - ${DIST_ART_DIR}
     expire_in: 2 weeks
   variables:
-    CONF_HOST: "i686-w64-mingw32"
-    PLATFORM_NAME: "win32"
     ARCHIVE_TOOL: "zip -r"
     ARCHIVE_EXT: "zip"
+    CONF_HOST: "i686-w64-mingw32"
     INSTALL_TARGET: "install-strip"
     HOST_CC: ${CONF_HOST}-gcc
-  needs:
-    - job: style_check
+  needs: []
   script:
     - *get_release_name
-    - !reference [.add_gitlab_key, script]
-    - !reference [.submodules_mirror_update, script]
     - *buildx_libusb
     - export PKG_CONFIG_PATH=$PWD/$LIBUSB_VER/dist/lib/pkgconfig
     - *buildx_hidapi
     - *buildx_libjaylink
+    - *buildx_jimtcl
     - *buildx_zlib
-    - export PKG_CONFIG_PATH=$PWD/hidapi-$HIDAPI_VER/dist/lib/pkgconfig/:$PWD/$LIBJAYLINK_VER/dist/lib/pkgconfig:$PKG_CONFIG_PATH
+    - export PKG_CONFIG_PATH=$PWD/hidapi-$HIDAPI_VER/dist/lib/pkgconfig/:$PWD/$LIBJAYLINK_VER/dist/lib/pkgconfig:$PWD/$JIMTCL_VER/dist/lib/pkgconfig:$PKG_CONFIG_PATH
     - export LDFLAGS=$ZLIB_LDFLAGS
     - *buildx_openocd
     - cp $PWD/${ZLIB_VER}/dist/bin/zlib1.dll $DIST_INSTALLED_DIR/bin/
     - *dist_archive
+
+build_windows_win32:
+  extends: .build_windows_template
+  variables:
+    PLATFORM_NAME: "win32"
+
+build_windows_win64:
+  extends: .build_windows_template
+  variables:
+    PLATFORM_NAME: "win64"
 
 build_macos:
   <<: *build_macos_template
@@ -282,49 +311,50 @@ scan-build:
   stage: static_analyzers
   tags:
     - build
-  allow_failure: true
   variables:
     SCAN_BUILD_OUTPUT: "report"
+    CONF_HOST: ""
+    HOST_CC: "gcc"
   artifacts:
+    reports:
+      codequality:
+        - scanbuild.json
     paths:
       - ${SCAN_BUILD_OUTPUT}
-      - scanbuild_reference.html
     when: always
   script:
-    - !reference [.add_gitlab_key, script]
-    - !reference [.submodules_mirror_update, script]
+    - *buildx_jimtcl
+    - export PKG_CONFIG_PATH=$PWD/$JIMTCL_VER/dist/lib/pkgconfig
     - ./bootstrap
     - mkdir build-scanbuild
     - pushd build-scanbuild
     - scan-build ../configure
-    - scan-build -o out make -j`nproc` CFLAGS="-std=gnu99 -I. -I../../jimtcl"
+    - scan-build -o out make -j`nproc` CFLAGS="-std=gnu99 -I. -I../../${JIMTCL_VER}"
     - popd
     - ${ARCHIVE_TOOL} scan_build.${ARCHIVE_EXT} build-scanbuild/out
     - mkdir -p ${SCAN_BUILD_OUTPUT}
     - mv scan_build.${ARCHIVE_EXT} ${SCAN_BUILD_OUTPUT}
-    - cp build-scanbuild/out/*/index.html scanbuild_reference.html
-    - SCANBUILD_REF_FILE="tools/scanbuild_reference.txt"
-    - SCANBUILD_OUT_FILE="scanbuild_report.txt"
-    - python3 tools/scanbuild_parser.py -i scanbuild_reference.html -o $SCANBUILD_OUT_FILE
-    - python3 tools/scanbuild_parser.py -i tools/scanbuild_reference.html -o $SCANBUILD_REF_FILE
-    - ./tools/compare_static_analyzer_files.sh $SCANBUILD_OUT_FILE $SCANBUILD_REF_FILE
+    - python3 tools/generate_gitlab_report.py -t scanbuild -i build-scanbuild/out/*/index.html -o scanbuild.json
 
 sparse:
   stage: static_analyzers
   tags:
     - build
-  allow_failure: true
   variables:
     SPARSE_BUILD_OUTDIR: "sparse"
     SPARSE_BUILD_OUTFILE: "warnings.log"
+    CONF_HOST: ""
+    HOST_CC: "gcc"
   artifacts:
+    reports:
+      codequality:
+        - sparse.json
     paths:
       - ${SPARSE_BUILD_OUTDIR}
-      - sparse_reference.log
     when: always
   script:
-    - !reference [.add_gitlab_key, script]
-    - !reference [.submodules_mirror_update, script]
+    - *buildx_jimtcl
+    - export PKG_CONFIG_PATH=$PWD/$JIMTCL_VER/dist/lib/pkgconfig
     - ./bootstrap
     - mkdir build-sparse && pushd build-sparse
     - ../configure CC=cgcc CFLAGS="-Wsparse-all -Wno-declaration-after-statement -Wno-unknown-attribute -Wno-transparent-union -Wno-tautological-compare -Wno-vla -Wno-flexible-array-array -D__FLT_EVAL_METHOD__=0"
@@ -334,23 +364,19 @@ sparse:
     - ${ARCHIVE_TOOL} sparse_out.${ARCHIVE_EXT} build-sparse/${SPARSE_BUILD_OUTFILE}
     - mkdir -p ${SPARSE_BUILD_OUTDIR}
     - mv sparse_out.${ARCHIVE_EXT} ${SPARSE_BUILD_OUTDIR}
-    - SPARSE_REF_FILE="tools/sparse_reference.log"
-    - ./tools/compare_static_analyzer_files.sh build-sparse/${SPARSE_BUILD_OUTFILE} $SPARSE_REF_FILE sparse_reference.log
+    - python3 tools/generate_gitlab_report.py -t sparse -i build-sparse/${SPARSE_BUILD_OUTFILE} -o sparse.json
 
 build_linux_cmake:
   stage: build_openocd
   tags:
     - build
-  allow_failure: true
-  needs:
-    - job: style_check
+  needs: []
   variables:
     OPENOCD_CMAKE_CONFIGURE_OPTS: ""
   script:
-    - !reference [.add_gitlab_key, script]
     - !reference [.submodules_mirror_update, script]
     - mkdir build && cd build
-    - cmake .. -G Ninja
+    - cmake .. -D use_internal_jimtcl=ON -G Ninja
     - ninja
 
 # TODO: enable after updating CMake version in the docker image
@@ -359,13 +385,10 @@ build_linux_cmake:
   image: $CI_DOCKER_REGISTRY/esp32-toolchain-arm-cross:3
   tags:
     - build
-  allow_failure: true
-  needs:
-    - job: style_check
+  needs: []
   variables:
     OPENOCD_CMAKE_CONFIGURE_OPTS: ""
   script:
-    - !reference [.add_gitlab_key, script]
     - !reference [.submodules_mirror_update, script]
     - mkdir build && cd build
     - cmake .. -DCMAKE_TOOLCHAIN_FILE=cmake/cross/linux-armhf.cmake
@@ -377,13 +400,10 @@ build_linux_cmake:
   image: $CI_DOCKER_REGISTRY/esp32-toolchain-win-cross
   tags:
     - build
-  allow_failure: true
-  needs:
-    - job: style_check
+  needs: []
   variables:
     OPENOCD_CMAKE_CONFIGURE_OPTS: ""
   script:
-    - !reference [.add_gitlab_key, script]
     - !reference [.submodules_mirror_update, script]
     - mkdir build && cd build
     - cmake .. -DCMAKE_TOOLCHAIN_FILE=cmake/cross/mingw32.cmake

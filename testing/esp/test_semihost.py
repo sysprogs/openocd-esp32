@@ -22,7 +22,6 @@ def get_logger():
 ########################################################################
 #                         TESTS IMPLEMENTATION                         #
 ########################################################################
-@idf_ver_min_for_arch('5.0', ['riscv32'])
 class SemihostTestsImpl:
     """
     Test cases which are common for dual and single core modes. The test's scenario:
@@ -167,7 +166,6 @@ class SemihostTestsImpl:
             get_logger().info('Compare files [%s, %s]', self.fout_names[i], self.fin_names[i])
             self.assertTrue(filecmp.cmp(self.fout_names[i], self.fin_names[i]))
 
-    @only_for_arch(['xtensa'])
     def test_semihost_args(self):
         """
         This test checks that semihosting syscalls working properly with wrong argumented functions
@@ -176,7 +174,6 @@ class SemihostTestsImpl:
         self.add_bp('esp_vfs_semihost_unregister')
         self.run_to_bp(dbg.TARGET_STOP_REASON_BP, 'esp_vfs_semihost_unregister', tmo=120)
 
-    @idf_ver_min('5.0')
     def test_semihost_custom(self):
         """
         This test checks that custom syscalls working properly

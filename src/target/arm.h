@@ -58,11 +58,12 @@ enum arm_arch {
 	ARM_ARCH_V8M,
 };
 
-/** Known ARM implementor IDs */
-enum arm_implementor {
-	ARM_IMPLEMENTOR_ARM = 0x41,
-	ARM_IMPLEMENTOR_INFINEON = 0x49,
-	ARM_IMPLEMENTOR_REALTEK = 0x72,
+/** Known ARM implementer IDs */
+enum arm_implementer {
+	ARM_IMPLEMENTER_ARM = 0x41,
+	ARM_IMPLEMENTER_INFINEON = 0x49,
+	ARM_IMPLEMENTER_ARM_CHINA = 0x63,
+	ARM_IMPLEMENTER_REALTEK = 0x72,
 };
 
 /**
@@ -142,8 +143,8 @@ enum {
 	ARM_VFP_V3_FPSCR,
 };
 
-const char *arm_mode_name(unsigned psr_mode);
-bool is_arm_mode(unsigned psr_mode);
+const char *arm_mode_name(unsigned int psr_mode);
+bool is_arm_mode(unsigned int psr_mode);
 
 /** The PSR "T" and "J" bits define the mode of "classic ARM" cores. */
 enum arm_state {
@@ -231,11 +232,21 @@ struct arm {
 			uint32_t crn, uint32_t crm,
 			uint32_t *value);
 
+	/** Read coprocessor to two registers. */
+	int (*mrrc)(struct target *target, int cpnum,
+			uint32_t op, uint32_t crm,
+			uint64_t *value);
+
 	/** Write coprocessor register.  */
 	int (*mcr)(struct target *target, int cpnum,
 			uint32_t op1, uint32_t op2,
 			uint32_t crn, uint32_t crm,
 			uint32_t value);
+
+	/** Write coprocessor from two registers. */
+	int (*mcrr)(struct target *target, int cpnum,
+			uint32_t op, uint32_t crm,
+			uint64_t value);
 
 	void *arch_info;
 
@@ -247,7 +258,7 @@ struct arm {
 };
 
 /** Convert target handle to generic ARM target state handle. */
-static inline struct arm *target_to_arm(struct target *target)
+static inline struct arm *target_to_arm(const struct target *target)
 {
 	assert(target);
 	return target->arch_info;
@@ -283,11 +294,11 @@ extern const struct command_registration arm_command_handlers[];
 extern const struct command_registration arm_all_profiles_command_handlers[];
 
 int arm_arch_state(struct target *target);
-const char *arm_get_gdb_arch(struct target *target);
+const char *arm_get_gdb_arch(const struct target *target);
 int arm_get_gdb_reg_list(struct target *target,
 		struct reg **reg_list[], int *reg_list_size,
 		enum target_register_class reg_class);
-const char *armv8_get_gdb_arch(struct target *target);
+const char *armv8_get_gdb_arch(const struct target *target);
 int armv8_get_gdb_reg_list(struct target *target,
 		struct reg **reg_list[], int *reg_list_size,
 		enum target_register_class reg_class);
@@ -314,7 +325,7 @@ int arm_blank_check_memory(struct target *target,
 		struct target_memory_check_block *blocks, int num_blocks, uint8_t erased_value);
 
 void arm_set_cpsr(struct arm *arm, uint32_t cpsr);
-struct reg *arm_reg_current(struct arm *arm, unsigned regnum);
-struct reg *armv8_reg_current(struct arm *arm, unsigned regnum);
+struct reg *arm_reg_current(struct arm *arm, unsigned int regnum);
+struct reg *armv8_reg_current(struct arm *arm, unsigned int regnum);
 
 #endif /* OPENOCD_TARGET_ARM_H */
