@@ -385,7 +385,7 @@ static int esp_algo_flash_get_mappings(struct flash_bank *bank,
 		return ret;
 	}
 	if (run.ret_code != ESP_STUB_ERR_OK) {
-		LOG_ERROR("Failed to get flash maps (%" PRId32 ")!", run.ret_code);
+		LOG_WARNING("Failed to get flash maps (%" PRId32 ")!", run.ret_code);
 		if (run.ret_code == ESP_STUB_ERR_INVALID_IMAGE)
 			LOG_WARNING(
 				"Application image is invalid! Check configured binary flash offset 'appimage_offset'.");
@@ -395,7 +395,7 @@ static int esp_algo_flash_get_mappings(struct flash_bank *bank,
 			LOG_WARNING("Invalid magic number in app image!");
 		ret = ERROR_FAIL;
 	} else {
-		memcpy(flash_map, mp.value, sizeof(struct esp_flash_mapping));
+		flash_map->maps_num = target_buffer_get_u32(bank->target, mp.value + ESP_STUB_FLASHMAP_MAPSNUM_OFF);
 		if (flash_map->maps_num > ESP_FLASH_MAPS_MAX) {
 			LOG_ERROR("Too many flash mappings %d! Must be %d.",
 				flash_map->maps_num,
@@ -404,12 +404,19 @@ static int esp_algo_flash_get_mappings(struct flash_bank *bank,
 		} else if (flash_map->maps_num == 0) {
 			LOG_WARNING("Empty flash mapping!");
 		} else {
-			for (uint32_t i = 0; i < flash_map->maps_num; i++)
+			for (uint32_t i = 0; i < flash_map->maps_num; i++) {
+				flash_map->maps[i].phy_addr =
+					target_buffer_get_u32(bank->target, mp.value + ESP_STUB_FLASHMAP_PHYADDR_OFF(i));
+				flash_map->maps[i].load_addr =
+					target_buffer_get_u32(bank->target, mp.value + ESP_STUB_FLASHMAP_LOADADDR_OFF(i));
+				flash_map->maps[i].size =
+					target_buffer_get_u32(bank->target, mp.value + ESP_STUB_FLASHMAP_SIZE_OFF(i));
 				LOG_INFO("Flash mapping %d: 0x%x -> 0x%x, %d KB",
 					i,
 					flash_map->maps[i].phy_addr,
 					flash_map->maps[i].load_addr,
 					flash_map->maps[i].size / 1024);
+			}
 		}
 	}
 	destroy_mem_param(&mp);
@@ -426,11 +433,6 @@ int esp_algo_flash_erase(struct flash_bank *bank, unsigned int first, unsigned i
 		return ERROR_TARGET_NOT_HALTED;
 	}
 	assert((first <= last) && (last < bank->num_sectors));
-	if (esp_info->hw_flash_base + first * esp_info->sec_sz <
-		esp_info->flash_min_offset) {
-		LOG_ERROR("Invalid offset!");
-		return ERROR_FAIL;
-	}
 
 	struct duration bench;
 	duration_start(&bench);
@@ -485,7 +487,7 @@ static int esp_algo_flash_rw_do(struct target *target, void *priv)
 			return retval;
 		}
 		/* transfer block */
-		LOG_DEBUG("Transfer block %d, %d bytes", block_id, len);
+		LOG_DEBUG("Transfer block %d, read %d bytes from target", block_id, len);
 		retval = rw->xfer(target, block_id, len, rw);
 		if (retval == ERROR_WAIT) {
 			LOG_DEBUG("Block not ready");
@@ -577,6 +579,7 @@ static int esp_algo_flash_write_xfer(struct target *target, uint32_t block_id, u
 	}
 	state->rw.total_count += wr_sz;
 	state->prev_block_id = block_id;
+	LOG_DEBUG("Transferred %u bytes to target. %u/%u", wr_sz, state->rw.total_count, state->rw.count);
 
 	return ERROR_OK;
 }
@@ -602,7 +605,7 @@ static int esp_algo_flash_write_state_init(struct target *target,
 	/* alloc memory for stub flash write arguments in data working area */
 	if (target_alloc_working_area(target, sizeof(state->stub_wargs),
 			&state->stub_wargs_area) != ERROR_OK) {
-		LOG_ERROR("no working area available, can't alloc space for stub flash arguments");
+		LOG_ERROR("no working area available, can't alloc space for stub flash arguments!");
 		return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
 	}
 
@@ -690,10 +693,6 @@ int esp_algo_flash_write(struct flash_bank *bank, const uint8_t *buffer,
 	uint32_t compressed_len = 0;
 	uint32_t stack_size = 1024 + ESP_STUB_UNZIP_BUFF_SIZE;
 
-	if (esp_info->hw_flash_base + offset < esp_info->flash_min_offset) {
-		LOG_ERROR("Invalid offset!");
-		return ERROR_FAIL;
-	}
 	if (offset & 0x3UL) {
 		LOG_ERROR("Unaligned offset!");
 		return ERROR_FAIL;

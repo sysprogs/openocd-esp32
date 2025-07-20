@@ -252,13 +252,13 @@ int esp_riscv_poll(struct target *target)
 					get_field(dmstatus, DM_DMSTATUS_ALLHALTED) == 0) {
 					LOG_TARGET_DEBUG(target, "Halt core");
 					res = esp_riscv_core_halt(target);
-					if (res == ERROR_OK) {
-						res = esp_riscv->wdt_disable ? esp_riscv->wdt_disable(target) : ERROR_FAIL;
-						if (res != ERROR_OK)
-							LOG_TARGET_ERROR(target, "Failed to disable WDTs (%d)!", res);
-					} else {
+					if (res != ERROR_OK)
 						LOG_TARGET_ERROR(target, "Failed to halt core (%d)!", res);
-					}
+					else
+						/* We don't want GDB involved to halted event. But at the same we want to invoke TCL event
+							handler to disable watchdog. Thats why we call DEBUG_HALTED event here.
+						*/
+						target_call_event_callbacks(target, TARGET_EVENT_DEBUG_HALTED);
 				}
 			}
 
@@ -275,16 +275,15 @@ int esp_riscv_poll(struct target *target)
 			esp_riscv->apptrace.ctrl_addr = 0;
 
 			if (esp_riscv->is_flash_boot && esp_riscv->is_flash_boot(strap_reg)) {
-				/* enable ebreaks */
-				res = esp_riscv_core_ebreaks_enable(target);
-				if (res != ERROR_OK)
-					LOG_TARGET_ERROR(target, "Failed to enable EBREAKS handling (%d)!", res);
 				if (get_field(dmstatus, DM_DMSTATUS_ALLHALTED) == 0) {
 					LOG_TARGET_DEBUG(target, "Resume core");
 					res = esp_riscv_core_resume(target);
-					if (res != ERROR_OK)
+					if (res != ERROR_OK) {
 						LOG_TARGET_ERROR(target, "Failed to resume core (%d)!", res);
-					LOG_TARGET_DEBUG(target, "resumed core");
+					} else {
+						LOG_TARGET_DEBUG(target, "resumed core");
+						target_call_event_callbacks(target, TARGET_EVENT_DEBUG_RESUMED);
+					}
 				}
 			}
 		}
@@ -315,9 +314,6 @@ int esp_riscv_semihosting(struct target *target)
 	struct semihosting *semihosting = target->semihosting;
 
 	LOG_DEBUG("op:(%x) param: (%" PRIx64 ")", semihosting->op, semihosting->param);
-
-	if (esp_riscv->semi_ops && esp_riscv->semi_ops->prepare)
-		esp_riscv->semi_ops->prepare(target);
 
 	switch (semihosting->op) {
 	case ESP_SEMIHOSTING_SYS_APPTRACE_INIT:
@@ -924,20 +920,6 @@ int esp_riscv_core_resume(struct target *target)
 	return ERROR_FAIL;
 }
 
-int esp_riscv_core_ebreaks_enable(struct target *target)
-{
-	riscv_reg_t dcsr;
-	RISCV_INFO(r);
-	int result = r->get_register(target, &dcsr, GDB_REGNO_DCSR);
-	if (result != ERROR_OK)
-		return result;
-	LOG_DEBUG("DCSR: %" PRIx64, dcsr);
-	dcsr = set_field(dcsr, CSR_DCSR_EBREAKM, 1);
-	dcsr = set_field(dcsr, CSR_DCSR_EBREAKS, 1);
-	dcsr = set_field(dcsr, CSR_DCSR_EBREAKU, 1);
-	return r->set_register(target, GDB_REGNO_DCSR, dcsr);
-}
-
 void esp_riscv_deinit_target(struct target *target)
 {
 	struct esp_riscv_common *esp_riscv = target_to_esp_riscv(target);
@@ -948,21 +930,6 @@ void esp_riscv_deinit_target(struct target *target)
 	free(esp_riscv->target_wp_addr);
 
 	riscv_target.deinit_target(target);
-}
-
-COMMAND_HANDLER(esp_riscv_gdb_detach_command)
-{
-	if (CMD_ARGC != 0)
-		return ERROR_COMMAND_SYNTAX_ERROR;
-
-	struct target *target = get_current_target(CMD_CTX);
-	if (!target) {
-		LOG_ERROR("No target selected");
-		return ERROR_FAIL;
-	}
-
-	struct esp_riscv_common *esp_riscv = target_to_esp_riscv(target);
-	return esp_common_handle_gdb_detach(target, &esp_riscv->esp);
 }
 
 COMMAND_HANDLER(esp_riscv_halted_command)
@@ -982,7 +949,7 @@ COMMAND_HANDLER(esp_riscv_halted_command)
 const struct command_registration esp_riscv_command_handlers[] = {
 	{
 		.name = "gdb_detach_handler",
-		.handler = esp_riscv_gdb_detach_command,
+		.handler = esp_common_gdb_detach_command,
 		.mode = COMMAND_ANY,
 		.help = "Handles gdb-detach events and makes necessary cleanups such as removing flash breakpoints",
 		.usage = "",

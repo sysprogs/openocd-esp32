@@ -167,7 +167,8 @@ static void initialize_gpio(enum adapter_gpio_config_index idx)
 	}
 
 	/* Direction for non push-pull is already set by set_gpio_value() */
-	if (adapter_gpio_config[idx].drive == ADAPTER_GPIO_DRIVE_MODE_PUSH_PULL)
+	if (adapter_gpio_config[idx].drive == ADAPTER_GPIO_DRIVE_MODE_PUSH_PULL
+		&& adapter_gpio_config[idx].init_state != ADAPTER_GPIO_INIT_STATE_INPUT)
 		OUT_GPIO(adapter_gpio_config[idx].gpio_num);
 	bcm2835_gpio_synchronize();
 }
@@ -330,7 +331,7 @@ COMMAND_HANDLER(bcm2835gpio_handle_peripheral_base)
 	}
 
 	tmp_base = bcm2835_peri_base;
-	command_print(CMD, "BCM2835 GPIO: peripheral_base = 0x%08" PRIu64,
+	command_print(CMD, "BCM2835 GPIO: peripheral_base = 0x%08" PRIx64,
 				  tmp_base);
 	return ERROR_OK;
 }
