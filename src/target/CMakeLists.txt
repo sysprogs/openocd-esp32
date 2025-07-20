@@ -117,11 +117,22 @@ add_library(target
 	espressif/esp32s2.c
 	espressif/esp32s3.c
 	xtensa/xtensa.c
-	xtensa/xtensa_algorithm.c
 	xtensa/xtensa_debug_module.c
 	espressif/esp32p4.c
 	xtensa/xtensa_chip.c
-	xtensa/xtensa_fileio.c)
+	xtensa/xtensa_fileio.c
+	espressif/esp32c5.c
+	espressif/esp32c61.c
+	espressif/esp32h4.c
+	espressif/esp_xtensa_algorithm.c
+	openrisc/jsp_server.c
+	openrisc/or1k.c
+	openrisc/or1k_du_adv.c
+	openrisc/or1k_tap_mohor.c
+	openrisc/or1k_tap_vjtag.c
+	openrisc/or1k_tap_xilinx_bscan.c
+	riscv/debug_defines.c
+	riscv/debug_reg_printer.c)
 target_include_directories(target PRIVATE ../..)
 	
 SET_TARGET_PROPERTIES(target PROPERTIES COMPILE_FLAGS -I${CMAKE_CURRENT_BINARY_DIR})

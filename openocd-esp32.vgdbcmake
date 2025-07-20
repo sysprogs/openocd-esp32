@@ -1,5 +1,5 @@
 <?xml version="1.0"?>
-<VisualGDBProjectSettings2 xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+<VisualGDBProjectSettings2 xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <Project xsi:type="com.visualgdb.project.windows">
     <CustomSourceDirectories>
       <Directories />
@@ -13,8 +13,8 @@
     <ToolchainID>
       <ID>com.visualgdb.mingw32</ID>
       <Version>
-        <GCC>9.1.0</GCC>
-        <GDB>8.3</GDB>
+        <GCC>12.2.0</GCC>
+        <GDB>12.1</GDB>
         <Revision>1</Revision>
       </Version>
     </ToolchainID>
@@ -95,7 +95,9 @@
       <DefaultHeaderDiscoveryMode>None</DefaultHeaderDiscoveryMode>
       <EnableFastUpToDateCheck>true</EnableFastUpToDateCheck>
       <StartupTarget>openocd</StartupTarget>
+      <DetectMissingSolutionConfigurations>false</DetectMissingSolutionConfigurations>
     </ProjectModeSettings>
+    <LoadCMakePresets>false</LoadCMakePresets>
   </Build>
   <CustomBuild>
     <PreSyncActions />
@@ -161,10 +163,12 @@
       <EnableAsyncExecutionMode>false</EnableAsyncExecutionMode>
       <AsyncModeSupportsBreakpoints>true</AsyncModeSupportsBreakpoints>
       <TemporaryBreakConsolidationTimeout>0</TemporaryBreakConsolidationTimeout>
+      <BacktraceFrameLimit>0</BacktraceFrameLimit>
       <EnableNonStopMode>false</EnableNonStopMode>
       <MaxBreakpointLimit>0</MaxBreakpointLimit>
       <EnableVerboseMode>true</EnableVerboseMode>
       <EnablePrettyPrinters>false</EnablePrettyPrinters>
+      <EnableAbsolutePathReporting>true</EnableAbsolutePathReporting>
     </AdditionalGDBSettings>
     <LaunchGDBSettings xsi:type="GDBLaunchParametersNewInstance">
       <DebuggedProgram>$(TargetPath)</DebuggedProgram>

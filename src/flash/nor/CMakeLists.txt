@@ -47,7 +47,6 @@ add_library(ocdflashnor
 	psoc6.c
 	qn908x.c
 	renesas_rpchf.c
-	rp2040.c
 	rsl10.c
 	sfdp.c
 	sh_qspi.c
@@ -83,10 +82,16 @@ add_library(ocdflashnor
 	sh_qspi.c
 	stmqspi.c
 	npcx.c
-	rp2040.c
 	esp32c2.c
 	esp32c6.c
 	esp32h2.c
-	rsl10.c)
+	rsl10.c
+	dw-spi.c
+	eneispif.c
+	esp32c5.c
+	esp32c61.c
+	esp32p4.c
+	mspm0.c
+	rp2xxx.c)
 
 target_include_directories(ocdflashnor PRIVATE ../../..)
