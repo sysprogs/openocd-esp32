@@ -43,10 +43,22 @@
 		<ScriptFile>target/esp32c6.cfg</ScriptFile>
 	</TargetDeviceFamily>
 	<TargetDeviceFamily>
+		<ID>ESP32C5</ID>
+		<Name>ESP32C5</Name>
+		<MatchRegex>^ESP32C5$</MatchRegex>
+		<ScriptFile>target/esp32c5.cfg</ScriptFile>
+	</TargetDeviceFamily>
+	<TargetDeviceFamily>
 		<ID>ESP32H2</ID>
 		<Name>ESP32H2</Name>
 		<MatchRegex>^ESP32H2$</MatchRegex>
 		<ScriptFile>target/esp32h2.cfg</ScriptFile>
+	</TargetDeviceFamily>
+	<TargetDeviceFamily>
+		<ID>ESP32H4</ID>
+		<Name>ESP32H4</Name>
+		<MatchRegex>^ESP32H4$</MatchRegex>
+		<ScriptFile>target/esp32h4.cfg</ScriptFile>
 	</TargetDeviceFamily>
 	<TargetDeviceFamily>
 		<ID>ESP32P4</ID>

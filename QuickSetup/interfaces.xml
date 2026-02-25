@@ -191,7 +191,7 @@
 	<ProgrammingInterface>
 		<ID>esp32-devkit</ID>
 		<Name>ESP32 Devkit</Name>
-		<ScriptFile>interface/ftdi/esp32_devkitj_v1.cfg</ScriptFile>
+		<ScriptFile>interface/ftdi/esp_ftdi.cfg</ScriptFile>
 		<UsbIdentities>
 			<UsbIdentity>
 				<VID>0403</VID>
