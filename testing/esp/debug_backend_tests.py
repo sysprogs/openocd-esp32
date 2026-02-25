@@ -7,6 +7,7 @@ import unittest
 import importlib
 import sys
 import re
+import subprocess
 import debug_backend as dbg
 
 # TODO: fixed???
@@ -123,8 +124,10 @@ class GDBUtils:
                             log_file_handler=log_file,
                             gdb_log_folder=gdb_log)
 
-        if debug_oocd > 2 or os.getenv('TEST_SANITIZERS'):
+        if debug_oocd > 2:
             _gdb_inst.tmo_scale_factor = 5
+        elif os.getenv('TEST_SANITIZERS'):
+            _gdb_inst.tmo_scale_factor = 10
         else:
             _gdb_inst.tmo_scale_factor = 3
         _gdb_inst.gdb_set('remotetimeout', '%d' % remote_tmo)
@@ -180,13 +183,16 @@ def skip_for_chip(chips_to_skip, reason=None):
             break
     return unittest.skipIf(skip, reason)
 
-def skip_for_chip_and_ver(ver_strs, chips_to_skip, reason=None):
+def skip_for_chip_and_ver(chips_to_skip, ver_strs, reason=None):
     if reason is None:
         reason = "for the '%s' for the IDF_VER='%s'" % (id, testee_info.idf_ver)
-    # check major and minor numbers only.
-    v1 = repr(testee_info.idf_ver).split('.')[:2]
-    v2 = [ver_str.split('.')[:2] for ver_str in ver_strs]
-    skip = testee_info.chip in chips_to_skip and v1 in v2
+    skip = False
+    if testee_info.chip in chips_to_skip:
+        # Convert version strings to IdfVersion objects and compare
+        for ver_str in ver_strs:
+            if testee_info.idf_ver == IdfVersion.fromstr(ver_str):
+                skip = True
+                break
     return unittest.skipIf(skip, reason)
 
 def skip_for_arch(archs_to_skip, reason=None):
@@ -235,10 +241,6 @@ def idf_ver_min_for_chip(ver_str, chips_to_skip, reason=None):
             return idf_ver_min(ver_str, reason)
     # do not skip if chip is not found
     return unittest.skipIf(False, "")
-
-def run_all_cores(func):
-    func._run_all_cores = True
-    return func
 
 class DebuggerTestError(RuntimeError):
     """ Base class for debugger's test errors
@@ -538,6 +540,7 @@ class DebuggerTestAppTests(DebuggerTestsBase):
         self.test_app_cfg = DebuggerTestAppConfig()
         self.bpns = []
         self.wps = {}
+        self.main_reached = False
 
     def setUp(self):
         """ Setup test.
@@ -562,9 +565,22 @@ class DebuggerTestAppTests(DebuggerTestsBase):
         # TODO: chip dependent
         self.oocd.set_appimage_offset(app_flash_off)
         self.gdb.connect()
+        # reset to cleanup FreeRTOS data, otherwise rtos_data->esp_symbols can be initialized from previous appimage
+        self.gdb.target_reset()
+        rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 10)
         bp = self.gdb.add_bp(self.test_app_cfg.entry_point, hw=True)
         self.resume_exec()
-        rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 10)
+        try:
+            rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 10)
+        except:
+            if not self.main_reached:
+                self.gdb.disconnect()
+                self.oocd.stop()
+                cmd = ['esptool.py', '-p', self.port_name, '--no-stub', 'chip_id']
+                subprocess.run(cmd)
+                os._exit(os.EX_TEMPFAIL)
+            raise
+        self.main_reached = True
         # workarounds for strange debugger's behaviour
         if rsn == dbg.TARGET_STOP_REASON_SIGINT:
             get_logger().warning('Unexpected SIGINT during setup! Apply workaround...')
@@ -719,27 +735,6 @@ class DebuggerGenericTestAppTestsDual(DebuggerGenericTestAppTests):
         self.test_app_cfg.bin_dir = os.path.join('output', 'default')
         self.test_app_cfg.build_dir = os.path.join('builds', 'default')
         self.args = []
-
-    def __init_subclass__(cls):
-        # Only apply for esp32p4 to run tests also on cpu0, until single core tesets are enabled (OCD-1005)
-        if testee_info.chip != "esp32p4":
-            return
-        for fname in dir(cls):
-            f = getattr(cls, fname)
-            if getattr(f, '_run_all_cores', False):
-                setattr(cls, fname, cls._runtest_all_cores(f))
-
-    def _runtest_all_cores(func):
-        def test_wrapper_dual(self):
-            # setup was already called
-            self.test_app_cfg.active_core = 0
-            func(self) # run on cpu0
-            self.tearDown()
-            self.setUp()
-            self.test_app_cfg.active_core = 1
-            func(self) # run on cpu1
-            # teaddown gets called after
-        return test_wrapper_dual
 
 
 class DebuggerGenericTestAppTestsSingle(DebuggerGenericTestAppTests):

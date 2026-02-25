@@ -18,6 +18,7 @@
 
 #include "register.h"
 #include <helper/binarybuffer.h>
+#include <helper/string_choices.h>
 #include <helper/command.h>
 
 #include <stdlib.h>
@@ -138,7 +139,7 @@ int armv7a_read_ttbcr(struct target *target)
 
 	ttbcr_n = ttbcr & 0x7;
 	armv7a->armv7a_mmu.ttbcr = ttbcr;
-	armv7a->armv7a_mmu.cached = 1;
+	armv7a->armv7a_mmu.cached = true;
 
 	for (ttbidx = 0; ttbidx < 2; ttbidx++) {
 		/*  MRC p15,0,<Rt>,c2,c0,ttbidx */
@@ -157,7 +158,7 @@ int armv7a_read_ttbcr(struct target *target)
 	armv7a->armv7a_mmu.ttbr_range[1] = 0xffffffff;
 	armv7a->armv7a_mmu.ttbr_mask[0] = 0xffffffff << (14 - ttbcr_n);
 	armv7a->armv7a_mmu.ttbr_mask[1] = 0xffffffff << 14;
-	armv7a->armv7a_mmu.cached = 1;
+	armv7a->armv7a_mmu.cached = true;
 
 	retval = armv7a_read_midr(target);
 	if (retval != ERROR_OK)
@@ -186,7 +187,7 @@ int armv7a_handle_cache_info_command(struct command_invocation *cmd,
 
 	int cl;
 
-	if (armv7a_cache->info == -1) {
+	if (!armv7a_cache->info_valid) {
 		command_print(cmd, "cache not yet identified");
 		return ERROR_OK;
 	}
@@ -426,7 +427,7 @@ int armv7a_identify_cache(struct target *target)
 			armv7a_cache_flush_all_data;
 	}
 
-	armv7a->armv7a_mmu.armv7a_cache.info = 1;
+	armv7a->armv7a_mmu.armv7a_cache.info_valid = true;
 done:
 	dpm->finish(dpm);
 	armv7a_read_mpidr(target);
@@ -472,7 +473,7 @@ int armv7a_init_arch_info(struct target *target, struct armv7a_common *armv7a)
 	armv7a->arm.target = target;
 	armv7a->arm.common_magic = ARM_COMMON_MAGIC;
 	armv7a->common_magic = ARMV7_COMMON_MAGIC;
-	armv7a->armv7a_mmu.armv7a_cache.info = -1;
+	armv7a->armv7a_mmu.armv7a_cache.info_valid = false;
 	armv7a->armv7a_mmu.armv7a_cache.outer_cache = NULL;
 	armv7a->armv7a_mmu.armv7a_cache.flush_all_data_cache = NULL;
 	return ERROR_OK;
@@ -480,10 +481,6 @@ int armv7a_init_arch_info(struct target *target, struct armv7a_common *armv7a)
 
 int armv7a_arch_state(struct target *target)
 {
-	static const char *state[] = {
-		"disabled", "enabled"
-	};
-
 	struct armv7a_common *armv7a = target_to_armv7a(target);
 	struct arm *arm = &armv7a->arm;
 
@@ -496,13 +493,13 @@ int armv7a_arch_state(struct target *target)
 
 	if (armv7a->is_armv7r) {
 		LOG_TARGET_USER(target, "D-Cache: %s, I-Cache: %s",
-			state[armv7a->armv7a_mmu.armv7a_cache.d_u_cache_enabled],
-			state[armv7a->armv7a_mmu.armv7a_cache.i_cache_enabled]);
+			str_enabled_disabled(armv7a->armv7a_mmu.armv7a_cache.d_u_cache_enabled),
+			str_enabled_disabled(armv7a->armv7a_mmu.armv7a_cache.i_cache_enabled));
 	} else {
 		LOG_TARGET_USER(target, "MMU: %s, D-Cache: %s, I-Cache: %s",
-			state[armv7a->armv7a_mmu.mmu_enabled],
-			state[armv7a->armv7a_mmu.armv7a_cache.d_u_cache_enabled],
-			state[armv7a->armv7a_mmu.armv7a_cache.i_cache_enabled]);
+			str_enabled_disabled(armv7a->armv7a_mmu.mmu_enabled),
+			str_enabled_disabled(armv7a->armv7a_mmu.armv7a_cache.d_u_cache_enabled),
+			str_enabled_disabled(armv7a->armv7a_mmu.armv7a_cache.i_cache_enabled));
 	}
 
 	if (arm->core_mode == ARM_MODE_ABT)

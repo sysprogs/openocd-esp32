@@ -13,11 +13,7 @@
 #include "freertos/task.h"
 #include "gen_ut_app.h"
 #if CONFIG_IDF_TARGET_ARCH_XTENSA
-#if (UT_IDF_VER_MAJOR == 5) && (UT_IDF_VER_MINOR <= 1)
-#include "freertos/xtensa_api.h"
-#else
 #include "xtensa_api.h"
-#endif
 #include "xtensa/core-macros.h"
 #endif
 
@@ -47,13 +43,15 @@ extern ut_result_t thread_test_do(int test_num, int core_num);
 extern ut_result_t tracing_test_do(int test_num, int core_num);
 extern ut_result_t semihost_test_do(int test_num, int core_num);
 extern ut_result_t special_test_do(int test_num, int core_num);
+extern ut_result_t lpcore_test_do(int test_num,  int core_num);
 
 static test_func_t s_test_funcs[] = {
     gcov_test_do,
     thread_test_do,
     tracing_test_do,
     semihost_test_do,
-    special_test_do // test num start from 800
+    special_test_do, // test num start from 800
+    lpcore_test_do
     //TODO: auto-manage test numbers and addition of new tests
 };
 

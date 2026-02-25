@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-AC_PREREQ(2.69)
+AC_PREREQ([2.69])
 AC_INIT([openocd], [v0.12.0],
   [OpenOCD Mailing List <openocd-devel@lists.sourceforge.net>])
 AC_CONFIG_SRCDIR([src/openocd.c])
-AC_CONFIG_AUX_DIR([.])
+AC_CONFIG_AUX_DIR([build-aux])
 
 m4_include([config_subdir.m4])dnl
 
@@ -70,6 +70,7 @@ AC_CHECK_HEADERS([netdb.h])
 AC_CHECK_HEADERS([poll.h])
 AC_CHECK_HEADERS([strings.h])
 AC_CHECK_HEADERS([sys/ioctl.h])
+AC_CHECK_HEADERS([sys/mman.h])
 AC_CHECK_HEADERS([sys/param.h])
 AC_CHECK_HEADERS([sys/select.h])
 AC_CHECK_HEADERS([sys/stat.h])
@@ -77,7 +78,7 @@ AC_CHECK_HEADERS([sys/sysctl.h])
 AC_CHECK_HEADERS([sys/time.h])
 AC_CHECK_HEADERS([sys/types.h])
 AC_CHECK_HEADERS([unistd.h])
-AC_CHECK_HEADERS([arpa/inet.h ifaddrs.h netinet/in.h netinet/tcp.h net/if.h], [], [], [dnl
+AC_CHECK_HEADERS([arpa/inet.h netinet/in.h netinet/tcp.h], [], [], [dnl
 #include <stdio.h>
 #ifdef STDC_HEADERS
 # include <stdlib.h>
@@ -130,6 +131,7 @@ m4_define([ADAPTER_OPT], [m4_translit(ADAPTER_ARG($1), [_], [-])])
 
 m4_define([USB1_ADAPTERS],
 	[[[ftdi], [MPSSE mode of FTDI based devices], [FTDI]],
+	[[ch347], [CH347 based devices], [CH347]],
 	[[stlink], [ST-Link Programmer], [HLADAPTER_STLINK]],
 	[[ti_icdi], [TI ICDI JTAG Programmer], [HLADAPTER_ICDI]],
 	[[ulink], [Keil ULINK JTAG Programmer], [ULINK]],
@@ -178,11 +180,14 @@ m4_define([REMOTE_BITBANG_ADAPTER],
 m4_define([LIBJAYLINK_ADAPTERS],
 	[[[jlink], [SEGGER J-Link Programmer], [JLINK]]])
 
-m4_define([PCIE_ADAPTERS],
-	[[[xlnx_pcie_xvc], [Xilinx XVC/PCIe], [XLNX_PCIE_XVC]]])
+m4_define([XVC_ADAPTERS],
+	[[[xlnx_xvc], [Xilinx XVC PCIe and AXI drives], [XLNX_XVC]]])
 
 m4_define([SERIAL_PORT_ADAPTERS],
 	[[[buspirate], [Bus Pirate], [BUS_PIRATE]]])
+
+m4_define([PARALLEL_PORT_ADAPTER],
+	[[[parport], [PC Parallel Port], [PARPORT]]])
 
 m4_define([LINUXSPIDEV_ADAPTER],
 	[[[linuxspidev], [Linux spidev driver], [LINUXSPIDEV]]])
@@ -200,6 +205,9 @@ m4_define([RSHIM_ADAPTER],
 
 m4_define([AMTJTAGACCEL_ADAPTER],
 	[[[amtjtagaccel], [Amontec JTAG-Accelerator driver], [AMTJTAGACCEL]]])
+
+m4_define([CMSIS_DAP_TCP_ADAPTER],
+	[[[cmsis_dap_tcp], [CMSIS-DAP v2 compliant dongle (TCP)], [CMSIS_DAP_TCP]]])
 
 m4_define([HOST_ARM_BITBANG_ADAPTERS],
 	[[[ep93xx], [Bitbanging on EP93xx-based SBCs], [EP93XX]],
@@ -260,33 +268,20 @@ AS_IF([test "x$enable_gcov" = "xyes"], [
   AC_DEFINE([USE_GCOV], [0], [0 to leave coverage collection disabled.])
 ])
 
-# set default verbose options, overridden by following options
-debug_usb_io=no
+# set default for debug_usb_comms, overridden by following options
 debug_usb_comms=no
 
 AC_ARG_ENABLE([verbose],
   AS_HELP_STRING([--enable-verbose],
       [Enable verbose JTAG I/O messages (for debugging).]),
   [
-  debug_usb_io=$enableval
   debug_usb_comms=$enableval
   ], [])
-
-AC_ARG_ENABLE([verbose_usb_io],
-  AS_HELP_STRING([--enable-verbose-usb-io],
-      [Enable verbose USB I/O messages (for debugging)]),
-  [debug_usb_io=$enableval], [])
 
 AC_ARG_ENABLE([verbose_usb_comms],
   AS_HELP_STRING([--enable-verbose-usb-comms],
       [Enable verbose USB communication messages (for debugging)]),
   [debug_usb_comms=$enableval], [])
-
-AC_MSG_CHECKING([whether to enable verbose USB I/O messages]);
-AC_MSG_RESULT([$debug_usb_io])
-AS_IF([test "x$debug_usb_io" = "xyes"], [
-  AC_DEFINE([_DEBUG_USB_IO_],[1], [Print verbose USB I/O messages])
-])
 
 AC_MSG_CHECKING([whether to enable verbose USB communication messages]);
 AC_MSG_RESULT([$debug_usb_comms])
@@ -307,15 +302,15 @@ AS_IF([test "x$debug_malloc" = "xyes" -a "x$have_glibc" = "xyes"], [
 ])
 
 m4_define([AC_ARG_ADAPTERS], [
-  m4_foreach([adapterTuple], [$1],
-	[AC_ARG_ENABLE(ADAPTER_OPT([adapterTuple]),
-		AS_HELP_STRING([--enable-ADAPTER_OPT([adapterTuple])[[[=yes/no/auto]]]],
-			[Enable building support for the ]ADAPTER_DESC([adapterTuple])[ (default is $2)]),
+  m4_foreach([adapter_driver], [$1],
+	[AC_ARG_ENABLE(ADAPTER_OPT([adapter_driver]),
+		AS_HELP_STRING([--enable-ADAPTER_OPT([adapter_driver])[[[=yes/no/auto]]]],
+			[Enable building support for the ]ADAPTER_DESC([adapter_driver])[ (default is $2)]),
 		[case "${enableval}" in
 			yes|no|auto) ;;
-			*) AC_MSG_ERROR([Option --enable-ADAPTER_OPT([adapterTuple]) has invalid value "${enableval}".]) ;;
+			*) AC_MSG_ERROR([Option --enable-ADAPTER_OPT([adapter_driver]) has invalid value "${enableval}".]) ;;
 			esac],
-		[ADAPTER_VAR([adapterTuple])=$2])
+		[ADAPTER_VAR([adapter_driver])=$2])
   ])
 ])
 
@@ -336,11 +331,13 @@ AC_ARG_ADAPTERS([
   JTAG_DPI_ADAPTER,
   JTAG_VPI_ADAPTER,
   RSHIM_ADAPTER,
-  PCIE_ADAPTERS,
-  LIBJAYLINK_ADAPTERS
+  XVC_ADAPTERS,
+  LIBJAYLINK_ADAPTERS,
+  CMSIS_DAP_TCP_ADAPTER
   ],[auto])
 
 AC_ARG_ADAPTERS([
+  PARALLEL_PORT_ADAPTER,
   AMTJTAGACCEL_ADAPTER
   ],[no])
 
@@ -354,10 +351,6 @@ AC_ARG_ADAPTERS([
 AC_ARG_ADAPTERS([HOST_ARM_BITBANG_ADAPTERS],[no])
 AC_ARG_ADAPTERS([HOST_ARM_OR_AARCH64_BITBANG_ADAPTERS],[no])
 
-AC_ARG_ENABLE([parport],
-  AS_HELP_STRING([--enable-parport], [Enable building the pc parallel port driver]),
-  [build_parport=$enableval], [build_parport=no])
-
 AC_ARG_ENABLE([parport_ppdev],
   AS_HELP_STRING([--disable-parport-ppdev],
       [Disable use of ppdev (/dev/parportN) for parport (for x86 only)]),
@@ -365,7 +358,7 @@ AC_ARG_ENABLE([parport_ppdev],
 
 AC_ARG_ENABLE([parport_giveio],
     AS_HELP_STRING([--enable-parport-giveio],
-      [Enable use of giveio for parport (for CygWin only)]),
+      [Enable use of giveio for parport (deprecated, for CygWin only)]),
     [parport_use_giveio=$enableval], [parport_use_giveio=])
 
 AC_ARG_ENABLE([gw16012],
@@ -389,7 +382,7 @@ AS_CASE([$host_os],
       ])
     ])
 
-    AS_IF([test "x$build_dmem" = "xyes"], [
+    AS_IF([test "x$enable_dmem" = "xyes"], [
       AC_MSG_ERROR([dmem is only available on linux])
     ])
 ])
@@ -421,9 +414,8 @@ AS_CASE(["${host_cpu}"],
   [i?86|x86*], [],
   [
     AS_IF([test "x$parport_use_ppdev" = "xno"], [
-      AC_MSG_WARN([--disable-parport-ppdev is not supported by the host CPU])
+      AC_MSG_ERROR([--disable-parport-ppdev is not supported by the host CPU])
     ])
-    parport_use_ppdev=yes
 ])
 
 can_build_buspirate=yes
@@ -444,7 +436,7 @@ AS_CASE([$host_os],
     ], [
       is_cygwin=yes
       # sys/io.h needed under cygwin for parport access
-      AS_IF([test "x$build_parport" = "xyes"], [
+      AS_IF([test "x$enable_parport" != "xno"], [
         AC_CHECK_HEADERS([sys/io.h],[],AC_MSG_ERROR([Please install the cygwin ioperm package]))
       ])
     ])
@@ -509,13 +501,6 @@ AS_IF([test "x$is_darwin" = "xyes"], [
 
 AC_DEFINE([IS_ESPIDF], [0], [ESP-IDF platform only supported with CMake build system])
 AC_DEFINE([BUILD_ESP_GPIO], [0], [ESP-IDF platform only supported with CMake build system])
-
-AS_IF([test "x$build_parport" = "xyes"], [
-  build_bitbang=yes
-  AC_DEFINE([BUILD_PARPORT], [1], [1 if you want parport.])
-], [
-  AC_DEFINE([BUILD_PARPORT], [0], [0 if you don't want parport.])
-])
 
 AS_IF([test "x$ADAPTER_VAR([dummy])" != "xno"], [
   build_bitbang=yes
@@ -628,11 +613,19 @@ PKG_CHECK_MODULES([LIBFTDI], [libftdi1], [
 	PKG_CHECK_MODULES([LIBFTDI], [libftdi], [use_libftdi=yes], [use_libftdi=no])
 ])
 
-PKG_CHECK_MODULES([LIBGPIOD], [libgpiod < 2.0], [
+PKG_CHECK_MODULES([LIBGPIOD], [libgpiod >= 2.0] , [
 	use_libgpiod=yes
-	PKG_CHECK_EXISTS([libgpiod >= 1.5],
-		[AC_DEFINE([HAVE_LIBGPIOD1_FLAGS_BIAS], [1], [define if libgpiod v1 has line request flags bias])])
-], [use_libgpiod=no])
+], [
+	PKG_CHECK_MODULES([LIBGPIOD], [libgpiod], [
+		use_libgpiod=yes
+		AC_DEFINE([HAVE_LIBGPIOD_V1], [1], [define if libgpiod is version v1.x])
+
+		PKG_CHECK_EXISTS([libgpiod >= 1.5],
+			[AC_DEFINE([HAVE_LIBGPIOD1_FLAGS_BIAS], [1], [define if libgpiod v1 has line request flags bias])])
+	], [
+		use_libgpiod=no
+	])
+])
 
 PKG_CHECK_MODULES([LIBJAYLINK], [libjaylink >= 0.2],
 	[use_libjaylink=yes], [use_libjaylink=no])
@@ -643,23 +636,24 @@ PKG_CHECK_MODULES([LIBJAYLINK], [libjaylink >= 0.2],
 # Arg $3: What prerequisites are missing, to be shown in an error message
 #         if an adapter was requested but cannot be enabled.
 m4_define([PROCESS_ADAPTERS], [
-  m4_foreach([adapterTuple], [$1], [
+  m4_foreach([adapter_driver], [$1], [
 	AS_IF([test $2], [
-		AS_IF([test "x$ADAPTER_VAR([adapterTuple])" != "xno"], [
-			AC_DEFINE([BUILD_]ADAPTER_SYM([adapterTuple]), [1],
-			          [1 if you want the ]ADAPTER_DESC([adapterTuple]).)
+		AS_IF([test "x$ADAPTER_VAR([adapter_driver])" != "xno"], [
+			AC_DEFINE([BUILD_]ADAPTER_SYM([adapter_driver]), [1],
+			          [1 if you want the ]ADAPTER_DESC([adapter_driver]).)
 		], [
-			AC_DEFINE([BUILD_]ADAPTER_SYM([adapterTuple]), [0],
-			          [0 if you do not want the ]ADAPTER_DESC([adapterTuple]).)
+			AC_DEFINE([BUILD_]ADAPTER_SYM([adapter_driver]), [0],
+			          [0 if you do not want the ]ADAPTER_DESC([adapter_driver]).)
 		])
 	], [
-		AS_IF([test "x$ADAPTER_VAR([adapterTuple])" = "xyes"], [
-			AC_MSG_ERROR([$3 is required for [adapterTuple] "ADAPTER_DESC([adapterTuple])".])
+		AS_IF([test "x$ADAPTER_VAR([adapter_driver])" = "xyes"], [
+			AC_MSG_ERROR([$3 is required for [adapter_driver] "ADAPTER_DESC([adapter_driver])".])
 		])
-		ADAPTER_VAR([adapterTuple])=no
-		AC_DEFINE([BUILD_]ADAPTER_SYM([adapterTuple]), [0], [0 if you do not want the ]ADAPTER_DESC([adapterTuple]).)
+		ADAPTER_VAR([adapter_driver])=no
+		AC_DEFINE([BUILD_]ADAPTER_SYM([adapter_driver]), [0],
+                  [0 if you do not want the ]ADAPTER_DESC([adapter_driver]).)
 	])
-	AM_CONDITIONAL(ADAPTER_SYM([adapterTuple]), [test "x$ADAPTER_VAR([adapterTuple])" != "xno"])
+	AM_CONDITIONAL(ADAPTER_SYM([adapter_driver]), [test "x$ADAPTER_VAR([adapter_driver])" != "xno"])
   ])
 ])
 
@@ -669,13 +663,17 @@ PROCESS_ADAPTERS([HIDAPI_USB1_ADAPTERS], ["x$use_hidapi" = "xyes" -a "x$use_libu
 PROCESS_ADAPTERS([LIBFTDI_ADAPTERS], ["x$use_libftdi" = "xyes"], [libftdi])
 PROCESS_ADAPTERS([LIBFTDI_USB1_ADAPTERS], ["x$use_libftdi" = "xyes" -a "x$use_libusb1" = "xyes"], [libftdi and libusb-1.x])
 PROCESS_ADAPTERS([LIBGPIOD_ADAPTERS], ["x$use_libgpiod" = "xyes"], [Linux libgpiod])
-PROCESS_ADAPTERS([DMEM_ADAPTER], ["x$is_linux" = "xyes"], [Linux /dev/mem])
+PROCESS_ADAPTERS([DMEM_ADAPTER], ["x$is_linux" = "xyes" -a "x$ac_cv_header_sys_mman_h" = "xyes"], [Linux /dev/mem])
 PROCESS_ADAPTERS([SYSFSGPIO_ADAPTER], ["x$is_linux" = "xyes"], [Linux sysfs])
 PROCESS_ADAPTERS([REMOTE_BITBANG_ADAPTER], [true], [unused])
+PROCESS_ADAPTERS([CMSIS_DAP_TCP_ADAPTER], [true], [unused])
 PROCESS_ADAPTERS([LIBJAYLINK_ADAPTERS], ["x$use_internal_libjaylink" = "xyes" -o "x$use_libjaylink" = "xyes"], [libjaylink-0.2])
-PROCESS_ADAPTERS([PCIE_ADAPTERS], ["x$is_linux" = "xyes" -a "x$ac_cv_header_linux_pci_h" = "xyes"], [Linux build])
+PROCESS_ADAPTERS([XVC_ADAPTERS],
+        ["x$is_linux" = "xyes" -a "x$ac_cv_header_linux_pci_h" = "xyes" -a "x$ac_cv_header_sys_mman_h" = "xyes"],
+        [Linux build with headers linux/pci.h and sys/mman.h])
 PROCESS_ADAPTERS([SERIAL_PORT_ADAPTERS], ["x$can_build_buspirate" = "xyes"],
                                          [internal error: validation should happen beforehand])
+PROCESS_ADAPTERS([PARALLEL_PORT_ADAPTER], [true], [unused])
 PROCESS_ADAPTERS([LINUXSPIDEV_ADAPTER], ["x$is_linux" = "xyes" -a "x$ac_cv_header_linux_spi_spidev_h" = "xyes"],
                                         [Linux spidev])
 PROCESS_ADAPTERS([VDEBUG_ADAPTER], [true], [unused])
@@ -684,8 +682,8 @@ PROCESS_ADAPTERS([JTAG_VPI_ADAPTER], [true], [unused])
 PROCESS_ADAPTERS([RSHIM_ADAPTER], ["x$can_build_rshim" = "xyes"],
                                   [internal error: validation should happen beforehand])
 PROCESS_ADAPTERS([AMTJTAGACCEL_ADAPTER], [true], [unused])
-PROCESS_ADAPTERS([HOST_ARM_BITBANG_ADAPTERS], [true], [unused])
-PROCESS_ADAPTERS([HOST_ARM_OR_AARCH64_BITBANG_ADAPTERS], [true], [unused])
+PROCESS_ADAPTERS([HOST_ARM_BITBANG_ADAPTERS], ["x$ac_cv_header_sys_mman_h" = "xyes"], [header sys/mman.h])
+PROCESS_ADAPTERS([HOST_ARM_OR_AARCH64_BITBANG_ADAPTERS], ["x$ac_cv_header_sys_mman_h" = "xyes"], [header sys/mman.h])
 PROCESS_ADAPTERS([DUMMY_ADAPTER], [true], [unused])
 
 AS_IF([test "x$enable_linuxgpiod" != "xno"], [
@@ -730,6 +728,8 @@ AS_IF([test "x$enable_stlink" != "xno" -o "x$enable_ti_icdi" != "xno" -o "x$enab
 AM_CONDITIONAL([HLADAPTER_STLINK], [test "x$enable_stlink" != "xno"])
 AM_CONDITIONAL([HLADAPTER_ICDI], [test "x$enable_ti_icdi" != "xno"])
 AM_CONDITIONAL([HLADAPTER_NULINK], [test "x$enable_nulink" != "xno"])
+AM_CONDITIONAL([CMSIS_DAP_CORE],
+   [test "x$enable_cmsis_dap" != "xno" -o "x$enable_cmsis_dap_v2" != "xno" -o "x$enable_cmsis_dap_tcp" != "xno"])
 
 AS_IF([test "x$enable_jlink" != "xno"], [
   AS_IF([test "x$use_internal_libjaylink" = "xyes"], [
@@ -753,7 +753,6 @@ AS_IF([test "x$enable_esp_usb_jtag" != "xno"], [
 ])
 
 AM_CONDITIONAL([RELEASE], [test "x$build_release" = "xyes"])
-AM_CONDITIONAL([PARPORT], [test "x$build_parport" = "xyes"])
 AM_CONDITIONAL([GIVEIO], [test "x$parport_use_giveio" = "xyes"])
 AM_CONDITIONAL([BITBANG], [test "x$build_bitbang" = "xyes"])
 AM_CONDITIONAL([USB_BLASTER_DRIVER], [test "x$enable_usb_blaster" != "xno" -o "x$enable_usb_blaster_2" != "xno"])
@@ -861,18 +860,26 @@ AS_IF([test "x$build_gw16012" = "xyes"], [
   AC_MSG_WARN([Gateworks GW16012 JTAG adapter is deprecated and support will be removed in the next release!])
 ])
 
+AS_IF([test "x$parport_use_giveio" = "xyes" || test [ "x$enable_parport" != "xno" -a "x$parport_use_ppdev" = "xno"]], [
+  echo
+  echo
+  AC_MSG_WARN([Parallel port access with direct I/O is deprecated and support will be removed in the next release!])
+])
+
 echo
 echo
 echo OpenOCD configuration summary
 echo ---------------------------------------------------
-m4_foreach([adapterTuple], [USB1_ADAPTERS,
+m4_foreach([adapter_driver], [USB1_ADAPTERS,
 	HIDAPI_ADAPTERS, HIDAPI_USB1_ADAPTERS, LIBFTDI_ADAPTERS,
 	LIBFTDI_USB1_ADAPTERS,
 	LIBGPIOD_ADAPTERS,
 	DMEM_ADAPTER,
 	SYSFSGPIO_ADAPTER,
 	REMOTE_BITBANG_ADAPTER,
-	LIBJAYLINK_ADAPTERS, PCIE_ADAPTERS, SERIAL_PORT_ADAPTERS,
+	LIBJAYLINK_ADAPTERS, XVC_ADAPTERS,
+	SERIAL_PORT_ADAPTERS,
+	PARALLEL_PORT_ADAPTER,
 	LINUXSPIDEV_ADAPTER,
 	VDEBUG_ADAPTER,
 	JTAG_DPI_ADAPTER,
@@ -881,11 +888,12 @@ m4_foreach([adapterTuple], [USB1_ADAPTERS,
 	AMTJTAGACCEL_ADAPTER,
 	HOST_ARM_BITBANG_ADAPTERS,
 	HOST_ARM_OR_AARCH64_BITBANG_ADAPTERS,
+	CMSIS_DAP_TCP_ADAPTER,
 	DUMMY_ADAPTER,
 	OPTIONAL_LIBRARIES,
 	COVERAGE],
-	[s=m4_format(["%-49s"], ADAPTER_DESC([adapterTuple]))
-	AS_CASE([$ADAPTER_VAR([adapterTuple])],
+	[s=m4_format(["%-49s"], ADAPTER_DESC([adapter_driver]))
+	AS_CASE([$ADAPTER_VAR([adapter_driver])],
 		[auto], [
 			echo "$s"yes '(auto)'
 		],
@@ -897,8 +905,8 @@ m4_foreach([adapterTuple], [USB1_ADAPTERS,
 		],
 		[
 			AC_MSG_ERROR(m4_normalize([
-				Error in [adapterTuple] "ADAPTER_ARG([adapterTuple])": Variable "ADAPTER_VAR([adapterTuple])"
-				has invalid value "$ADAPTER_VAR([adapterTuple])".]))
+				Error in [adapter_driver] "ADAPTER_ARG([adapter_driver])": Variable "ADAPTER_VAR([adapter_driver])"
+				has invalid value "$ADAPTER_VAR([adapter_driver])".]))
 	])
 ])
 echo

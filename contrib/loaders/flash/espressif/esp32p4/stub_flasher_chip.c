@@ -21,14 +21,13 @@
 #include <soc/cache_reg.h>
 #include <soc/ext_mem_defs.h>
 
-#include <esp_app_trace_membufs_proto.h>
 #include <esp_rom_efuse.h>
 
 #include <stub_flasher_int.h>
 #include <stub_logger.h>
 #include "stub_flasher_chip.h"
 
-/* RTC related definitios */
+/* RTC related definitions */
 #define PCR_SOC_CLK_MAX                 1 //CPU_CLK frequency is 160 MHz (source is PLL_CLK)
 
 /* Cache MMU related definitions */
@@ -36,6 +35,9 @@
 #define STUB_DROM_LOW                   SOC_DROM_LOW
 #define STUB_MMU_DROM_PAGES_END         SOC_MMU_ENTRY_NUM
 #define STUB_MMU_DROM_PAGES_START       (STUB_MMU_DROM_PAGES_END - 8) /* 8 pages will be more than enough */
+
+#define BOOT_MODE_GET()                 (REG_READ(GPIO_STRAP_REG))
+#define BOOT_MODE_IS_DOWNLOAD()         IS_01XX(BOOT_MODE_GET())
 
 struct cache_mmu_config {
 	uint32_t page_size;
@@ -52,11 +54,6 @@ uint32_t g_stub_cpu_freq_hz = CONFIG_ESP32P4_DEFAULT_CPU_FREQ_MHZ * MHZ;
 int xPortInIsrContext(void)
 {
 	return 0;
-}
-
-void *esp_apptrace_uart_hw_get(int num, void **data)
-{
-	return NULL;
 }
 
 static inline bool esp_flash_encryption_enabled(void)
@@ -161,6 +158,15 @@ static void stub_cache_init(void)
 
 void stub_flash_state_prepare(struct stub_flash_state *state)
 {
+	/* in download mode, cache is not enabled yet in rom. We can not enable it here without help of rom code
+	 * TODO: Investigate what is missing to enable cache. OCD-1263
+	 */
+	if (BOOT_MODE_IS_DOWNLOAD()) {
+		STUB_LOGD("Download mode, cache is disabled\n");
+		esp_rom_spiflash_attach(0, false);
+		return;
+	}
+
 	state->cache_enabled = stub_is_cache_enabled();
 	if (!state->cache_enabled) {
 		STUB_LOGI("Cache needs to be enabled\n");
@@ -206,7 +212,7 @@ void stub_uart_console_configure(int dest)
 	uint32_t clock = ets_clk_get_xtal_freq();
 	ets_update_cpu_frequency(clock / 1000000);
 
-	Uart_Init(0, APB_CLK_FREQ_ROM);
+	Uart_Init(0, APB_CLK_FREQ);
 	/* install to print later
 	 * Non-Flash Boot can print
 	 * Flash Boot can print when RTC_CNTL_STORE4_REG bit0 is 0 (can be 1 after deep sleep, software reset)
@@ -216,19 +222,6 @@ void stub_uart_console_configure(int dest)
 	ets_install_uart_printf();
 }
 #endif
-
-int64_t esp_timer_get_time(void)
-{
-	/*
-		This function is used by apptrace code to implement timeouts.
-		unfortunately esp32p4 does not support CPU cycle counter, so we have two options:
-		1) Use some HW timer. It can be hard, because we need to ensure that it is initialized
-		and possibly restore its state.
-		2) Emulate timer by incrementing some var on every call.
-		Stub flasher uses ESP_APPTRACE_TMO_INFINITE only, so this function won't be called by apptrace at all.
-	*/
-	return 0;
-}
 
 uint64_t stub_get_time(void)
 {
@@ -319,6 +312,10 @@ static void stub_flash_ummap(const struct spiflash_map_req *req)
 
 int stub_flash_read_buff(uint32_t addr, void *buffer, uint32_t size)
 {
+	/* in download mode, cache is disabled. OCD-1263 */
+	if (BOOT_MODE_IS_DOWNLOAD())
+		return esp_rom_spiflash_read(addr, buffer, size);
+
 	struct spiflash_map_req req = {
 		.src_addr = addr,
 		.size = size,

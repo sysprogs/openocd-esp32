@@ -235,6 +235,12 @@ struct target {
 
 	/* The semihosting information, extracted from the target. */
 	struct semihosting *semihosting;
+
+	/* Espressif: Flag to avoid sending internal halt events to GDB. OCD-749 */
+	bool pause_gdb_event_callbacks;
+
+	/* Espressif: HW revision */
+	uint32_t hw_rev;
 };
 
 struct target_list {
@@ -313,7 +319,7 @@ enum target_event {
 
 	TARGET_EVENT_TRACE_CONFIG,
 
-	TARGET_EVENT_QXFER_THREAD_READ_END, /* Espressif */
+	TARGET_EVENT_SEMIHOSTING_START, /* Espressif */
 
 	TARGET_EVENT_SEMIHOSTING_USER_CMD_0X100 = 0x100, /* semihosting allows user cmds from 0x100 to 0x1ff */
 	TARGET_EVENT_SEMIHOSTING_USER_CMD_0X101 = 0x101,

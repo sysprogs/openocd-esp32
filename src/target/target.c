@@ -210,7 +210,7 @@ static const struct nvp nvp_target_event[] = {
 
 	{ .value = TARGET_EVENT_TRACE_CONFIG, .name = "trace-config" },
 
-	{ .value = TARGET_EVENT_QXFER_THREAD_READ_END, .name = "qxfer-thread-read-end" }, /* Espressif */
+	{ .value = TARGET_EVENT_SEMIHOSTING_START, .name = "semihosting-start" }, /* Espressif */
 
 	{ .value = TARGET_EVENT_SEMIHOSTING_USER_CMD_0X100, .name = "semihosting-user-cmd-0x100" },
 	{ .value = TARGET_EVENT_SEMIHOSTING_USER_CMD_0X101, .name = "semihosting-user-cmd-0x101" },
@@ -660,9 +660,9 @@ static int identity_virt2phys(struct target *target,
 	return ERROR_OK;
 }
 
-static int no_mmu(struct target *target, int *enabled)
+static int no_mmu(struct target *target, bool *enabled)
 {
-	*enabled = 0;
+	*enabled = false;
 	return ERROR_OK;
 }
 
@@ -1809,7 +1809,7 @@ int target_call_event_callbacks(struct target *target, enum target_event event)
 	struct target_event_callback *callback = target_event_callbacks;
 	struct target_event_callback *next_callback;
 
-	if (event == TARGET_EVENT_HALTED) {
+	if (event == TARGET_EVENT_HALTED && !target->pause_gdb_event_callbacks) {
 		/* execute early halted first */
 		target_call_event_callbacks(target, TARGET_EVENT_GDB_HALT);
 	}
@@ -2011,7 +2011,7 @@ int target_alloc_working_area_try(struct target *target, uint32_t size, struct w
 	/* Reevaluate working area address based on MMU state*/
 	if (!target->working_areas) {
 		int retval;
-		int enabled;
+		bool enabled;
 
 		retval = target->type->mmu(target, &enabled);
 		if (retval != ERROR_OK)
@@ -2245,7 +2245,6 @@ static void target_destroy(struct target *target)
 
 	target_free_all_working_areas(target);
 
-    //TODO-UPS -- create a patch
 	rtos_destroy(target);
 
 	/* release the targets SMP list */
@@ -2578,7 +2577,7 @@ int target_read_u64(struct target *target, target_addr_t address, uint64_t *valu
 
 	if (retval == ERROR_OK) {
 		*value = target_buffer_get_u64(target, value_buf);
-		LOG_DEBUG("address: " TARGET_ADDR_FMT ", value: 0x%16.16" PRIx64 "",
+		LOG_DEBUG("address: " TARGET_ADDR_FMT ", value: 0x%16.16" PRIx64,
 				  address,
 				  *value);
 	} else {
@@ -2602,7 +2601,7 @@ int target_read_u32(struct target *target, target_addr_t address, uint32_t *valu
 
 	if (retval == ERROR_OK) {
 		*value = target_buffer_get_u32(target, value_buf);
-		LOG_DEBUG("address: " TARGET_ADDR_FMT ", value: 0x%8.8" PRIx32 "",
+		LOG_DEBUG("address: " TARGET_ADDR_FMT ", value: 0x%8.8" PRIx32,
 				  address,
 				  *value);
 	} else {
@@ -2669,7 +2668,7 @@ int target_write_u64(struct target *target, target_addr_t address, uint64_t valu
 		return ERROR_FAIL;
 	}
 
-	LOG_DEBUG("address: " TARGET_ADDR_FMT ", value: 0x%16.16" PRIx64 "",
+	LOG_DEBUG("address: " TARGET_ADDR_FMT ", value: 0x%16.16" PRIx64,
 			  address,
 			  value);
 
@@ -2690,7 +2689,7 @@ int target_write_u32(struct target *target, target_addr_t address, uint32_t valu
 		return ERROR_FAIL;
 	}
 
-	LOG_DEBUG("address: " TARGET_ADDR_FMT ", value: 0x%8.8" PRIx32 "",
+	LOG_DEBUG("address: " TARGET_ADDR_FMT ", value: 0x%8.8" PRIx32,
 			  address,
 			  value);
 
@@ -2750,7 +2749,7 @@ int target_write_phys_u64(struct target *target, target_addr_t address, uint64_t
 		return ERROR_FAIL;
 	}
 
-	LOG_DEBUG("address: " TARGET_ADDR_FMT ", value: 0x%16.16" PRIx64 "",
+	LOG_DEBUG("address: " TARGET_ADDR_FMT ", value: 0x%16.16" PRIx64,
 			  address,
 			  value);
 
@@ -2771,7 +2770,7 @@ int target_write_phys_u32(struct target *target, target_addr_t address, uint32_t
 		return ERROR_FAIL;
 	}
 
-	LOG_DEBUG("address: " TARGET_ADDR_FMT ", value: 0x%8.8" PRIx32 "",
+	LOG_DEBUG("address: " TARGET_ADDR_FMT ", value: 0x%8.8" PRIx32,
 			  address,
 			  value);
 
@@ -3252,8 +3251,6 @@ COMMAND_HANDLER(handle_wait_halt_command)
 /* wait for target state to change. The trick here is to have a low
  * latency for short waits and not to suck up all the CPU time
  * on longer waits.
- *
- * After 500ms, keep_alive() is invoked
  */
 int target_wait_state(struct target *target, enum target_state state, unsigned int ms)
 {
@@ -3275,11 +3272,9 @@ int target_wait_state(struct target *target, enum target_state state, unsigned i
 				nvp_value2name(nvp_target_state, state)->name);
 		}
 
-		if (cur - then > 500) {
-			keep_alive();
-			if (openocd_is_shutdown_pending())
-				return ERROR_SERVER_INTERRUPTED;
-		}
+		keep_alive();
+		if (openocd_is_shutdown_pending())
+			return ERROR_SERVER_INTERRUPTED;
 
 		if ((cur-then) > ms) {
 			LOG_ERROR("timed out while waiting for target %s",
@@ -3601,20 +3596,20 @@ COMMAND_HANDLER(handle_mw_command)
 	struct target *target = get_current_target(CMD_CTX);
 	unsigned int wordsize;
 	switch (CMD_NAME[2]) {
-		case 'd':
-			wordsize = 8;
-			break;
-		case 'w':
-			wordsize = 4;
-			break;
-		case 'h':
-			wordsize = 2;
-			break;
-		case 'b':
-			wordsize = 1;
-			break;
-		default:
-			return ERROR_COMMAND_SYNTAX_ERROR;
+	case 'd':
+		wordsize = 8;
+		break;
+	case 'w':
+		wordsize = 4;
+		break;
+	case 'h':
+		wordsize = 2;
+		break;
+	case 'b':
+		wordsize = 1;
+		break;
+	default:
+		return ERROR_COMMAND_SYNTAX_ERROR;
 	}
 
 	return target_fill_mem(target, address, fn, wordsize, value, count);
@@ -4056,15 +4051,7 @@ static int handle_bp_command_list(struct command_invocation *cmd)
 	struct target *target = get_current_target(cmd->ctx);
 	struct breakpoint *breakpoint = target->breakpoints;
 	while (breakpoint) {
-		if (breakpoint->type == BKPT_SOFT) {
-			char *buf = buf_to_hex_str(breakpoint->orig_instr,
-					breakpoint->length * 8);
-			command_print(cmd, "Software breakpoint(IVA): addr=" TARGET_ADDR_FMT ", len=0x%x, orig_instr=0x%s",
-					breakpoint->address,
-					breakpoint->length,
-					buf);
-			free(buf);
-		} else {
+		if (breakpoint->type == BKPT_HARD) {
 			if ((breakpoint->address == 0) && (breakpoint->asid != 0))
 				command_print(cmd, "Context breakpoint: asid=0x%8.8" PRIx32 ", len=0x%x, num=%u",
 							breakpoint->asid,
@@ -4079,6 +4066,25 @@ static int handle_bp_command_list(struct command_invocation *cmd)
 				command_print(cmd, "Hardware breakpoint(IVA): addr=" TARGET_ADDR_FMT ", len=0x%x, num=%u",
 							breakpoint->address,
 							breakpoint->length, breakpoint->number);
+		}
+
+		breakpoint = breakpoint->next;
+	}
+	struct target *first_target = target;
+	if (target->smp) {
+		struct target_list *head;
+		head = list_first_entry(target->smp_targets, struct target_list, lh);
+		first_target = head->target;
+	}
+	breakpoint = first_target->breakpoints;
+	while (breakpoint) {
+		if (breakpoint->type == BKPT_SOFT) {
+			char *buf = buf_to_hex_str(breakpoint->orig_instr, breakpoint->length * 8);
+			command_print(cmd, "Software breakpoint(IVA): addr=" TARGET_ADDR_FMT ", len=0x%x, orig_instr=0x%s",
+						breakpoint->address,
+						breakpoint->length,
+						buf);
+			free(buf);
 		}
 
 		breakpoint = breakpoint->next;
@@ -4106,7 +4112,7 @@ static int handle_bp_command_set(struct command_invocation *cmd,
 		retval = context_breakpoint_add(target, asid, length, hw);
 		/* error is always logged in context_breakpoint_add(), do not print it again */
 		if (retval == ERROR_OK)
-			command_print(cmd, "Context breakpoint set at 0x%8.8" PRIx32 "", asid);
+			command_print(cmd, "Context breakpoint set at 0x%8.8" PRIx32, asid);
 
 	} else {
 		if (!target->type->add_hybrid_breakpoint) {
@@ -4116,7 +4122,7 @@ static int handle_bp_command_set(struct command_invocation *cmd,
 		retval = hybrid_breakpoint_add(target, addr, asid, length, hw);
 		/* error is always logged in hybrid_breakpoint_add(), do not print it again */
 		if (retval == ERROR_OK)
-			command_print(cmd, "Hybrid breakpoint set at 0x%8.8" PRIx32 "", asid);
+			command_print(cmd, "Hybrid breakpoint set at 0x%8.8" PRIx32, asid);
 	}
 	return retval;
 }
@@ -4129,39 +4135,39 @@ COMMAND_HANDLER(handle_bp_command)
 	int hw = BKPT_SOFT;
 
 	switch (CMD_ARGC) {
-		case 0:
-			return handle_bp_command_list(CMD);
+	case 0:
+		return handle_bp_command_list(CMD);
 
-		case 2:
-			asid = 0;
-			COMMAND_PARSE_ADDRESS(CMD_ARGV[0], addr);
-			COMMAND_PARSE_NUMBER(u32, CMD_ARGV[1], length);
-			return handle_bp_command_set(CMD, addr, asid, length, hw);
+	case 2:
+		asid = 0;
+		COMMAND_PARSE_ADDRESS(CMD_ARGV[0], addr);
+		COMMAND_PARSE_NUMBER(u32, CMD_ARGV[1], length);
+		return handle_bp_command_set(CMD, addr, asid, length, hw);
 
-		case 3:
-			if (strcmp(CMD_ARGV[2], "hw") == 0) {
-				hw = BKPT_HARD;
-				COMMAND_PARSE_ADDRESS(CMD_ARGV[0], addr);
-				COMMAND_PARSE_NUMBER(u32, CMD_ARGV[1], length);
-				asid = 0;
-				return handle_bp_command_set(CMD, addr, asid, length, hw);
-			} else if (strcmp(CMD_ARGV[2], "hw_ctx") == 0) {
-				hw = BKPT_HARD;
-				COMMAND_PARSE_NUMBER(u32, CMD_ARGV[0], asid);
-				COMMAND_PARSE_NUMBER(u32, CMD_ARGV[1], length);
-				addr = 0;
-				return handle_bp_command_set(CMD, addr, asid, length, hw);
-			}
-			/* fallthrough */
-		case 4:
+	case 3:
+		if (strcmp(CMD_ARGV[2], "hw") == 0) {
 			hw = BKPT_HARD;
 			COMMAND_PARSE_ADDRESS(CMD_ARGV[0], addr);
-			COMMAND_PARSE_NUMBER(u32, CMD_ARGV[1], asid);
-			COMMAND_PARSE_NUMBER(u32, CMD_ARGV[2], length);
+			COMMAND_PARSE_NUMBER(u32, CMD_ARGV[1], length);
+			asid = 0;
 			return handle_bp_command_set(CMD, addr, asid, length, hw);
+		} else if (strcmp(CMD_ARGV[2], "hw_ctx") == 0) {
+			hw = BKPT_HARD;
+			COMMAND_PARSE_NUMBER(u32, CMD_ARGV[0], asid);
+			COMMAND_PARSE_NUMBER(u32, CMD_ARGV[1], length);
+			addr = 0;
+			return handle_bp_command_set(CMD, addr, asid, length, hw);
+		}
+		/* fallthrough */
+	case 4:
+		hw = BKPT_HARD;
+		COMMAND_PARSE_ADDRESS(CMD_ARGV[0], addr);
+		COMMAND_PARSE_NUMBER(u32, CMD_ARGV[1], asid);
+		COMMAND_PARSE_NUMBER(u32, CMD_ARGV[2], length);
+		return handle_bp_command_set(CMD, addr, asid, length, hw);
 
-		default:
-			return ERROR_COMMAND_SYNTAX_ERROR;
+	default:
+		return ERROR_COMMAND_SYNTAX_ERROR;
 	}
 }
 
@@ -4392,7 +4398,7 @@ static void write_gmon(uint32_t *samples, uint32_t sample_num, const char *filen
 
 	/* FIXME: What is the reasonable number of buckets?
 	 * The profiling result will be more accurate if there are enough buckets. */
-	static const uint32_t max_buckets = 128 * 1024; /* maximum buckets. */
+	static const uint32_t max_buckets = 128 * 1024 * 1024; /* maximum buckets. */
 	uint32_t num_buckets = address_space / sizeof(UNIT);
 	if (num_buckets > max_buckets)
 		num_buckets = max_buckets;
@@ -4419,6 +4425,28 @@ static void write_gmon(uint32_t *samples, uint32_t sample_num, const char *filen
 	write_long(f, min, target);			/* low_pc */
 	write_long(f, max, target);			/* high_pc */
 	write_long(f, num_buckets, target);	/* # of buckets */
+
+	/*append binary memory gmon.out profile_hist_data (profile_hist_data + profile_hist_hdr.hist_size) */
+
+	char *data = malloc(2 * num_buckets);
+	if (!data) {
+		free(buckets);
+		fclose(f);
+		return;
+	}
+
+	for (i = 0; i < num_buckets; i++) {
+		int val;
+		val = buckets[i];
+		if (val > UINT16_MAX) {
+			LOG_WARNING("profiler bucket saturated, will read as %d, dropped %d samples", UINT16_MAX, val - UINT16_MAX);
+			sample_num -= (val - UINT16_MAX);
+			val = UINT16_MAX;
+		}
+		data[i * 2] = val & 0xff;
+		data[i * 2 + 1] = (val >> 8) & 0xff;
+	}
+
 	float sample_rate = sample_num / (duration_ms / 1000.0);
 	write_long(f, sample_rate, target);
 	write_string(f, "seconds");
@@ -4426,23 +4454,9 @@ static void write_gmon(uint32_t *samples, uint32_t sample_num, const char *filen
 		write_data(f, &zero, 1);
 	write_string(f, "s");
 
-	/*append binary memory gmon.out profile_hist_data (profile_hist_data + profile_hist_hdr.hist_size) */
-
-	char *data = malloc(2 * num_buckets);
-	if (data) {
-		for (i = 0; i < num_buckets; i++) {
-			int val;
-			val = buckets[i];
-			if (val > 65535)
-				val = 65535;
-			data[i * 2] = val&0xff;
-			data[i * 2 + 1] = (val >> 8) & 0xff;
-		}
-		free(buckets);
-		write_data(f, data, num_buckets * 2);
-		free(data);
-	} else
-		free(buckets);
+	free(buckets);
+	write_data(f, data, num_buckets * 2);
+	free(data);
 
 	fclose(f);
 }
@@ -4796,11 +4810,18 @@ COMMAND_HANDLER(handle_target_write_memory)
  */
 void target_handle_event(struct target *target, enum target_event e)
 {
-	struct target_event_action *teap;
+	struct target_event_action *teap, *tmp;
 	int retval;
 
-	list_for_each_entry(teap, &target->events_action, list) {
+	list_for_each_entry_safe(teap, tmp, &target->events_action, list) {
 		if (teap->event == e) {
+			/*
+			 * The event can be destroyed by its own handler.
+			 * Make a local copy and use it in place of the original.
+			 */
+			struct target_event_action local_teap = *teap;
+			teap = &local_teap;
+
 			LOG_DEBUG("target: %s (%s) event: %d (%s) action: %s",
 					   target_name(target),
 					   target_type_name(target),
@@ -4816,7 +4837,13 @@ void target_handle_event(struct target *target, enum target_event e)
 			struct target *saved_target_override = cmd_ctx->current_target_override;
 			cmd_ctx->current_target_override = target;
 
+			/*
+			 * The event can be destroyed by its own handler.
+			 * Prevent the body to get deallocated by Jim.
+			 */
+			Jim_IncrRefCount(teap->body);
 			retval = Jim_EvalObj(teap->interp, teap->body);
+			Jim_DecrRefCount(teap->interp, teap->body);
 
 			cmd_ctx->current_target_override = saved_target_override;
 
@@ -4865,7 +4892,7 @@ COMMAND_HANDLER(handle_target_get_reg)
 
 		const char *reg_name = Jim_String(elem);
 
-		struct reg *reg = register_get_by_name(target->reg_cache, reg_name, false);
+		struct reg *reg = register_get_by_name(target->reg_cache, reg_name, true);
 
 		if (!reg || !reg->exist) {
 			command_print(CMD, "unknown register '%s'", reg_name);
@@ -4923,7 +4950,7 @@ COMMAND_HANDLER(handle_set_reg_command)
 	for (unsigned int i = 0; i < length; i += 2) {
 		const char *reg_name = Jim_String(dict[i]);
 		const char *reg_value = Jim_String(dict[i + 1]);
-		struct reg *reg = register_get_by_name(target->reg_cache, reg_name, false);
+		struct reg *reg = register_get_by_name(target->reg_cache, reg_name, true);
 
 		if (!reg || !reg->exist) {
 			command_print(CMD, "unknown register '%s'", reg_name);
@@ -6915,25 +6942,25 @@ static int target_register_user_commands(struct command_context *cmd_ctx)
 const char *target_debug_reason_str(enum target_debug_reason reason)
 {
 	switch (reason) {
-		case DBG_REASON_DBGRQ:
-			return "DBGRQ";
-		case DBG_REASON_BREAKPOINT:
-			return "BREAKPOINT";
-		case DBG_REASON_WATCHPOINT:
-			return "WATCHPOINT";
-		case DBG_REASON_WPTANDBKPT:
-			return "WPTANDBKPT";
-		case DBG_REASON_SINGLESTEP:
-			return "SINGLESTEP";
-		case DBG_REASON_NOTHALTED:
-			return "NOTHALTED";
-		case DBG_REASON_EXIT:
-			return "EXIT";
-		case DBG_REASON_EXC_CATCH:
-			return "EXC_CATCH";
-		case DBG_REASON_UNDEFINED:
-			return "UNDEFINED";
-		default:
-			return "UNKNOWN!";
+	case DBG_REASON_DBGRQ:
+		return "DBGRQ";
+	case DBG_REASON_BREAKPOINT:
+		return "BREAKPOINT";
+	case DBG_REASON_WATCHPOINT:
+		return "WATCHPOINT";
+	case DBG_REASON_WPTANDBKPT:
+		return "WPTANDBKPT";
+	case DBG_REASON_SINGLESTEP:
+		return "SINGLESTEP";
+	case DBG_REASON_NOTHALTED:
+		return "NOTHALTED";
+	case DBG_REASON_EXIT:
+		return "EXIT";
+	case DBG_REASON_EXC_CATCH:
+		return "EXC_CATCH";
+	case DBG_REASON_UNDEFINED:
+		return "UNDEFINED";
+	default:
+		return "UNKNOWN!";
 	}
 }

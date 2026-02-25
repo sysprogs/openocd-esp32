@@ -529,9 +529,8 @@ debuggers to ARM Cortex based targets @url{http://www.keil.com/support/man/docs/
 
 @section IBM PC Parallel Printer Port Based
 
-The two well-known ``JTAG Parallel Ports'' cables are the Xilinx DLC5
-and the Macraigor Wiggler. There are many clones and variations of
-these on the market.
+The two well-known JTAG parallel port cables are the Xilinx DLC5 and the Macraigor Wiggler.
+There are many clones and variations of these on the market.
 
 Note that parallel ports are becoming much less common, so if you
 have the choice you should probably avoid these adapters in favor
@@ -553,7 +552,7 @@ produced, PDF schematics are easily found and it is easy to make.
 @* Link: @url{http://www.ccac.rwth-aachen.de/~michaels/index.php/hardware/armjtag}
 
 @item @b{Wiggler_ntrst_inverted}
-@* Yet another variation - See the source code, src/jtag/parport.c
+@* Yet another variation, see configuration in @file{interface/parport/wiggler-ntrst-inverted.cfg}
 
 @item @b{old_amt_wiggler}
 @* Unknown - probably not on the market today
@@ -613,6 +612,12 @@ emulation model of target hardware.
 
 @item @b{xlnx_pcie_xvc}
 @* A JTAG driver exposing Xilinx Virtual Cable over PCI Express to OpenOCD as JTAG/SWD interface.
+@* Link: @url{https://www.xilinx.com/products/intellectual-property/debug-bridge.html}
+
+@item @b{xlnx_axi_xvc}
+@* A JTAG driver exposing JTAG to OpenOCD over AXI-mapped registers.
+@* Link: @url{https://docs.amd.com/r/en-US/pg437-axi-jtag/Introduction}
+@* Link: @url{https://china.xilinx.com/support/documentation/application_notes/xapp1251-xvc-zynq-petalinux.pdf}
 
 @item @b{linuxspidev}
 @* A SPI based SWD driver using Linux SPI devices.
@@ -626,6 +631,10 @@ This is deprecated from Linux v5.3; prefer using @b{linuxgpiod}.
 
 @item @b{esp_usb_jtag}
 @* A JTAG driver to communicate with builtin debug modules of Espressif ESP32-C3 and ESP32-S3 chips using OpenOCD.
+
+@item @b{ch347}
+@* A JTAG driver that works with the WCH CH347F and CH347T chips.
+When using the CH347T, it must be configured to operate in mode 3 (UART + JTAG).
 
 @end itemize
 
@@ -804,8 +813,7 @@ itself), use the @option{-d} command line switch. This sets the
 @option{debug_level} to "3", outputting the most information,
 including debug messages. The default setting is "2", outputting only
 informational messages, warnings and errors. You can also change this
-setting from within a telnet or gdb session using @command{debug_level<n>}
-(@pxref{debuglevel,,debug_level}).
+setting from within a telnet or gdb session using @ref{debuglevel,,@command{debug_level}}.
 
 You can redirect all output from the server to a file using the
 @option{-l <logfile>} switch.
@@ -1432,7 +1440,6 @@ In addition to target-specific utility code, another way that
 board and target config files communicate is by following a
 convention on how to use certain variables.
 
-The full Tcl/Tk language supports ``namespaces'', but Jim Tcl does not.
 Thus the rule we follow in OpenOCD is this: Variables that begin with
 a leading underscore are temporary in nature, and can be modified and
 used at will within a target configuration file.
@@ -2431,13 +2438,14 @@ dict get [adapter list] ftdi
 @deffn {Config Command} {adapter gpio [ @
     @option{tdo} | @option{tdi} | @option{tms} | @option{tck} | @option{trst} | @
     @option{swdio} | @option{swdio_dir} | @option{swclk} | @option{srst} | @
-    @option{led} @
+    @option{led} | @option{user0} @
     [ @
         gpio_number | @option{-chip} chip_number | @
         @option{-active-high} | @option{-active-low} | @
         @option{-push-pull} | @option{-open-drain} | @option{-open-source} | @
         @option{-pull-none} | @option{-pull-up} | @option{-pull-down} | @
         @option{-init-inactive} | @option{-init-active} | @option{-init-input} @
+        @option{-exit-inactive} | @option{-exit-active} | @option{-exit-input} | @option{-exit-no-change} @
     ] ]}
 
 Define the GPIO mapping that the adapter will use. The following signals can be
@@ -2450,6 +2458,7 @@ JTAG transport signals
 @item @option{swdio_dir}: optional swdio buffer control signal
 @item @option{srst}: system reset signal
 @item @option{led}: optional activity led
+@item @option{user0}: optional, user-specific signal
 
 @end itemize
 
@@ -2472,11 +2481,14 @@ equivalent to issuing the single command @command{gpio led 7 -chip 1
 signals which are inputs. The drive mode for the srst and trst signals must be
 set with the @command{adapter reset_config} command. It is not permissible to
 set the initial state of swdio_dir as it is derived from the initial state of
-swdio. The command @command{adapter gpio} prints the current configuration for
-all GPIOs while the command @command{adapter gpio gpio_name} prints the current
-configuration for gpio_name. Not all adapters support this generic GPIO mapping,
-some require their own commands to define the GPIOs used. Adapters that support
-the generic mapping may not support all of the listed options.
+swdio. Accordingly, the final state before the adapter terminates its operation,
+so-called “exit state”, can be set. By default the state and configuration of an
+output pin is not changed when the driver terminates its operation. The
+command @command{adapter gpio} prints the current configuration for all GPIOs
+while the command @command{adapter gpio gpio_name} prints the current configuration
+for gpio_name. Not all adapters support this generic GPIO mapping, some require
+their own commands to define the GPIOs used. Adapters that support the generic
+mapping may not support all of the listed options.
 @end deffn
 
 @deffn {Command} {adapter name}
@@ -2549,9 +2561,62 @@ and a specific set of GPIOs is used.
 @c chooses among list of bit configs ... only one option
 @end deffn
 
+@deffn {Interface Driver} {ch347}
+Driver for WCH CH347F and CH347T chips.
+When using the CH347T, it must be configured to operate in mode 3 (UART + JTAG).
+
+@b{WARNING:} WCH CH347T chips have rather poor performance
+with respect to the USB HS connection. Upgrade firmware to the latest version!
+@itemize @bullet
+@item Chip version 2.41:
+@itemize @minus
+@item JTAG timing is very weird, some clock pulses are
+much shorter then the requested clock frequency.
+@item SWD is not implemented.
+@end itemize
+@item Chip version 4.41:
+@itemize @minus
+@item SWD clock is limited to 1 MHz maximum.
+@item SWD reading AP reg CH347 erroneously drives
+SWDIO to H for 392 ns after the last ACK bit. Some devices get so upset
+that send wrong data with parity error. A resistor in the SWDIO circuit
+mitigates the problem.
+@item A long SWD operation causes that USB host disconnects the adapter.
+@end itemize
+@item Chip version 5.44:
+@itemize @minus
+@item Maximal SWD clock speed is 5 MHz
+@item A long SWD operation causes that USB host disconnects the adapter.
+@end itemize
+@end itemize
+
+The driver supports activity LED through the generic
+command @ref{adapter gpio, @command{adapter gpio led}}.
+
+This driver has these driver-specific command:
+
+@deffn {Config Command} {ch347 vid_pid} [vid pid]+
+The vendor ID and product ID of the CH347F or CH347T device in mode 3. If not specified
+the driver will use vendor ID 0x1a86 and product ID 0x55dd.
+Currently, up to four [@var{vid}, @var{pid}] pairs may be given, e.g.
+@example
+ch347 vid_pid 0x1a86 0x55dd 0x1a86 0x55de
+@end example
+@end deffn
+
+@deffn {Config Command} {ch347 device_desc} description
+If specified connect to a device which exactly has this product description
+string. If not specified the first found device with the correct vendor
+and product ID will be connected.
+@example
+ch347 device_desc "EasyDevKit"
+@end example
+@end deffn
+@end deffn
+
 @deffn {Interface Driver} {cmsis-dap}
 ARM CMSIS-DAP compliant based adapter v1 (USB HID based)
-or v2 (USB bulk).
+or v2 (USB bulk or TCP/IP).
 
 @deffn {Config Command} {cmsis-dap vid_pid} [vid pid]+
 The vendor ID and product ID of the CMSIS-DAP device. If not specified
@@ -2562,21 +2627,54 @@ cmsis-dap vid_pid 0xc251 0xf001 0x0d28 0x0204
 @end example
 @end deffn
 
-@deffn {Config Command} {cmsis-dap backend} [@option{auto}|@option{usb_bulk}|@option{hid}]
+@deffn {Config Command} {cmsis-dap backend} [@option{auto}|@option{usb_bulk}|@option{hid}|@option{tcp}]
 Specifies how to communicate with the adapter:
 
 @itemize @minus
-@item @option{hid} Use HID generic reports - CMSIS-DAP v1
+@item @option{hid} Use USB HID generic reports - CMSIS-DAP v1
 @item @option{usb_bulk} Use USB bulk - CMSIS-DAP v2
-@item @option{auto} First try USB bulk CMSIS-DAP v2, if not found try HID CMSIS-DAP v1.
-This is the default if @command{cmsis-dap backend} is not specified.
+@item @option{tcp} Use TCP/IP instead of USB
+@item @option{auto} First try USB bulk CMSIS-DAP v2, if not found try USB HID
+CMSIS-DAP v1, if not found try TCP (if @command{cmsis-dap tcp host} is
+configured). This is the default if @command{cmsis-dap backend} is not
+specified.
 @end itemize
 @end deffn
 
-@deffn {Config Command} {cmsis-dap usb interface} [number]
+@deffn {Config Command} {cmsis-dap usb interface} number
 Specifies the @var{number} of the USB interface to use in v2 mode (USB bulk).
 In most cases need not to be specified and interfaces are searched by
 interface string or for user class interface.
+@end deffn
+
+@deffn {Config Command} {cmsis-dap tcp host} hostname
+Specifies the @var{hostname} or IP address of the remote programmer. For use
+with 'tcp' backend only.
+@example
+cmsis-dap backend tcp
+cmsis-dap tcp host 192.168.1.4
+@end example
+@end deffn
+
+@deffn {Config Command} {cmsis-dap tcp port} port
+Specifies the TCP @var{port} number used by the remote programmer for DAP
+commands. The default port is 4441. For use with 'tcp' backend only.
+@example
+cmsis-dap backend tcp
+cmsis-dap tcp host 192.168.1.4
+cmsis-dap tcp port 4441
+@end example
+@end deffn
+
+@deffn {Config Command} {cmsis-dap tcp min_timeout} milliseconds
+Sets a lower bound on the requested timeout in @var{milliseconds} to wait for
+response packets from the remote programmer when using the 'tcp' backend. The
+user may want to use a larger value on slower networks, to avoid getting
+command mismatch errors. Default value is 150 milliseconds. For use with 'tcp'
+backend only.
+@example
+cmsis-dap tcp min_timeout 200
+@end example
 @end deffn
 
 @deffn {Command} {cmsis-dap quirk} [@option{enable}|@option{disable}]
@@ -3085,61 +3183,66 @@ version, and target voltage.
 @end deffn
 
 @deffn {Interface Driver} {parport}
-Supports PC parallel port bit-banging cables:
-Wigglers, PLD download cable, and more.
-These interfaces have several commands, used to configure the driver
-before initializing the JTAG scan chain:
 
-@deffn {Config Command} {parport cable} name
-Set the layout of the parallel port cable used to connect to the target.
-This is a write-once setting.
-Currently valid cable @var{name} values include:
+This driver supports PC parallel port bit-banging adapters.
+Only JTAG is supported as transport protocol.
+The driver supports Linux, FreeBSD, and Windows.
+However, the Windows support is untested and unmaintained.
 
-@itemize @minus
-@item @b{altium} Altium Universal JTAG cable.
-@item @b{arm-jtag} Same as original wiggler except SRST and
-TRST connections reversed and TRST is also inverted.
-@item @b{chameleon} The Amontec Chameleon's CPLD when operated
-in configuration mode. This is only used to
-program the Chameleon itself, not a connected target.
-@item @b{dlc5} The Xilinx Parallel cable III.
-@item @b{flashlink} The ST Parallel cable.
-@item @b{lattice} Lattice ispDOWNLOAD Cable
-@item @b{old_amt_wiggler} The Wiggler configuration that comes with
-some versions of
-Amontec's Chameleon Programmer. The new version available from
-the website uses the original Wiggler layout ('@var{wiggler}')
-@item @b{triton} The parallel port adapter found on the
-``Karo Triton 1 Development Board''.
-This is also the layout used by the HollyGates design
-(see @uref{http://www.lartmaker.nl/projects/jtag/}).
-@item @b{wiggler} The original Wiggler layout, also supported by
-several clones, such as the Olimex ARM-JTAG
-@item @b{wiggler2} Same as original wiggler except an led is fitted on D5.
-@item @b{wiggler_ntrst_inverted} Same as original wiggler except TRST is inverted.
-@end itemize
+The pin configuration is handled by the generic command @ref{adapter gpio, @command{adapter gpio}}.
+In addition to the JTAG signals, the driver also supports the activity LED signal.
+
+The data and status pins of the parallel port are used as output and input pins, respectively.
+The pin direction is given in the following table.
+
+@multitable @columnfractions .2 .1 .1 .1 .1 .1 .1 .1 .1
+@headitem Pin direction
+@item Input
+@tab ~11
+@tab 10
+@tab 12
+@tab 13
+@tab 15
+@tab -
+@tab -
+@tab -
+@item Output
+@tab 9
+@tab 8
+@tab 7
+@tab 6
+@tab 5
+@tab 4
+@tab 3
+@tab 2
+@end multitable
+
+@deffn {Config Command} {parport port} file
+Specify the device file of the parallel port device.
+The parallel port device file is usually @file{/dev/parportX} on Linux and @file{/dev/ppiX} on FreeBSD.
+
+For legacy reason, the port number @var{X} can be specified instead of the device file.
+@b{Note:} Using the port number is a deprecated feature and will be removed in the future.
+
+When using direct I/O, the number is the I/O port number.
+The default port number is 0x378 (LTP1).
+@b{Note:} Direct I/O support is deprecated and will be removed in the future.
 @end deffn
 
-@deffn {Config Command} {parport port} [port_number]
-Display either the address of the I/O port
-(default: 0x378 for LPT1) or the number of the @file{/dev/parport} device.
-If a parameter is provided, first switch to use that port.
-This is a write-once setting.
+@deffn {Config Command} {parport write_on_exit} (@option{on}|@option{off})
+@b{Note:} This command is deprecated and will be removed in the future.
+Use the command @command{adapter gpio} to configure the pin states before the adapter terminates its operation.
 
-When using PPDEV to access the parallel port, use the number of the parallel port:
-@option{parport port 0} (the default). If @option{parport port 0x378} is specified
-you may encounter a problem.
+Configure whether the driver sets the value specified by @command{adapter gpio} to the output pins on shutdown.
 @end deffn
 
-@deffn {Config Command} {parport toggling_time} [nanoseconds]
-Displays how many nanoseconds the hardware needs to toggle TCK;
-the parport driver uses this value to obey the
-@command{adapter speed} configuration.
-When the optional @var{nanoseconds} parameter is given,
-that setting is changed before displaying the current value.
+@deffn {Config Command} {parport toggling_time} time
+Configure how many nanoseconds the hardware needs to toggle TCK.
+The driver uses this value to obey the @command{adapter speed} configuration.
 
 The default setting should work reasonably well on commodity PC hardware.
 However, you may want to calibrate for your specific hardware.
+
 @quotation Tip
 To measure the toggling time with a logic analyzer or a digital storage
 oscilloscope, follow the procedure below:
@@ -3147,15 +3250,18 @@ oscilloscope, follow the procedure below:
 > parport toggling_time 1000
 > adapter speed 500
 @end example
+
 This sets the maximum JTAG clock speed of the hardware, but
 the actual speed probably deviates from the requested 500 kHz.
 Now, measure the time between the two closest spaced TCK transitions.
 You can use @command{runtest 1000} or something similar to generate a
 large set of samples.
 Update the setting to match your measurement:
+
 @example
 > parport toggling_time <measured nanoseconds>
 @end example
+
 Now the clock speed will be a better match for @command{adapter speed}
 command given in OpenOCD scripts and event handlers.
 
@@ -3167,20 +3273,6 @@ match with the rate you specified in the @command{adapter speed} command;
 be conservative.
 @end quotation
 @end deffn
-
-@deffn {Config Command} {parport write_on_exit} (@option{on}|@option{off})
-This will configure the parallel driver to write a known
-cable-specific value to the parallel interface on exiting OpenOCD.
-@end deffn
-
-For example, the interface configuration file for a
-classic ``Wiggler'' cable on LPT2 might look something like this:
-
-@example
-adapter driver parport
-parport port 0x278
-parport cable wiggler
-@end example
 @end deffn
 
 @deffn {Interface Driver} {presto}
@@ -3349,6 +3441,21 @@ of lscpi -D (first column) for the corresponding device.
 
 The string will be of the format "DDDD:BB:SS.F" such as "0000:65:00.1".
 
+@end deffn
+@end deffn
+
+@deffn {Interface Driver} {xlnx_axi_xvc}
+This driver supports the Xilinx JTAG mapping over AXI using the AXI to JTAG
+Converter or the AXI-to-JTAG mode of the debug bridge.
+It is commonly found in Xilinx MPSoC based designs. It allows debugging
+fabric based JTAG/SWD devices such as Cortex-M1/M3 or RISC-V softcores. Access to this
+is exposed via extended capability registers in the AXI-mapped configuration space.
+
+@deffn {Config Command} {xlnx_axi_xvc dev_addr} addr
+Specifies the address of the AXI-mapped registers via parameter @var{addr}.
+
+The correct value for @var{addr} is specified in the "Address Editor" tab
+in Vivado.
 @end deffn
 @end deffn
 
@@ -6588,6 +6695,50 @@ the flash.
 @end deffn
 @end deffn
 
+@deffn {Flash Driver} {artery}
+@cindex artery
+This driver supports Artery Technology devices from the following series:
+
+@itemize
+@item AT32F403A / AT32F407
+@item AT32F413
+@item AT32F415
+@item AT32F421
+@item AT32F423
+@item AT32F425
+@item AT32F435 / AT32F437
+@item AT32WB415
+@end itemize
+
+Devices with dual-bank flash memory are currently not supported.
+Also, access to user data in the user system data (USD) area is not supported.
+
+The driver supports flash write protection and flash access protection (FAP).
+For the FAP, only the low-level protection is implemented.
+
+@b{Note:} a change of the flash write protection or FAP requires a device reset for the changes to take effect.
+
+The @var{artery} driver provides the following additional commands:
+
+@deffn {Command} {artery fap enable} <bank>
+Enable low-level flash access protection (FAP).
+@end deffn
+
+@deffn {Command} {artery fap disable} <bank>
+Disable flash access protection (FAP).
+@end deffn
+
+@deffn {Command} {artery fap state} <bank>
+Get the flash access protection (FAP) state.
+The state is a boolean value that indicates whether the FAP is configured in level 'low' or higher.
+@end deffn
+
+@deffn {Command} {artery mass_erase} <bank>
+Erase entire bank.
+@end deffn
+
+@end deffn
+
 @deffn {Flash Driver} {at91samd}
 @cindex at91samd
 All members of the ATSAM D2x, D1x, D0x, ATSAMR, ATSAML and ATSAMC microcontroller
@@ -6834,6 +6985,18 @@ This driver uses the same command names/syntax as @xref{at91sam3}.
 
 @example
 flash bank $_FLASHNAME atsamv 0x00400000 0 0 0 $_TARGETNAME
+@end example
+
+These families also have a user signature area located at the beginning
+of an embedded flash. This is a 512 bytes large page whose data are not
+erased by assering ERASE pin or by software ERASE command. It can be
+used to store configuration, keys, trimming values and so on. The area
+overlaps with the beginning of standard flash and uses special commands
+to perform write/read operations. OpenOCD locates the signature area
+at fake address above 32 bit address space, specifically at 0x100000000.
+
+@example
+flash bank $_SIGNATURENAME atsamv 0x100000000 0 0 0 $_TARGETNAME
 @end example
 
 @deffn {Command} {atsamv gpnvm} [@option{show} [@option{all}|number]]
@@ -8316,10 +8479,8 @@ is the register offset of the Option byte to read.
 
 For example to read the FLASH_OPTR register:
 @example
-stm32l4x option_read 0 0x20
-# Option Register (for STM32L4x): <0x40022020> = 0xffeff8aa
-# Option Register (for STM32WBx): <0x58004020> = ...
-# The correct flash base address will be used automatically
+> stm32l4x option_read 0 0x20
+0xffeff8aa
 @end example
 
 The above example will read out the FLASH_OPTR register which contains the RDP
@@ -9308,10 +9469,10 @@ will proceed to quit.
 @end deffn
 
 @anchor{debuglevel}
-@deffn {Command} {debug_level} [n]
+@deffn {Command} {debug_level} [number]
 @cindex message level
-Display debug level.
-If @var{n} (from 0..4) is provided, then set it to that level.
+Without arguments it displays the current debug level.
+If @var{number} (from 0..4) is provided, then set it to that level.
 This affects the kind of messages sent to the server log.
 Level 0 is error messages only;
 level 1 adds warnings;
@@ -9332,9 +9493,10 @@ echo "Downloading kernel -- please wait"
 @end example
 @end deffn
 
-@deffn {Command} {log_output} [filename | "default"]
-Redirect logging to @var{filename} or set it back to default output;
-the default log output channel is stderr.
+@deffn {Command} {log_output} [filename | 'default']
+Redirect logging to @var{filename}. If used without an argument or
+@var{filename} is set to 'default' log output channel is set to
+stderr.
 @end deffn
 
 @deffn {Command} {log_non_error_levels_to_stdout} [on | off]
@@ -10955,6 +11117,10 @@ Enable or disable trace output for all ITM stimulus ports.
 
 @subsection Cortex-M specific commands
 @cindex Cortex-M
+
+@deffn {Command} {cortex_m cache_info}
+Report information about the type and size of the cache, if present.
+@end deffn
 
 @deffn {Command} {cortex_m maskisr} (@option{auto}|@option{on}|@option{off}|@option{steponly})
 Control masking (disabling) interrupts during target step/resume.

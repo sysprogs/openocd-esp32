@@ -19,6 +19,7 @@
 #include <target/xtensa/xtensa.h>
 #include <target/xtensa/xtensa_debug_module.h>
 #include "esp_xtensa_apptrace.h"
+#include "esp.h"
 #include <target/target_type.h>
 
 /* TRAX is disabled, so we use its registers for our own purposes
@@ -148,6 +149,24 @@ int esp_xtensa_apptrace_usr_block_write(struct target *target,
 	return esp_apptrace_usr_block_write(&esp_xtensa_apptrace_hw, target, block_id, data, size);
 }
 
+static int esp_xtensa_apptrace_halt(struct target *target)
+{
+	esp_common_pause_gdb_event_callbacks(target, true);
+	int res = target_halt(target);
+	if (res == ERROR_OK)
+		res = target_wait_state(target, TARGET_HALTED, 3000);
+	esp_common_pause_gdb_event_callbacks(target, false);
+	return res;
+}
+
+static int esp_xtensa_apptrace_resume(struct target *target)
+{
+	esp_common_pause_gdb_event_callbacks(target, true);
+	int res = target_resume(target, true, false, true, false);
+	esp_common_pause_gdb_event_callbacks(target, false);
+	return res;
+}
+
 static int esp_xtensa_apptrace_data_reverse_read(struct xtensa *xtensa,
 	uint32_t size,
 	uint8_t *buffer,
@@ -183,8 +202,7 @@ static int esp_xtensa_apptrace_data_reverse_read(struct xtensa *xtensa,
 static int esp_xtensa_apptrace_data_normal_read(struct xtensa *xtensa,
 	uint32_t size,
 	uint8_t *buffer,
-	uint8_t *unal_bytes,
-	bool wait)
+	uint8_t *unal_bytes)
 {
 	int res = xtensa_queue_dbg_reg_write(xtensa, XDMREG_TRAXADDR, 0);
 	if (res != ERROR_OK)
@@ -198,12 +216,6 @@ static int esp_xtensa_apptrace_data_normal_read(struct xtensa *xtensa,
 		res = xtensa_queue_dbg_reg_read(xtensa, XDMREG_TRAXDATA, unal_bytes);
 		if (res != ERROR_OK)
 			return res;
-	}
-
-	if (wait) {
-		/* Workaround for esp32s3 data corruption while reading the high volume of data */
-		/* Don't have clear reason for this, might fix the priority issue with the target memory access and tracing */
-		usleep(5000 * (size / 256));
 	}
 
 	xtensa_dm_queue_tdi_idle(&xtensa->dbg_mod);
@@ -226,8 +238,8 @@ int esp_xtensa_apptrace_data_read(struct target *target,
 	uint32_t tmp = XTENSA_APPTRACE_HOST_CONNECT | XTENSA_APPTRACE_BLOCK_ID(block_id) | XTENSA_APPTRACE_BLOCK_LEN(0);
 	uint8_t unal_bytes[4];
 	uint32_t target_crc16;
-	const int MAX_TRIES = 10;
-	bool wait = strcmp(target->type->name, "esp32s3") == 0;
+	const int MAX_TRIES = 5;
+	enum target_state old_state = TARGET_UNKNOWN;
 
 	int res = esp_xtensa_apptrace_debug_reg_read(target, XTENSA_APPTRACE_CRC_REG, &target_crc16);
 	if (res != ERROR_OK)
@@ -240,14 +252,14 @@ int esp_xtensa_apptrace_data_read(struct target *target,
 	if (target_crc16 == 0)
 		check_crc = false;
 
-	for (int i = 1; i <= MAX_TRIES; ++i) {
+	for (int i = 1; i <= MAX_TRIES + 1; ++i) {
 		LOG_TARGET_DEBUG(target, "Read data from block %" PRIu32 " size %" PRIu32, block_id, size);
 		if (xtensa->core_config->trace.reversed_mem_access)
 			res = esp_xtensa_apptrace_data_reverse_read(xtensa, size, buffer, unal_bytes);
 		else
-			res = esp_xtensa_apptrace_data_normal_read(xtensa, size, buffer, unal_bytes, wait);
+			res = esp_xtensa_apptrace_data_normal_read(xtensa, size, buffer, unal_bytes);
 		if (res != ERROR_OK)
-			return res;
+			break;
 
 		if (!IS_ALIGNED(size, 4)) {
 			/* copy the last unaligned bytes */
@@ -260,14 +272,39 @@ int esp_xtensa_apptrace_data_read(struct target *target,
 			break;
 
 		uint16_t crc16 = crc16_le(0, buffer, size);
-		if (crc16 == target_crc16)
+		if (crc16 == target_crc16) {
+			res = ERROR_OK;
 			break;
+		}
+
+		res = ERROR_FAIL;
 
 		LOG_WARNING("[%d/%d] CRC mismatch! calculated: 0x%" PRIx16 " read: 0x%" PRIx32,
 			i, MAX_TRIES, crc16, target_crc16);
+
+		if (i == MAX_TRIES) {
+			LOG_TARGET_WARNING(target, "All CRC attempts failed, trying with halted target");
+
+			old_state = target->state;
+			if (old_state != TARGET_HALTED) {
+				res = esp_xtensa_apptrace_halt(target);
+				if (res != ERROR_OK) {
+					LOG_TARGET_ERROR(target, "Failed to halt target for CRC recovery (%d)", res);
+					return res;
+				}
+			}
+		}
 	}
 
-	if (ack) {
+	if (old_state == TARGET_RUNNING && target->state == TARGET_HALTED) {
+		int resume_res = esp_xtensa_apptrace_resume(target);
+		if (resume_res != ERROR_OK) {
+			LOG_TARGET_ERROR(target, "Failed to resume target after CRC recovery (%d)", resume_res);
+			return resume_res;
+		}
+	}
+
+	if (res == ERROR_OK && ack) {
 		LOG_TARGET_DEBUG(target, "Ack block %" PRIu32 " write 0x%" PRIx32 " to control reg", block_id, tmp);
 		res = esp_xtensa_apptrace_debug_reg_write(target, XTENSA_APPTRACE_CTRL_REG, tmp);
 	}
@@ -515,39 +552,65 @@ static int esp_xtensa_apptrace_buffs_write(struct target *target,
 	bool data)
 {
 	struct xtensa *xtensa = target_to_xtensa(target);
-	const int MAX_TRIES = 10;
+	const int MAX_TRIES = 5;
 	int res = ERROR_OK;
 	uint32_t tmp = XTENSA_APPTRACE_HOST_CONNECT |
 		(data ? XTENSA_APPTRACE_HOST_DATA : 0) | XTENSA_APPTRACE_BLOCK_ID(block_id) |
 		XTENSA_APPTRACE_BLOCK_LEN(0);
+	enum target_state old_state = TARGET_UNKNOWN;
 
 	uint32_t sz_all = 0;
 	for (uint32_t i = 0; i < bufs_num; ++i)
 		sz_all += buf_sz[i];
 	sz_all = (sz_all + 3) / 4;
 
-	for (int i = 1; i <= MAX_TRIES; ++i) {
+	for (int i = 1; i <= MAX_TRIES + 1; ++i) {
 		if (xtensa->core_config->trace.reversed_mem_access)
 			res = esp_xtensa_apptrace_queue_reverse_write(target, bufs_num, buf_sz, bufs);
 		else
 			res = esp_xtensa_apptrace_queue_normal_write(target, bufs_num, buf_sz, bufs);
 		if (res != ERROR_OK)
-			return res;
+			break;
 		xtensa_dm_queue_tdi_idle(&xtensa->dbg_mod);
 		res = xtensa_dm_queue_execute(&xtensa->dbg_mod);
 		if (res != ERROR_OK) {
 			LOG_ERROR("Failed to exec JTAG queue!");
-			return res;
+			break;
 		}
 
-		uint32_t end_addr;
-		esp_xtensa_apptrace_debug_reg_read(target, XDMREG_TRAXADDR, &end_addr);
-		if (end_addr >= sz_all)
+		uint32_t end_addr = 0;
+		res = esp_xtensa_apptrace_debug_reg_read(target, XDMREG_TRAXADDR, &end_addr);
+		if (res == ERROR_OK && end_addr >= sz_all)
 			break;
+
+		res = ERROR_FAIL;
+
 		LOG_WARNING("[%d/%d] Failed to write buffs, sent: 0x%" PRId32 " received: 0x%" PRId32 " words",
 			i, MAX_TRIES, sz_all, end_addr);
+
+		if (i == MAX_TRIES) {
+			LOG_TARGET_WARNING(target, "All write attempts failed, trying with halted target");
+
+			old_state = target->state;
+			if (old_state != TARGET_HALTED) {
+				res = esp_xtensa_apptrace_halt(target);
+				if (res != ERROR_OK) {
+					LOG_TARGET_ERROR(target, "Failed to halt target for write recovery (%d)", res);
+					return res;
+				}
+			}
+		}
 	}
-	if (ack) {
+
+	if (old_state == TARGET_RUNNING && target->state == TARGET_HALTED) {
+		int resume_res = esp_xtensa_apptrace_resume(target);
+		if (resume_res != ERROR_OK) {
+			LOG_TARGET_ERROR(target, "Failed to resume target after write recovery (%d)", resume_res);
+			return resume_res;
+		}
+	}
+
+	if (res == ERROR_OK && ack) {
 		LOG_TARGET_DEBUG(target, "Ack block %" PRIu32 " write 0x%" PRIx32 " to control reg", block_id, tmp);
 		res = esp_xtensa_apptrace_debug_reg_write(target, XTENSA_APPTRACE_CTRL_REG, tmp);
 	}

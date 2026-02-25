@@ -273,8 +273,7 @@ int esp_riscv_examine(struct target *target)
 
 	struct esp_riscv_reg_class esp_riscv_registers[] = {
 		{ esp_riscv_gprs, ARRAY_SIZE(esp_riscv_gprs), true, NULL },
-		/* FPRs can't be read via abstract command in ESP32-P4 ECO version */
-		{ esp_riscv_fprs, ARRAY_SIZE(esp_riscv_fprs), false, NULL },
+		{ esp_riscv_fprs, ARRAY_SIZE(esp_riscv_fprs), true, NULL },
 		{ esp_riscv_csrs, ARRAY_SIZE(esp_riscv_csrs), true, NULL },
 		{ esp_riscv_ro_csrs, ARRAY_SIZE(esp_riscv_ro_csrs), false, NULL },
 	};
@@ -403,10 +402,101 @@ int esp_riscv_alloc_trigger_addr(struct target *target)
 	return ERROR_OK;
 }
 
+static void esp_riscv_set_bp_wp_address(struct target *target, int id, target_addr_t address, bool is_bp)
+{
+	if (target->smp) {
+		struct target_list *head;
+		foreach_smp_target(head, target->smp_targets) {
+			struct esp_riscv_common *esp_riscv = target_to_esp_riscv(head->target);
+			target_addr_t *target_bp_wp_addr = is_bp ? esp_riscv->target_bp_addr : esp_riscv->target_wp_addr;
+			target_bp_wp_addr[id] = address;
+		}
+		return;
+	}
+
+	struct esp_riscv_common *esp_riscv = target_to_esp_riscv(target);
+	target_addr_t *target_bp_wp_addr = is_bp ? esp_riscv->target_bp_addr : esp_riscv->target_wp_addr;
+	target_bp_wp_addr[id] = address;
+}
+
+static int esp_riscv_set_bp(struct target *target)
+{
+	struct esp_riscv_common *esp_riscv = target_to_esp_riscv(target);
+	/* Enough space to hold 3 long words for both riscv32 and riscv64 archs. */
+	uint8_t fields[ESP_RISCV_SET_BREAKPOINT_ARG_MAX * sizeof(uint64_t)];
+	int res = semihosting_read_fields(target, ESP_RISCV_SET_BREAKPOINT_ARG_MAX, fields);
+	if (res != ERROR_OK)
+		return res;
+	int id = semihosting_get_field(target, ESP_RISCV_SET_BREAKPOINT_ARG_ID, fields);
+	if (id >= esp_riscv->max_bp_num) {
+		LOG_ERROR("Unsupported breakpoint ID (%d)!", id);
+		return ERROR_FAIL;
+	}
+	int set = semihosting_get_field(target, ESP_RISCV_SET_BREAKPOINT_ARG_SET, fields);
+	LOG_TARGET_DEBUG(target, "set:%d target_bp_addr[%d]:" TARGET_ADDR_FMT, set, id, esp_riscv->target_bp_addr[id]);
+	/* Remove existing bp if present. */
+	if (esp_riscv->target_bp_addr[id]) {
+		breakpoint_remove(target, esp_riscv->target_bp_addr[id]);
+		esp_riscv_set_bp_wp_address(target, id, 0, true);
+	}
+	if (set) {
+		target_addr_t address = semihosting_get_field(target, ESP_RISCV_SET_BREAKPOINT_ARG_ADDR, fields);
+		res = breakpoint_add(target, address, 2, BKPT_HARD);
+		if (res == ERROR_OK)
+			esp_riscv_set_bp_wp_address(target, id, address, true);
+	}
+	return res;
+}
+
+static int esp_riscv_set_wp(struct target *target)
+{
+	struct esp_riscv_common *esp_riscv = target_to_esp_riscv(target);
+	/* Enough space to hold 5 long words for both riscv32 and riscv64 archs. */
+	uint8_t fields[ESP_RISCV_SET_WATCHPOINT_ARG_MAX * sizeof(uint64_t)];
+	int res = semihosting_read_fields(target, ESP_RISCV_SET_WATCHPOINT_ARG_MAX, fields);
+	if (res != ERROR_OK)
+		return res;
+	int id = semihosting_get_field(target, ESP_RISCV_SET_WATCHPOINT_ARG_ID, fields);
+	if (id >= esp_riscv->max_wp_num) {
+		LOG_ERROR("Unsupported watchpoint ID (%d)!", id);
+		return ERROR_FAIL;
+	}
+	int set = semihosting_get_field(target, ESP_RISCV_SET_WATCHPOINT_ARG_SET, fields);
+	LOG_TARGET_DEBUG(target, "set:%d target_wp_addr[%d]:" TARGET_ADDR_FMT, set, id, esp_riscv->target_wp_addr[id]);
+	/* Remove existing wp if present. */
+	if (esp_riscv->target_wp_addr[id]) {
+		watchpoint_remove(target, esp_riscv->target_wp_addr[id]);
+		esp_riscv_set_bp_wp_address(target, id, 0, false);
+	}
+	if (set) {
+		target_addr_t address = semihosting_get_field(target, ESP_RISCV_SET_WATCHPOINT_ARG_ADDR, fields);
+		int size = semihosting_get_field(target, ESP_RISCV_SET_WATCHPOINT_ARG_SIZE, fields);
+		int flags = semihosting_get_field(target, ESP_RISCV_SET_WATCHPOINT_ARG_FLAGS, fields);
+		enum watchpoint_rw wp_type;
+		switch (flags & (ESP_SEMIHOSTING_WP_FLG_RD | ESP_SEMIHOSTING_WP_FLG_WR)) {
+		case ESP_SEMIHOSTING_WP_FLG_RD:
+			wp_type = WPT_READ;
+			break;
+		case ESP_SEMIHOSTING_WP_FLG_WR:
+			wp_type = WPT_WRITE;
+			break;
+		case ESP_SEMIHOSTING_WP_FLG_RD | ESP_SEMIHOSTING_WP_FLG_WR:
+			wp_type = WPT_ACCESS;
+			break;
+		default:
+			LOG_ERROR("Unsupported watchpoint type (0x%x)!", flags);
+			return ERROR_FAIL;
+		}
+		res = watchpoint_add(target, address, size, wp_type, 0, WATCHPOINT_IGNORE_DATA_VALUE_MASK);
+		if (res == ERROR_OK)
+			esp_riscv_set_bp_wp_address(target, id, address, false);
+	}
+	return res;
+}
+
 int esp_riscv_semihosting(struct target *target)
 {
 	int res = ERROR_OK;
-	struct esp_riscv_common *esp_riscv = target_to_esp_riscv(target);
 	struct semihosting *semihosting = target->semihosting;
 
 	/*
@@ -416,11 +506,11 @@ int esp_riscv_semihosting(struct target *target)
 	if (target->smp && (semihosting->op == ESP_SEMIHOSTING_SYS_BREAKPOINT_SET ||
 		semihosting->op == ESP_SEMIHOSTING_SYS_WATCHPOINT_SET)) {
 		/* Do not report internal halt, set flag for target with active GDB service (keep in mind for OCD-1132) */
-		struct riscv_info *info = riscv_info(target->gdb_service ? target->gdb_service->target : target);
-		info->pause_gdb_callbacks = true;
+		struct target *curr_target = target->gdb_service ? target->gdb_service->target : target;
+		curr_target->pause_gdb_event_callbacks = true;
 		/* Halt all harts in the SMP group. Resume-all will be handled in riscv_semihosting() return */
 		res = riscv_halt(target);
-		info->pause_gdb_callbacks = false;
+		curr_target->pause_gdb_event_callbacks = false;
 		if (res != ERROR_OK)
 			return res;
 	}
@@ -437,106 +527,15 @@ int esp_riscv_semihosting(struct target *target)
 			return res;
 		break;
 	case ESP_SEMIHOSTING_SYS_BREAKPOINT_SET:
-	{
-		/* Enough space to hold 3 long words for both riscv32 and riscv64 archs. */
-		uint8_t fields[ESP_RISCV_SET_BREAKPOINT_ARG_MAX * sizeof(uint64_t)];
-		res = semihosting_read_fields(target,
-				ESP_RISCV_SET_BREAKPOINT_ARG_MAX,
-				fields);
+		res = esp_riscv_set_bp(target);
 		if (res != ERROR_OK)
 			return res;
-		int id = semihosting_get_field(target,
-				ESP_RISCV_SET_BREAKPOINT_ARG_ID,
-				fields);
-		if (id >= esp_riscv->max_bp_num) {
-			LOG_ERROR("Unsupported breakpoint ID (%d)!", id);
-			return ERROR_FAIL;
-		}
-		int set = semihosting_get_field(target,
-				ESP_RISCV_SET_BREAKPOINT_ARG_SET,
-				fields);
-		if (set) {
-			if (esp_riscv->target_bp_addr[id]) {
-				breakpoint_remove(target, esp_riscv->target_bp_addr[id]);
-			}
-			esp_riscv->target_bp_addr[id] = semihosting_get_field(target,
-					ESP_RISCV_SET_BREAKPOINT_ARG_ADDR,
-					fields);
-			res = breakpoint_add(target,
-					esp_riscv->target_bp_addr[id],
-					2,
-					BKPT_HARD);
-			if (res != ERROR_OK)
-				return res;
-		} else {
-			breakpoint_remove(target, esp_riscv->target_bp_addr[id]);
-			esp_riscv->target_bp_addr[id] = 0;
-		}
 		break;
-	}
 	case ESP_SEMIHOSTING_SYS_WATCHPOINT_SET:
-	{
-		/* Enough space to hold 5 long words for both riscv32 and riscv64 archs. */
-		uint8_t fields[ESP_RISCV_SET_WATCHPOINT_ARG_MAX * sizeof(uint64_t)];
-		res = semihosting_read_fields(target,
-				ESP_RISCV_SET_WATCHPOINT_ARG_MAX,
-				fields);
+		res = esp_riscv_set_wp(target);
 		if (res != ERROR_OK)
 			return res;
-		int id = semihosting_get_field(target,
-				ESP_RISCV_SET_WATCHPOINT_ARG_ID,
-				fields);
-		if (id >= esp_riscv->max_wp_num) {
-			LOG_ERROR("Unsupported watchpoint ID (%d)!", id);
-			return ERROR_FAIL;
-		}
-		int set = semihosting_get_field(target,
-				ESP_RISCV_SET_WATCHPOINT_ARG_SET,
-				fields);
-		if (set) {
-			if (esp_riscv->target_wp_addr[id]) {
-				watchpoint_remove(target, esp_riscv->target_wp_addr[id]);
-			}
-			esp_riscv->target_wp_addr[id] = semihosting_get_field(target,
-					ESP_RISCV_SET_WATCHPOINT_ARG_ADDR,
-					fields);
-			int size = semihosting_get_field(target,
-					ESP_RISCV_SET_WATCHPOINT_ARG_SIZE,
-					fields);
-			int flags = semihosting_get_field(target,
-					ESP_RISCV_SET_WATCHPOINT_ARG_FLAGS,
-					fields);
-			enum watchpoint_rw wp_type;
-			switch (flags &
-					(ESP_SEMIHOSTING_WP_FLG_RD | ESP_SEMIHOSTING_WP_FLG_WR)) {
-			case ESP_SEMIHOSTING_WP_FLG_RD:
-				wp_type = WPT_READ;
-				break;
-			case ESP_SEMIHOSTING_WP_FLG_WR:
-				wp_type = WPT_WRITE;
-				break;
-			case ESP_SEMIHOSTING_WP_FLG_RD | ESP_SEMIHOSTING_WP_FLG_WR:
-				wp_type = WPT_ACCESS;
-				break;
-			default:
-				LOG_ERROR("Unsupported watchpoint type (0x%x)!",
-						flags);
-				return ERROR_FAIL;
-			}
-			res = watchpoint_add(target,
-					esp_riscv->target_wp_addr[id],
-					size,
-					wp_type,
-					0,
-					WATCHPOINT_IGNORE_DATA_VALUE_MASK);
-			if (res != ERROR_OK)
-				return res;
-		} else {
-			watchpoint_remove(target, esp_riscv->target_wp_addr[id]);
-			esp_riscv->target_wp_addr[id] = 0;
-		}
 		break;
-	}
 	default:
 		return ERROR_FAIL;
 	}
@@ -597,15 +596,9 @@ int esp_riscv_breakpoint_add(struct target *target, struct breakpoint *breakpoin
 			/* For SMP target return OK if SW flash breakpoint is already set using another
 			*core; GDB causes call to esp_algo_flash_breakpoint_add() for every core, since it
 			*treats flash breakpoints as HW ones */
-			if (target->smp) {
-				struct target_list *curr;
-				foreach_smp_target(curr, target->smp_targets) {
-					esp_riscv = target_to_esp_riscv(curr->target);
-					if (esp_common_flash_breakpoint_exists(&esp_riscv->esp, breakpoint))
-						return ERROR_OK;
-				}
-			}
 			esp_riscv = target_to_esp_riscv(target);
+			if (target->smp && esp_common_flash_breakpoint_exists(&esp_riscv->esp, breakpoint->address))
+				return ERROR_OK;
 			return esp_common_flash_breakpoint_add(target, &esp_riscv->esp, breakpoint);
 		}
 	}
@@ -631,59 +624,6 @@ int esp_riscv_breakpoint_remove(struct target *target, struct breakpoint *breakp
 	return res;
 }
 
-int esp_riscv_smp_watchpoint_add(struct target *target, struct watchpoint *watchpoint)
-{
-	int res = riscv_add_watchpoint(target, watchpoint);
-	if (res != ERROR_OK)
-		return res;
-
-	if (!target->smp)
-		return ERROR_OK;
-
-	struct target_list *head;
-	foreach_smp_target(head, target->smp_targets) {
-		struct target *curr = head->target;
-		if (curr == target || !target_was_examined(curr))
-			continue;
-		/* Need to use high level API here because every target for core contains list of watchpoints.
-		 * GDB works with active core only, so we need to duplicate every watchpoint on other cores,
-		 * otherwise watchpoint_free() on active core can fail if WP has been initially added on another core. */
-		unsigned int tmp_smp = curr->smp;
-		curr->smp = 0;
-		res = watchpoint_add(curr, watchpoint->address, watchpoint->length,
-			watchpoint->rw, watchpoint->value, watchpoint->mask);
-		curr->smp = tmp_smp;
-		if (res != ERROR_OK)
-			return res;
-	}
-	return ERROR_OK;
-}
-
-int esp_riscv_smp_watchpoint_remove(struct target *target, struct watchpoint *watchpoint)
-{
-	int res = riscv_remove_watchpoint(target, watchpoint);
-	if (res != ERROR_OK)
-		return res;
-
-	if (!target->smp)
-		return ERROR_OK;
-
-	struct target_list *head;
-	foreach_smp_target(head, target->smp_targets) {
-		struct target *curr = head->target;
-		if (curr == target)
-			continue;
-		/* see big comment in esp_riscv_watchpoint_add() */
-		unsigned int tmp_smp = curr->smp;
-		curr->smp = 0;
-		res = watchpoint_remove(curr, watchpoint->address);
-		curr->smp = tmp_smp;
-		if (res != ERROR_OK)
-			return res;
-	}
-	return ERROR_OK;
-}
-
 int esp_riscv_hit_watchpoint(struct target *target, struct watchpoint **hit_watchpoint)
 {
 	/* Do not send watchpoint info if it is set by program.
@@ -693,6 +633,16 @@ int esp_riscv_hit_watchpoint(struct target *target, struct watchpoint **hit_watc
 		return ERROR_FAIL;
 
 	return riscv_hit_watchpoint(target, hit_watchpoint);
+}
+
+static bool esp_riscv_is_bp_set_in_flash(struct target *target, struct esp_common *esp)
+{
+	riscv_reg_t pc;
+	if (riscv_get_register(target, &pc, GDB_REGNO_PC) != ERROR_OK) {
+		LOG_TARGET_WARNING(target, "Failed to read pc register!");
+		return false;
+	}
+	return esp_common_flash_breakpoint_exists(esp, pc);
 }
 
 int esp_riscv_resume(struct target *target, bool current, target_addr_t address,
@@ -725,7 +675,64 @@ int esp_riscv_resume(struct target *target, bool current, target_addr_t address,
 		}
 	}
 
+	struct esp_common *esp = target_to_esp_common(target);
+	if (target->smp) {
+		struct target_list *head;
+		foreach_smp_target(head, target->smp_targets) {
+			struct target *curr = head->target;
+			if (esp_riscv_is_bp_set_in_flash(curr, esp)) {
+				esp_riscv_step(curr, true, 0, handle_breakpoints);
+				handle_breakpoints = false;
+				break;
+			}
+		}
+	} else  {
+		if (esp_riscv_is_bp_set_in_flash(target, esp)) {
+			esp_riscv_step(target, true, 0, handle_breakpoints);
+			handle_breakpoints = false;
+		}
+	}
+	if (esp->breakpoint_lazy_process && esp_common_process_lazy_flash_breakpoints(target) != ERROR_OK)
+		LOG_TARGET_WARNING(target, "Failed to process pending breakpoints before resume!");
 	return riscv_target_resume(target, current, address, handle_breakpoints, debug_execution);
+}
+
+int esp_riscv_step(struct target *target, bool current, target_addr_t address, bool handle_breakpoints)
+{
+	struct esp_common *esp = target_to_esp_common(target);
+	struct esp_flash_breakpoint *flash_bps = esp->flash_brps.brps;
+
+	riscv_reg_t pc = 0;
+	if (riscv_get_register(target, &pc, GDB_REGNO_PC) != ERROR_OK) {
+		LOG_TARGET_WARNING(target, "Failed to read pc register, stepping may fail!");
+		return riscv_openocd_step(target, current, address, handle_breakpoints);
+	}
+
+	for (unsigned int slot = 0; slot < ESP_FLASH_BREAKPOINTS_MAX_NUM; slot++) {
+		if (flash_bps[slot].bp_address != pc
+				|| (flash_bps[slot].action == ESP_BP_ACT_REM && flash_bps[slot].status == ESP_BP_STAT_DONE))
+			continue;
+		/* Check for pending breakpoint removal */
+		if (flash_bps[slot].action == ESP_BP_ACT_REM && flash_bps[slot].status == ESP_BP_STAT_PEND) {
+			if (esp_common_process_lazy_flash_breakpoints(target) != ERROR_OK)
+				LOG_TARGET_WARNING(target, "Failed to process pending breakpoints before step!");
+			break;
+		}
+		/* Check for pending breakpoint addition */
+		if (flash_bps[slot].action == ESP_BP_ACT_ADD && flash_bps[slot].status == ESP_BP_STAT_PEND)
+			break;
+		/* Breakpoint is already set */
+		struct breakpoint *bp = breakpoint_find(target, pc);
+		if (esp_common_flash_breakpoint_remove(target, esp, bp) != ERROR_OK)
+			LOG_TARGET_WARNING(target, "Failed to remove breakpoint before step!");
+		if (esp->breakpoint_lazy_process && esp_common_process_lazy_flash_breakpoints(target) != ERROR_OK)
+			LOG_TARGET_WARNING(target, "Failed to process pending breakpoints before step!");
+		int ret = riscv_openocd_step(target, current, address, handle_breakpoints);
+		if (esp_common_flash_breakpoint_add(target, esp, bp) != ERROR_OK)
+			LOG_TARGET_WARNING(target, "Failed to re-add breakpoint after step!");
+		return ret;
+	}
+	return riscv_openocd_step(target, current, address, handle_breakpoints);
 }
 
 static int esp_riscv_on_halt(struct target *target)
@@ -767,7 +774,8 @@ int esp_riscv_start_algorithm(struct target *target,
 		struct reg *r = &target->reg_cache->reg_list[number];
 
 		algorithm_info->valid_saved_registers[r->number] = r->exist;
-		if (!r->exist || !r->caller_save)
+		if (!r->exist || !r->caller_save
+				|| (r->number > GDB_REGNO_PC && target_to_esp_riscv(target)->minimal_save_restore))
 			continue;
 
 		LOG_TARGET_DEBUG(target, "save %s", r->name);
@@ -925,7 +933,8 @@ int esp_riscv_wait_algorithm(struct target *target,
 		number <= max_saved_reg && number < target->reg_cache->num_regs; number++) {
 		struct reg *r = &target->reg_cache->reg_list[number];
 
-		if (!algorithm_info->valid_saved_registers[r->number] || !r->caller_save || !r->exist)
+		if (!algorithm_info->valid_saved_registers[r->number] || !r->caller_save || !r->exist
+				|| (r->number > GDB_REGNO_PC && target_to_esp_riscv(target)->minimal_save_restore))
 			continue;
 
 		LOG_TARGET_DEBUG(target, "restore %s", r->name);
@@ -1045,6 +1054,15 @@ void esp_riscv_deinit_target(struct target *target)
 
 	free(esp_riscv->target_bp_addr);
 	free(esp_riscv->target_wp_addr);
+	if (esp_riscv->esp.flash_brps.brps) {
+		free(esp_riscv->esp.flash_brps.brps);
+		if (target->smp) {
+			struct target_list *head;
+			foreach_smp_target(head, target->smp_targets) {
+				target_to_esp_common(head->target)->flash_brps.brps = NULL;
+			}
+		}
+	}
 
 	riscv_target.deinit_target(target);
 }
@@ -1070,6 +1088,23 @@ int esp_riscv_get_gdb_reg_list(struct target *target,
 
 	LOG_TARGET_ERROR(target, "Unexpected target state %s!", target_state_name(target));
 	return ERROR_FAIL;
+}
+
+static COMMAND_HELPER(esp_riscv_parse_cmd_minimal_save_restore, struct target *target)
+{
+	if (CMD_ARGC != 1)
+		return ERROR_COMMAND_SYNTAX_ERROR;
+
+	struct esp_riscv_common *esp_riscv = target_to_esp_riscv(target);
+	COMMAND_PARSE_BOOL(CMD_ARGV[0], esp_riscv->minimal_save_restore, "on", "off");
+	LOG_DEBUG("Algorithm save/restare configuration: %s",  esp_riscv->minimal_save_restore ? "minimal" : "full");
+
+	return ERROR_OK;
+}
+
+COMMAND_HANDLER(esp_riscv_minimal_save_restore)
+{
+	return CALL_COMMAND_HANDLER(esp_riscv_parse_cmd_minimal_save_restore, get_current_target(CMD_CTX));
 }
 
 COMMAND_HANDLER(esp_riscv_halted_command)
@@ -1107,6 +1142,13 @@ const struct command_registration esp_riscv_command_handlers[] = {
 		.mode = COMMAND_ANY,
 		.help = "Handles halted event and prints exception reason",
 		.usage = "",
+	},
+	{
+		.name = "minimal_save_restore",
+		.handler = esp_riscv_minimal_save_restore,
+		.mode = COMMAND_ANY,
+		.help = "Only save/restore GPRs when running algorithms",
+		.usage = "<'on'|'off'>",
 	},
 	COMMAND_REGISTRATION_DONE
 };

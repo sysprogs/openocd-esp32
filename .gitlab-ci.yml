@@ -70,6 +70,7 @@ variables:
     - job: build_windows_win32
     - job: build_windows_win64
     - job: macos_codesign
+    #- job: build_windows_arm64
 
 .release_submit_action: &release_submit_action
   image: espressif/github-hub:2
@@ -100,7 +101,7 @@ pipeline_variables:
       echo "TRIGGERED_BY_GDB_PIPELINE_BRANCH=${TRIGGERED_BY_GDB_PIPELINE_BRANCH:-}" >> variables.env;
       if [[ ! -z ${TRIGGERED_BY_GDB_PIPELINE_BRANCH:-} ]]; then
         echo "CI_FULL_RUN=0" >> variables.env;
-      elif [[ $CI_PIPELINE_SOURCE != "push" || $CI_COMMIT_BRANCH == "master" ]]; then
+      elif [[ $CI_PIPELINE_SOURCE != "push" || ${CI_COMMIT_BRANCH:-} == "master" || ! -z ${CI_COMMIT_TAG:-} ]]; then
         echo "CI_FULL_RUN=1" >> variables.env;
       else
         api_call="https://${CI_SERVER_HOST}:${CI_SERVER_PORT}/api/v4/projects/67/merge_requests?source_branch=${CI_COMMIT_REF_NAME}&state=opened";
@@ -114,6 +115,30 @@ pipeline_variables:
     reports:
       dotenv: variables.env
 
+build_macos_strip:
+  stage: build_openocd
+  tags: [ "darwin" ]
+  needs: [build_macos, build_macos_arm64]
+  artifacts:
+    paths:
+      - dist
+  script:
+    - cd dist
+    - dist_names="dist_name_macos dist_name_macos-arm64"
+    - ocd_bin=tmp/openocd-esp32/bin/openocd
+    - >
+      for dist_file in $dist_names; do
+        mkdir tmp;
+        tar -xzf `cat $dist_file` -C tmp;
+        otool -l $ocd_bin | grep -A 5 LC_SYMTAB;
+        ls -lh $ocd_bin;
+        strip -S $ocd_bin;
+        otool -l $ocd_bin | grep -A 5 LC_SYMTAB;
+        ls -lh $ocd_bin;
+        tar -czf `cat $dist_file` -C tmp .;
+        rm -rf tmp;
+      done
+
 macos_codesign:
   stage: pre_release
   <<: *release_tag_filter
@@ -121,7 +146,7 @@ macos_codesign:
   resource_group: macos_codesign
   tags: [ "darwin", "codesign" ]
   # list all jobs that produces macos distros
-  needs: [build_macos, build_macos_arm64]
+  needs: [build_macos_strip]
   artifacts:
     paths:
       - ${DIST_ART_DIR}
@@ -196,6 +221,8 @@ test_idf_examples:
   stage: pre_release
   allow_failure: true
   rules:
+    - if: $CI_COMMIT_TAG
+      when: always
     - if: $CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_TYPE == "run_idf_tests"
       when: always
     - if: $CI_COMMIT_BRANCH == "master"
@@ -213,6 +240,7 @@ create_reports:
   stage: results
   tags:
     - build
+  coverage: '/lines\.*:.*.*\s+(\d+\.\d+%)/'
   artifacts:
     paths:
       - dist/lcov_all_report.tar.gz
@@ -230,11 +258,11 @@ create_reports:
     when: always
     expire_in: 1 week
   needs:
-    - job: 5.1.x_run_test_pipeline
     - job: 5.2.x_run_test_pipeline
     - job: 5.3.x_run_test_pipeline
     - job: 5.4.x_run_test_pipeline
     - job: 5.5.x_run_test_pipeline
+    - job: 6.0.x_run_test_pipeline
     - job: master_run_test_pipeline
     # NuttX
     - job: test_nuttx_esp32
@@ -296,10 +324,10 @@ mr_auto_approve:
     - build
   dependencies:
     - pipeline_variables
-  when: on_success
+  when: always
   script:
     - >
-      if [[ -z ${TRIGGERED_BY_GDB_PIPELINE_BRANCH:-} &&  $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH != "master" && $CI_FULL_RUN == "1" ]]; then
+      if [[ -z ${TRIGGERED_BY_GDB_PIPELINE_BRANCH:-} &&  $CI_PIPELINE_SOURCE == "push" && ${CI_COMMIT_BRANCH:-} != "master" ]]; then
         api_call="https://${CI_SERVER_HOST}:${CI_SERVER_PORT}/api/v4/projects/67/merge_requests?source_branch=${CI_COMMIT_REF_NAME}&state=opened";
         echo "${api_call}";
         OPEN_MR=$(curl --header "PRIVATE-TOKEN: ${ESPCI_TOKEN}" "${api_call}");
@@ -307,7 +335,17 @@ mr_auto_approve:
         iid=$(echo "$OPEN_MR" | python3 -c "import json; x=json.loads(input()); print(x[0]['iid'] if len(x) and 'iid' in x[0] else 0)");
         target=$(echo "$OPEN_MR" | python3 -c "import json; x=json.loads(input()); print(x[0]['target_branch'] if len(x) and 'target_branch' in x[0] else '')");
         if [[ $iid != "0" && $target == "master" ]]; then
-          api_call="https://${CI_SERVER_HOST}:${CI_SERVER_PORT}/api/v4/projects/67/merge_requests/${iid}/approve";
+          action="unapprove"
+          if [[ $CI_FULL_RUN == "1" ]]; then
+            api_call="https://${CI_SERVER_HOST}:${CI_SERVER_PORT}/api/v4/projects/67/pipelines/${CI_PIPELINE_ID}/jobs?scope[]=failed";
+            echo "${api_call}";
+            FAILED_JOBS=$(curl --header "PRIVATE-TOKEN: ${ESPCI_TOKEN}" "${api_call}");
+            echo $FAILED_JOBS
+            if [[ $FAILED_JOBS == "[]" ]]; then
+              action="approve"
+            fi
+          fi
+          api_call="https://${CI_SERVER_HOST}:${CI_SERVER_PORT}/api/v4/projects/67/merge_requests/${iid}/${action}";
           echo "${api_call}";
           curl --request POST --header "PRIVATE-TOKEN: ${ESPCI_TOKEN}" "${api_call}";
         fi

@@ -1462,10 +1462,30 @@ static int remove_trigger(struct target *target, int unique_id)
 	return ERROR_OK;
 }
 
+static int remove_trigger_from_unavailable_target(struct target *target, int unique_id)
+{
+	RISCV_INFO(r);
+
+	for (unsigned int i = 0; i < r->trigger_count; i++) {
+		if (r->trigger_unique_id[i] == unique_id) {
+			r->trigger_unique_id[i] = -1;
+			LOG_TARGET_DEBUG(target, "Stop using resource %d for bp %d",
+				i, unique_id);
+		}
+	}
+	return ERROR_OK;
+}
+
 int riscv_remove_breakpoint(struct target *target,
 		struct breakpoint *breakpoint)
 {
 	if (breakpoint->type == BKPT_SOFT) {
+		/* ESPRESSIF */
+		if (target->state == TARGET_UNAVAILABLE) {
+			LOG_TARGET_WARNING(target, "Target unavailable, breakpoint may not be removed!");
+			breakpoint->is_set = false;
+			return ERROR_OK;
+		}
 		/* Write the original instruction. */
 		if (riscv_write_by_any_size(
 				target, breakpoint->address, breakpoint->length, breakpoint->orig_instr) != ERROR_OK) {
@@ -1477,6 +1497,13 @@ int riscv_remove_breakpoint(struct target *target,
 	} else if (breakpoint->type == BKPT_HARD) {
 		struct trigger trigger;
 		trigger_from_breakpoint(&trigger, breakpoint);
+		/* ESPRESSIF */
+		if (target->state == TARGET_UNAVAILABLE) {
+			LOG_TARGET_WARNING(target, "Target unavailable, breakpoint may not be removed!");
+			remove_trigger_from_unavailable_target(target, trigger.unique_id);
+			breakpoint->is_set = false;
+			return ERROR_OK;
+		}
 		int result = remove_trigger(target, trigger.unique_id);
 		if (result != ERROR_OK)
 			return result;
@@ -1527,9 +1554,16 @@ int riscv_remove_watchpoint(struct target *target,
 		struct watchpoint *watchpoint)
 {
 	LOG_TARGET_DEBUG(target, "Removing watchpoint @0x%" TARGET_PRIxADDR, watchpoint->address);
-
 	struct trigger trigger;
 	trigger_from_watchpoint(&trigger, watchpoint);
+
+	/* ESPRESSIF */
+	if (target->state == TARGET_UNAVAILABLE) {
+		LOG_TARGET_WARNING(target, "Target unavailable, watchpoint may not be removed!");
+		remove_trigger_from_unavailable_target(target, trigger.unique_id);
+		watchpoint->is_set = false;
+		return ERROR_OK;
+	}
 
 	int result = remove_trigger(target, trigger.unique_id);
 	if (result != ERROR_OK)
@@ -1918,11 +1952,6 @@ static int halt_go(struct target *target)
 
 static int halt_finish(struct target *target)
 {
-	RISCV_INFO(r);
-
-	if (r->pause_gdb_callbacks)
-		return ERROR_OK;
-
 	return target_call_event_callbacks(target, TARGET_EVENT_HALTED);
 }
 
@@ -2251,9 +2280,9 @@ static int riscv_effective_privilege_mode(struct target *target, int *v_mode, in
 	return ERROR_OK;
 }
 
-static int riscv_mmu(struct target *target, int *enabled)
+static int riscv_mmu(struct target *target, bool *enabled)
 {
-	*enabled = 0;
+	*enabled = false;
 
 	if (!riscv_enable_virt2phys)
 		return ERROR_OK;
@@ -2299,7 +2328,7 @@ static int riscv_mmu(struct target *target, int *enabled)
 		/* vsatp is identical to satp, so we can use the satp macros. */
 		if (RISCV_SATP_MODE(xlen) != SATP_MODE_OFF) {
 			LOG_TARGET_DEBUG(target, "VS-stage translation is enabled.");
-			*enabled = 1;
+			*enabled = true;
 			return ERROR_OK;
 		}
 
@@ -2311,7 +2340,7 @@ static int riscv_mmu(struct target *target, int *enabled)
 		}
 		if (RISCV_HGATP_MODE(xlen) != HGATP_MODE_OFF) {
 			LOG_TARGET_DEBUG(target, "G-stage address translation is enabled.");
-			*enabled = 1;
+			*enabled = true;
 		} else {
 			LOG_TARGET_DEBUG(target, "No V-mode address translation enabled.");
 		}
@@ -2336,7 +2365,7 @@ static int riscv_mmu(struct target *target, int *enabled)
 		LOG_TARGET_DEBUG(target, "MMU is disabled.");
 	} else {
 		LOG_TARGET_DEBUG(target, "MMU is enabled.");
-		*enabled = 1;
+		*enabled = true;
 	}
 
 	return ERROR_OK;
@@ -2546,7 +2575,7 @@ static int riscv_virt2phys_v(struct target *target, target_addr_t virtual, targe
 
 static int riscv_virt2phys(struct target *target, target_addr_t virtual, target_addr_t *physical)
 {
-	int enabled;
+	bool enabled;
 	if (riscv_mmu(target, &enabled) != ERROR_OK)
 		return ERROR_FAIL;
 	if (!enabled) {
@@ -3321,8 +3350,10 @@ int riscv_openocd_step(struct target *target, bool current,
 				return ERROR_FAIL;
 		}
 		breakpoint = breakpoint_find(target, address);
-		if (breakpoint && (riscv_remove_breakpoint(target, breakpoint) != ERROR_OK))
-			return ERROR_FAIL;
+		if (breakpoint && (riscv_remove_breakpoint(target, breakpoint) != ERROR_OK)) {
+			/* Espressif - this is not an error because of flash bps */
+			breakpoint = NULL;
+		}
 	}
 
 	riscv_reg_t trigger_state[RISCV_MAX_HWBPS] = {0};
@@ -5152,9 +5183,7 @@ static bool gdb_regno_cacheable(enum gdb_regno regno, bool is_write)
 		case GDB_REGNO_MISA:
 		case GDB_REGNO_DCSR:
 		case GDB_REGNO_DSCRATCH0:
-		case GDB_REGNO_MSTATUS:
 		case GDB_REGNO_MEPC:
-		case GDB_REGNO_MCAUSE:
 		case GDB_REGNO_SATP:
 			/*
 			 * WARL registers might not contain the value we just wrote, but

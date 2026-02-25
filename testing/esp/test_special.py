@@ -20,7 +20,52 @@ def get_logger():
 class DebuggerSpecialTestsImpl:
     """ Special test cases generic for dual and single core modes
     """
-    @run_all_cores
+
+    @only_for_arch(['xtensa'])
+    def test_sample(self):
+        """
+            This test checks PC samples captured using OpenOCD's profile commands
+            1) Select appropriate sub-test number on target.
+            2) Execute the command while the target is running.
+            3) Check program continues uninterrupted.
+            4) Interpret profiled samples using gprof and check results.
+        """
+        profile_time = 3
+
+        self.select_sub_test("blink")
+        self.resume_exec()
+        self.oocd.cmd_exec(f"profile {profile_time} test_sample.gprof")
+
+        # Check execution continues uninterrupted
+        state, _ = self.gdb.get_target_state()
+        self.assertTrue(state == dbg.TARGET_STATE_RUNNING)
+        self.stop_exec()
+        bps = ['gpio_set_level', 'vTaskDelay']
+        for f in bps:
+            self.add_bp(f)
+            self.run_to_bp_and_check_basic(dbg.TARGET_STOP_REASON_BP, f, run_bt=False)
+
+        orig_elf = self.test_app_cfg.build_app_elf_path()
+        patched_elf = orig_elf + '.gprof'
+        if not os.path.isfile(patched_elf):
+            cmd = [f"{self.toolchain}objcopy", '--rename-section', '.flash.text=.text', orig_elf, patched_elf]
+            proc = subprocess.run(cmd, capture_output=True)
+            proc.check_returncode()
+
+        cmd = ['gprof', patched_elf, 'test_sample.gprof']
+        proc = subprocess.run(cmd, capture_output=True)
+        proc.check_returncode()
+
+        def parse_gprof_line(line):
+            items = line.split()
+            return (float(items[0]), float(items[1]), float(items[2]), items[3])
+
+        # Check results
+        lines = proc.stdout.decode('UTF-8').split('\n')
+        top_perc, _, top_t, top_f = parse_gprof_line(lines[5])
+        self.assertTrue(abs(top_t / top_perc * 100 - profile_time) < profile_time / 10)
+        self.assertEqual(top_f, "esp_cpu_wait_for_intr")
+
     def test_restart_debug_from_crash(self):
         """
             This test checks that debugger can operate correctly after SW reset with stalled CPU.
@@ -47,7 +92,7 @@ class DebuggerSpecialTestsImpl:
         self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'vTaskDelay', ['vTaskDelay0'])
         self.clear_bps()
 
-    @run_all_cores
+    @skip_for_chip(['esp32c5'], "skipped - OCD-1224")
     def test_debugging_works_after_hw_reset(self):
         """
             This test checks that debugging works after HW reset.
@@ -92,6 +137,7 @@ class DebuggerSpecialTestsImpl:
             self.run_to_bp_and_check_location(dbg.TARGET_STOP_REASON_SIGTRAP, 'target_bp_func2', 'target_wp_var2_2')
 
     @skip_for_chip(['esp32', 'esp32s3'], "skipped - OCD-868")
+    @skip_for_chip(['esp32c5'], "skipped - OCD-1224")
     def test_debugging_works_after_esptool_flash(self):
         """
             This test checks that debugging works after flashing with esptool.
@@ -110,7 +156,8 @@ class DebuggerSpecialTestsImpl:
         ]
         with open(os.path.join(self.test_app_cfg.build_bins_dir(), 'flasher_args.json'), 'rb') as f:
             args = json.load(f)
-            flasher_args = args['write_flash_args']
+            # replace all arguments with'-' with '_', for compatibility with both esptool v4/v5
+            flasher_args = [x.replace('-','_').replace('__','--') for x in args['write_flash_args']]
             for addr, bin in args['flash_files'].items():
                 flasher_args += [addr, bin]
         for esptool_args in tested_args:
@@ -127,7 +174,6 @@ class DebuggerSpecialTestsImpl:
             self.prepare_app_for_debugging(self.test_app_cfg.app_off)
             self._debug_image()
 
-    @run_all_cores
     def test_bp_and_wp_set_by_program(self):
         """
             This test checks that breakpoints and watchpoints set by program on target work.
@@ -136,7 +182,6 @@ class DebuggerSpecialTestsImpl:
         """
         self._do_test_bp_and_wp_set_by_program()
 
-    @run_all_cores
     def test_wp_reconfigure_by_program(self):
         """
             This test checks that watchpoints can be reconfigured by target w/o removing them.
@@ -145,7 +190,6 @@ class DebuggerSpecialTestsImpl:
         """
         self._do_test_bp_and_wp_set_by_program()
 
-    @run_all_cores
     def test_exception(self):
         """
         This test checks that expected exception cause string equal to the OpenOCD output.
@@ -241,7 +285,6 @@ class PsramTestsImpl:
     def tearDown(self):
         pass
 
-    @run_all_cores
     def test_psram_with_flash_breakpoints(self):
         """
             This test checks that PSRAM memory contents are not corrupted when using flash SW breakpoints.
@@ -263,7 +306,6 @@ class PsramTestsImpl:
             # break at vTaskDelay
             self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'vTaskDelay', ['vTaskDelay%d' % (i % 2)], outmost_func_name='psram_with_flash_breakpoints_task')
 
-    @run_all_cores
     def test_psram_with_flash_breakpoints_gh264(self):
         """
             GH issue reported for ESP32-S3. See https://github.com/espressif/openocd-esp32/issues/264
@@ -291,7 +333,6 @@ class PsramTestsImpl:
 class DebuggerSpecialTestsDual(DebuggerGenericTestAppTestsDual, DebuggerSpecialTestsImpl):
     """ Test cases for dual core mode
     """
-    @run_all_cores
     def test_cores_states_after_esptool_connection(self):
         """
             This test checks that cores are in running or halted state after esptool connection.
@@ -327,7 +368,6 @@ class DebuggerSpecialTestsSingle(DebuggerGenericTestAppTestsSingle, DebuggerSpec
     """ Test cases for single core mode
     """
 
-    #@run_all_cores TODO enable for both cores after OCD-1132
     def test_gdb_regs_mapping(self):
         """
             This test checks that GDB and OpenOCD has identical registers mapping.
@@ -354,9 +394,8 @@ class DebuggerSpecialTestsSingle(DebuggerGenericTestAppTestsSingle, DebuggerSpec
             ocd_val2 = self.oocd.get_reg(reg)
 
             self.gdb.console_cmd_run('flushregs')
-            gdb_val = self.gdb.get_reg(reg)
-            if gdb_val < 0:
-                gdb_val += 0x100000000
+
+            gdb_val = int(self.gdb.get_reg_values(fmt='u',reg_no=[regs.index(reg)])[0]['value'])
 
             if ocd_val == val:
                 # general purpose registers can be written with any value, and expected to contain the same
@@ -371,6 +410,16 @@ class DebuggerSpecialTestsSingle(DebuggerGenericTestAppTestsSingle, DebuggerSpec
 
         for reg in regs:
             if (len(reg) == 0):
+                continue
+
+            if reg == "csr_mext_ill_reg":
+                # GDB requests all regs, reading hwloop regs can change value of bit 1 here
+                set_reg_and_check(reg, 0)
+                set_reg_and_check(reg, 1)
+                continue
+
+            # slow counters are not suitable for this test
+            if reg == "timeh":
                 continue
 
             if reg == 'csr_mexstatus':

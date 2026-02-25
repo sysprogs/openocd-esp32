@@ -50,7 +50,7 @@ static int aarch64_set_hybrid_breakpoint(struct target *target,
 	struct breakpoint *breakpoint);
 static int aarch64_unset_breakpoint(struct target *target,
 	struct breakpoint *breakpoint);
-static int aarch64_mmu(struct target *target, int *enabled);
+static int aarch64_mmu(struct target *target, bool *enabled);
 static int aarch64_virt2phys(struct target *target,
 	target_addr_t virt, target_addr_t *phys);
 static int aarch64_read_cpu_memory(struct target *target,
@@ -613,22 +613,22 @@ static int aarch64_restore_one(struct target *target, bool current,
 	 * kill the return address
 	 */
 	switch (arm->core_state) {
-		case ARM_STATE_ARM:
-			resume_pc &= 0xFFFFFFFC;
-			break;
-		case ARM_STATE_AARCH64:
-			resume_pc &= 0xFFFFFFFFFFFFFFFCULL;
-			break;
-		case ARM_STATE_THUMB:
-		case ARM_STATE_THUMB_EE:
-			/* When the return address is loaded into PC
-			 * bit 0 must be 1 to stay in Thumb state
-			 */
-			resume_pc |= 0x1;
-			break;
-		case ARM_STATE_JAZELLE:
-			LOG_ERROR("How do I resume into Jazelle state??");
-			return ERROR_FAIL;
+	case ARM_STATE_ARM:
+		resume_pc &= 0xFFFFFFFC;
+		break;
+	case ARM_STATE_AARCH64:
+		resume_pc &= 0xFFFFFFFFFFFFFFFCULL;
+		break;
+	case ARM_STATE_THUMB:
+	case ARM_STATE_THUMB_EE:
+		/* When the return address is loaded into PC
+		 * bit 0 must be 1 to stay in Thumb state
+		 */
+		resume_pc |= 0x1;
+		break;
+	case ARM_STATE_JAZELLE:
+		LOG_ERROR("How do I resume into Jazelle state??");
+		return ERROR_FAIL;
 	}
 	LOG_DEBUG("resume pc = 0x%016" PRIx64, resume_pc);
 	buf_set_u64(arm->pc->value, 0, 64, resume_pc);
@@ -1095,20 +1095,19 @@ static int aarch64_post_debug_entry(struct target *target)
 	LOG_DEBUG("System_register: %8.8" PRIx64, aarch64->system_control_reg);
 	aarch64->system_control_reg_curr = aarch64->system_control_reg;
 
-	if (armv8->armv8_mmu.armv8_cache.info == -1) {
+	if (!armv8->armv8_mmu.armv8_cache.info_valid) {
 		armv8_identify_cache(armv8);
 		armv8_read_mpidr(armv8);
 	}
 	if (armv8->is_armv8r) {
-		armv8->armv8_mmu.mmu_enabled = 0;
+		armv8->armv8_mmu.mmu_enabled = false;
 	} else {
-		armv8->armv8_mmu.mmu_enabled =
-			(aarch64->system_control_reg & 0x1U) ? 1 : 0;
+		armv8->armv8_mmu.mmu_enabled = aarch64->system_control_reg & 0x1U;
 	}
 	armv8->armv8_mmu.armv8_cache.d_u_cache_enabled =
-		(aarch64->system_control_reg & 0x4U) ? 1 : 0;
+		aarch64->system_control_reg & 0x4U;
 	armv8->armv8_mmu.armv8_cache.i_cache_enabled =
-		(aarch64->system_control_reg & 0x1000U) ? 1 : 0;
+		aarch64->system_control_reg & 0x1000U;
 	return ERROR_OK;
 }
 
@@ -2529,7 +2528,7 @@ static int aarch64_read_phys_memory(struct target *target,
 static int aarch64_read_memory(struct target *target, target_addr_t address,
 	uint32_t size, uint32_t count, uint8_t *buffer)
 {
-	int mmu_enabled = 0;
+	bool mmu_enabled = false;
 	int retval;
 
 	/* determine if MMU was enabled on target stop */
@@ -2566,7 +2565,7 @@ static int aarch64_write_phys_memory(struct target *target,
 static int aarch64_write_memory(struct target *target, target_addr_t address,
 	uint32_t size, uint32_t count, const uint8_t *buffer)
 {
-	int mmu_enabled = 0;
+	bool mmu_enabled = false;
 	int retval;
 
 	/* determine if MMU was enabled on target stop */
@@ -2877,7 +2876,7 @@ static void aarch64_deinit_target(struct target *target)
 	free(aarch64);
 }
 
-static int aarch64_mmu(struct target *target, int *enabled)
+static int aarch64_mmu(struct target *target, bool *enabled)
 {
 	struct aarch64_common *aarch64 = target_to_aarch64(target);
 	struct armv8_common *armv8 = &aarch64->armv8_common;
@@ -2886,7 +2885,7 @@ static int aarch64_mmu(struct target *target, int *enabled)
 		return ERROR_TARGET_NOT_HALTED;
 	}
 	if (armv8->is_armv8r)
-		*enabled = 0;
+		*enabled = false;
 	else
 		*enabled = target_to_aarch64(target)->armv8_common.armv8_mmu.mmu_enabled;
 	return ERROR_OK;
@@ -3027,14 +3026,14 @@ COMMAND_HANDLER(aarch64_handle_disassemble_command)
 	target_addr_t address;
 
 	switch (CMD_ARGC) {
-		case 2:
-			COMMAND_PARSE_NUMBER(int, CMD_ARGV[1], count);
-		/* FALL THROUGH */
-		case 1:
-			COMMAND_PARSE_ADDRESS(CMD_ARGV[0], address);
-			break;
-		default:
-			return ERROR_COMMAND_SYNTAX_ERROR;
+	case 2:
+		COMMAND_PARSE_NUMBER(int, CMD_ARGV[1], count);
+	/* FALL THROUGH */
+	case 1:
+		COMMAND_PARSE_ADDRESS(CMD_ARGV[0], address);
+		break;
+	default:
+		return ERROR_COMMAND_SYNTAX_ERROR;
 	}
 
 	return a64_disassemble(CMD, target, address, count);

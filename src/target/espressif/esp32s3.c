@@ -446,7 +446,11 @@ static int esp32s3_reset_reason_fetch(struct target *target, int *rsn_id, const 
 
 static int esp32s3_target_init(struct command_context *cmd_ctx, struct target *target)
 {
-	return esp_xtensa_smp_target_init(cmd_ctx, target);
+	int ret = esp_xtensa_target_init(cmd_ctx, target);
+	if (ret != ERROR_OK)
+		return ret;
+
+	return esp_xtensa_semihosting_init(target);
 }
 
 static const struct xtensa_debug_ops esp32s3_dbg_ops = {
@@ -590,8 +594,8 @@ struct target_type esp32s3_target = {
 	.add_breakpoint = esp_xtensa_breakpoint_add,
 	.remove_breakpoint = esp_xtensa_breakpoint_remove,
 
-	.add_watchpoint = esp_xtensa_smp_watchpoint_add,
-	.remove_watchpoint = esp_xtensa_smp_watchpoint_remove,
+	.add_watchpoint = xtensa_watchpoint_add,
+	.remove_watchpoint = xtensa_watchpoint_remove,
 	.hit_watchpoint = xtensa_watchpoint_hit,
 
 	.target_create = esp32s3_target_create,

@@ -132,7 +132,8 @@ add_library(target
 	openrisc/or1k_tap_vjtag.c
 	openrisc/or1k_tap_xilinx_bscan.c
 	riscv/debug_defines.c
-	riscv/debug_reg_printer.c)
+	riscv/debug_reg_printer.c
+	armv7m_cache.c)
 target_include_directories(target PRIVATE ../..)
 	
 SET_TARGET_PROPERTIES(target PROPERTIES COMPILE_FLAGS -I${CMAKE_CURRENT_BINARY_DIR})

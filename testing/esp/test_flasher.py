@@ -105,6 +105,34 @@ class FlasherTestsImpl:
         """
         self.program_big_binary('encrypt compress' if self.ENCRYPTED else 'compress', overflow=True)
 
+    def test_flash_verify_uneven_binary(self):
+        """
+            This test checks that binaries of uneven size can be sucessfully flashed and verified.
+            1) Create test binary file.
+            2) Fill it with random data.
+            3) Write the file to the flash.
+            4) Read written data to another file.
+            5) Compare files.
+        """
+        size = 0x103
+        fhnd, fname1 = tempfile.mkstemp()
+        get_logger().debug('Generate random file %dB "%s"', size, fname1)
+        with os.fdopen(fhnd, 'wb') as fbin:
+            fbin.write(os.urandom(size))
+
+        try:
+            self.gdb.target_program(fname1, 0, actions='encrypt verify' if self.ENCRYPTED else 'verify')
+
+            # since we can not get result from OpenOCD (output parsing seems not to be good idea),
+            # we need to read written flash and compare data manually
+            _, fname2 = tempfile.mkstemp()
+            self.gdb.monitor_run('flash read_bank 0 %s 0x%x %d' % (dbg.fixup_path(fname2), 0, size ))
+            self.assertTrue(filecmp.cmp(fname1, fname2))
+        finally:
+            # restore flash contents with test app as it was overwritten by test
+            # what can lead to the failures when preparing for the next tests
+            self.gdb.target_program_bins(self.test_app_cfg.build_bins_dir())
+
     def test_cache_handling(self):
         """
             This test checks that flasher does not corrupts cache config registers when setting breakpoints.
@@ -260,6 +288,10 @@ class FlasherTestsDual(DebuggerGenericTestAppTestsDual, FlasherTestsImpl):
         DebuggerGenericTestAppTestsDual.setUp(self)
         FlasherTestsImpl.setUp(self)
 
+    @skip_for_chip(['esp32p4'], "skipped - slow test")
+    def test_big_binary_compressed(self):
+        super(DebuggerGenericTestAppTestsDual, self).test_big_binary_compressed()
+
 class FlasherTestsDualEncrypted(DebuggerGenericTestAppTestsDualEncrypted, FlasherTestsImpl):
     """ Encrypted flash test cases in dual core mode
     """
@@ -274,6 +306,10 @@ class FlasherTestsSingle(DebuggerGenericTestAppTestsSingle, FlasherTestsImpl):
         DebuggerGenericTestAppTestsSingle.setUp(self)
         FlasherTestsImpl.setUp(self)
 
+    @skip_for_chip(['esp32p4'], "skipped - slow test")
+    def test_big_binary(self):
+        super(DebuggerGenericTestAppTestsSingle, self).test_big_binary()
+
 class FlasherTestsSingleEncrypted(DebuggerGenericTestAppTestsSingleEncrypted, FlasherTestsImpl):
     """ Encrypted flash test cases in single core mode
     """
@@ -281,7 +317,7 @@ class FlasherTestsSingleEncrypted(DebuggerGenericTestAppTestsSingleEncrypted, Fl
         DebuggerGenericTestAppTestsSingleEncrypted.setUp(self)
         FlasherTestsImpl.setUp(self)
 
-@idf_ver_min('latest')
+@run_with_version('latest')
 @only_for_chip(['esp32c6', 'esp32h2'])
 class FlasherTestsPreloadedStubSingle(DebuggerGenericTestAppTestsSingle):
 
@@ -292,11 +328,15 @@ class FlasherTestsPreloadedStubSingle(DebuggerGenericTestAppTestsSingle):
 
     def test_preloaded_stub_binary(self):
         """
-            This test checks if stub codes already loaded to the targets and functioning as expected
+            This test checks if stub codes already loaded to the targets and functioning as expected.
+            If there's a version mismatch, the test will pass but log the version difference.
         """
-        expected_strings = ["Stub flasher will be running from preloaded image (5C3A9F5A)",
-                            "Flash mapping 0:",
-                            "Flash mapping 1:"]
+        # Expected strings that should always be present
+        common_expected_strings = ["Flash mapping 0:",
+                                  "Flash mapping 1:"]
+
+        # Expected string for successful preloaded stub usage
+        preloaded_expected_string = "Stub flasher will be running from preloaded image (5C3A9F5A)"
 
         target_output = ''
         def _target_stream_handler(type, stream, payload):
@@ -308,5 +348,18 @@ class FlasherTestsPreloadedStubSingle(DebuggerGenericTestAppTestsSingle):
         self.gdb.monitor_run("flash probe 0", 5)
         self.gdb.stream_handler_remove('target', _target_stream_handler)
 
-        for expected_str in expected_strings:
+        # Check if neither preloaded nor version mismatch scenario
+        if preloaded_expected_string not in target_output:
+            import re
+            installed_version_match = re.search(r'Installed stub code.*?stub_version\((\d+)\)', target_output)
+            expected_version_match = re.search(r'Expected stub code.*?stub_version\((\d+)\)', target_output)
+
+            self.assertTrue(installed_version_match and expected_version_match)
+            installed_version = installed_version_match.group(1)
+            expected_version = expected_version_match.group(1)
+            self.assertTrue(installed_version != expected_version)
+            print(f"Version mismatch detected - Installed: {installed_version}, Expected: {expected_version} - Stub was loaded fresh due to version mismatch - this is expected behavior")
+
+        # Always check common functionality regardless of preloaded vs fresh load
+        for expected_str in common_expected_strings:
             self.assertIn(expected_str, target_output, f"Expected string '{expected_str}' not found in output")

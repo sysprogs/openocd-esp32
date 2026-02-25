@@ -46,33 +46,29 @@ static enum command_mode get_command_mode(Jim_Interp *interp, const char *cmd_na
 /* set of functions to wrap jimtcl internal data */
 static inline bool jimcmd_is_proc(Jim_Cmd *cmd)
 {
+#if defined(JIM_CMD_ISPROC)
+	// JIM_VERSION >= 84
+	return cmd->flags & JIM_CMD_ISPROC;
+#else
 	return cmd->isproc;
+#endif
 }
 
 bool jimcmd_is_oocd_command(Jim_Cmd *cmd)
 {
-	return !cmd->isproc && cmd->u.native.cmdProc == jim_command_dispatch;
+	return !jimcmd_is_proc(cmd) && cmd->u.native.cmdProc == jim_command_dispatch;
 }
 
 void *jimcmd_privdata(Jim_Cmd *cmd)
 {
-	return cmd->isproc ? NULL : cmd->u.native.privData;
-}
-
-static int command_retval_set(Jim_Interp *interp, int retval)
-{
-	int *return_retval = Jim_GetAssocData(interp, "retval");
-	if (return_retval)
-		*return_retval = retval;
-
-	return (retval == ERROR_OK) ? JIM_OK : retval;
+	return jimcmd_is_proc(cmd) ? NULL : cmd->u.native.privData;
 }
 
 /* dump a single line to the log for the command.
  * Do nothing in case we are not at debug level 3 */
 static void script_debug(Jim_Interp *interp, unsigned int argc, Jim_Obj * const *argv)
 {
-	if (debug_level < LOG_LVL_DEBUG)
+	if (!LOG_LEVEL_IS(LOG_LVL_DEBUG))
 		return;
 
 	char *dbg = alloc_printf("command -");
@@ -404,23 +400,23 @@ static bool command_can_run(struct command_context *cmd_ctx, struct command *c, 
 	/* Many commands may be run only before/after 'init' */
 	const char *when;
 	switch (c->mode) {
-		case COMMAND_CONFIG:
-			when = "before";
-			break;
-		case COMMAND_EXEC:
-			when = "after";
-			break;
-		/* handle the impossible with humor; it guarantees a bug report! */
-		default:
-			when = "if Cthulhu is summoned by";
-			break;
+	case COMMAND_CONFIG:
+		when = "before";
+		break;
+	case COMMAND_EXEC:
+		when = "after";
+		break;
+	/* handle the impossible with humor; it guarantees a bug report! */
+	default:
+		when = "if Cthulhu is summoned by";
+		break;
 	}
 	LOG_ERROR("The '%s' command must be used %s 'init'.",
 			full_name ? full_name : c->name, when);
 	return false;
 }
 
-static int exec_command(Jim_Interp *interp, struct command_context *context,
+static int jim_exec_command(Jim_Interp *interp, struct command_context *context,
 		struct command *c, int argc, Jim_Obj * const *argv)
 {
 	/* use c->handler */
@@ -469,7 +465,15 @@ static int exec_command(Jim_Interp *interp, struct command_context *context,
 	Jim_DecrRefCount(context->interp, cmd.output);
 
 	free(words);
-	return command_retval_set(interp, retval);
+
+	if (retval == ERROR_OK)
+		return JIM_OK;
+
+	// used by telnet server to close one connection
+	if (retval == ERROR_COMMAND_CLOSE_CONNECTION)
+		return JIM_EXIT;
+
+	return JIM_ERR;
 }
 
 int command_run_line(struct command_context *context, char *line)
@@ -479,7 +483,6 @@ int command_run_line(struct command_context *context, char *line)
 	 * results
 	 */
 	/* run the line thru a script engine */
-	int retval = ERROR_FAIL;
 	int retcode;
 	/* Beware! This code needs to be reentrant. It is also possible
 	 * for OpenOCD commands to be invoked directly from Tcl. This would
@@ -494,20 +497,17 @@ int command_run_line(struct command_context *context, char *line)
 	Jim_DeleteAssocData(interp, "context");
 	retcode = Jim_SetAssocData(interp, "context", NULL, context);
 	if (retcode == JIM_OK) {
-		/* associated the return value */
-		Jim_DeleteAssocData(interp, "retval");
-		retcode = Jim_SetAssocData(interp, "retval", NULL, &retval);
-		if (retcode == JIM_OK) {
-			retcode = Jim_Eval_Named(interp, line, NULL, 0);
-
-			Jim_DeleteAssocData(interp, "retval");
-		}
+		retcode = Jim_Eval_Named(interp, line, NULL, 0);
 		Jim_DeleteAssocData(interp, "context");
 		int inner_retcode = Jim_SetAssocData(interp, "context", NULL, old_context);
 		if (retcode == JIM_OK)
 			retcode = inner_retcode;
 	}
 	context->current_target_override = saved_target_override;
+
+	if (retcode == JIM_RETURN)
+		retcode = interp->returnCode;
+
 	if (retcode == JIM_OK) {
 		const char *result;
 		int reslen;
@@ -517,25 +517,19 @@ int command_run_line(struct command_context *context, char *line)
 			command_output_text(context, result);
 			command_output_text(context, "\n");
 		}
-		retval = ERROR_OK;
-	} else if (retcode == JIM_EXIT) {
-		/* ignore.
-		 * exit(Jim_GetExitCode(interp)); */
-	} else if (retcode == ERROR_COMMAND_CLOSE_CONNECTION) {
-		return retcode;
-	} else {
-		Jim_MakeErrorMessage(interp);
-		/* error is broadcast */
-		LOG_USER("%s", Jim_GetString(Jim_GetResult(interp), NULL));
-
-		if (retval == ERROR_OK) {
-			/* It wasn't a low level OpenOCD command that failed */
-			return ERROR_FAIL;
-		}
-		return retval;
+		return ERROR_OK;
 	}
 
-	return retval;
+	if (retcode == JIM_EXIT) {
+		// used by telnet server to close one connection
+		return ERROR_COMMAND_CLOSE_CONNECTION;
+	}
+
+	Jim_MakeErrorMessage(interp);
+	/* error is broadcast */
+	LOG_USER("%s", Jim_GetString(Jim_GetResult(interp), NULL));
+
+	return ERROR_FAIL;
 }
 
 int command_run_linef(struct command_context *context, const char *format, ...)
@@ -737,16 +731,16 @@ static COMMAND_HELPER(command_help_show, struct help_entry *c,
 			const char *stage_msg = "";
 
 			switch (mode) {
-				case COMMAND_CONFIG:
-					stage_msg = " (configuration command)";
-					break;
-				case COMMAND_ANY:
-					stage_msg = " (command valid any time)";
-					break;
-				case COMMAND_UNKNOWN:
-				default:
-					stage_msg = " (?mode error?)";
-					break;
+			case COMMAND_CONFIG:
+				stage_msg = " (configuration command)";
+				break;
+			case COMMAND_ANY:
+				stage_msg = " (command valid any time)";
+				break;
+			case COMMAND_UNKNOWN:
+			default:
+				stage_msg = " (?mode error?)";
+				break;
 			}
 			msg = alloc_printf("%s%s", c->help ? c->help : "", stage_msg);
 		} else
@@ -862,7 +856,7 @@ static int jim_command_dispatch(Jim_Interp *interp, int argc, Jim_Obj * const *a
 	if (c->jim_override_target)
 		cmd_ctx->current_target_override = c->jim_override_target;
 
-	int retval = exec_command(interp, cmd_ctx, c, argc, argv);
+	int retval = jim_exec_command(interp, cmd_ctx, c, argc, argv);
 
 	if (c->jim_override_target)
 		cmd_ctx->current_target_override = saved_target_override;
@@ -907,19 +901,19 @@ COMMAND_HANDLER(handle_command_mode)
 
 	const char *mode_str;
 	switch (mode) {
-		case COMMAND_ANY:
-			mode_str = "any";
-			break;
-		case COMMAND_CONFIG:
-			mode_str = "config";
-			break;
-		case COMMAND_EXEC:
-			mode_str = "exec";
-			break;
-		case COMMAND_UNKNOWN:
-		default:
-			mode_str = "unknown";
-			break;
+	case COMMAND_ANY:
+		mode_str = "any";
+		break;
+	case COMMAND_CONFIG:
+		mode_str = "config";
+		break;
+	case COMMAND_EXEC:
+		mode_str = "exec";
+		break;
+	case COMMAND_UNKNOWN:
+	default:
+		mode_str = "unknown";
+		break;
 	}
 	command_print(CMD, "%s", mode_str);
 	return ERROR_OK;
@@ -1324,19 +1318,19 @@ COMMAND_HELPER(command_parse_str_to_buf, const char *str, void *buf, unsigned in
 COMMAND_HELPER(handle_command_parse_bool, bool *out, const char *label)
 {
 	switch (CMD_ARGC) {
-		case 1: {
-			const char *in = CMD_ARGV[0];
-			if (command_parse_bool_arg(in, out) != ERROR_OK) {
-				LOG_ERROR("%s: argument '%s' is not valid", CMD_NAME, in);
-				return ERROR_COMMAND_SYNTAX_ERROR;
-			}
-		}
-			/* fallthrough */
-		case 0:
-			LOG_INFO("%s is %s", label, *out ? "enabled" : "disabled");
-			break;
-		default:
+	case 1: {
+		const char *in = CMD_ARGV[0];
+		if (command_parse_bool_arg(in, out) != ERROR_OK) {
+			LOG_ERROR("%s: argument '%s' is not valid", CMD_NAME, in);
 			return ERROR_COMMAND_SYNTAX_ERROR;
+		}
+	}
+		/* fallthrough */
+	case 0:
+		LOG_INFO("%s is %s", label, *out ? "enabled" : "disabled");
+		break;
+	default:
+		return ERROR_COMMAND_SYNTAX_ERROR;
 	}
 	return ERROR_OK;
 }

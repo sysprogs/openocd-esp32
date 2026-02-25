@@ -19,6 +19,8 @@ variables:
 
 fetch_gdb:
   stage: fetch_gdb
+  tags:
+    - build
   variables:
     GIT_STRATEGY: none
   needs:
@@ -58,6 +60,8 @@ fetch_gdb:
 
 dummy_job:
   script: echo "Pipeline skipped"
+  tags:
+    - build
   rules:
     - if: '$CI_FULL_RUN == "0" && $IDF_MASTER_RUN == "0"'
 

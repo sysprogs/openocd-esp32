@@ -45,6 +45,7 @@ doc/openocd.html
 doc/openocd.info
 doc/openocd.info-1
 doc/openocd.info-2
+doc/openocd.info-3
 doc/openocd.ky
 doc/openocd.log
 doc/openocd.pdf
@@ -104,15 +105,12 @@ GPATH
 GRTAGS
 GTAGS
 
-#gcov files
-*.gcda
-*.gcno
-
 # checkpatch script files
 .checkpatch-camelcase.*
 
 # Reduced tcl files
 tcl-lite/*
+
 # clangd (e.g. for advanced code completion and linting) generates cache files
 # into .cache
 .cache

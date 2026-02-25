@@ -451,7 +451,7 @@ int esp32_apptrace_cmd_ctx_init(struct esp32_apptrace_cmd_ctx *cmd_ctx, struct c
 					ESP32_APPTRACE_MAX_CORES_NUM);
 				return ERROR_FAIL;
 			}
-			if (!target_was_examined(curr))
+			if (!target_was_examined(curr) || curr->state == TARGET_UNAVAILABLE)
 				continue;
 			cmd_ctx->cores_num++;
 			cmd_ctx->cpus[i++] = curr;
@@ -1518,7 +1518,7 @@ static int esp32_cmd_apptrace_generic(struct command_invocation *cmd, int mode, 
 		LOG_TARGET_WARNING(target, "Current target was not examined!");
 		foreach_smp_target(head, target->smp_targets) {
 			curr = head->target;
-			if (target_was_examined(curr)) {
+			if (target_was_examined(curr) && curr->state != TARGET_UNAVAILABLE) {
 				target = curr;
 				LOG_TARGET_WARNING(target, "Run command on this target");
 				break;
@@ -1671,7 +1671,7 @@ COMMAND_HANDLER(esp32_cmd_sysview)
 COMMAND_HANDLER(esp32_cmd_sysview_mcore)
 {
 	if (CMD_ARGC > 0 && strcmp(CMD_ARGV[0], "start") == 0) {
-		const char *temp_argv[CMD_ARGC + 1];  /* +1 to keep the output file */
+		const char *temp_argv[CMD_ARGC + 2];  /* +2 to keep temp files */
 		unsigned int temp_argc = 0;
 
 		if (CMD_ARGC < 2) {
@@ -1690,7 +1690,7 @@ COMMAND_HANDLER(esp32_cmd_sysview_mcore)
 
 		struct target_list *head;
 		foreach_smp_target(head, target->smp_targets) {
-			if (!target_was_examined(head->target))
+			if (!target_was_examined(head->target) || head->target->state == TARGET_UNAVAILABLE)
 				goto _run_sysview_mode;
 		}
 
@@ -1700,6 +1700,8 @@ COMMAND_HANDLER(esp32_cmd_sysview_mcore)
 		char *temp_file_core1 = malloc(strlen(output_file) + 10);
 
 		if (!temp_file_core0 || !temp_file_core1) {
+			free(temp_file_core0);
+			free(temp_file_core1);
 			command_print(CMD, "Failed to allocate memory for temp file names!");
 			return ERROR_FAIL;
 		}
@@ -2301,7 +2303,7 @@ static struct esp_dbg_stubs *get_stubs_from_target(struct target **target)
 			curr = head->target;
 			dbg_stubs = xtensa_arch ? &(target_to_esp_xtensa(curr)->esp.dbg_stubs) :
 				&(target_to_esp_riscv(curr)->esp.dbg_stubs);
-			if (target_was_examined(curr) && dbg_stubs->base &&
+			if (target_was_examined(curr) && curr->state != TARGET_UNAVAILABLE && dbg_stubs->base &&
 				dbg_stubs->entries_count > 0) {
 				*target = curr;
 				break;
@@ -2362,7 +2364,7 @@ COMMAND_HANDLER(esp32_cmd_gcov)
 		LOG_TARGET_WARNING(target, "Current target was not examined!");
 		foreach_smp_target(head, target->smp_targets) {
 			curr = head->target;
-			if (target_was_examined(curr)) {
+			if (target_was_examined(curr) && curr->state != TARGET_UNAVAILABLE) {
 				LOG_TARGET_WARNING(target, "Run command on this target");
 				break;
 			}

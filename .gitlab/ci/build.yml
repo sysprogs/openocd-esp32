@@ -22,7 +22,7 @@
   echo "${ARCHIVE_NAME}" > ${DIST_ART_DIR}/dist_name_${PLATFORM_NAME}
 
 .buildx_libusb: &buildx_libusb |
-  export LIBUSB_VER=libusb-1.0.26
+  export LIBUSB_VER=libusb-1.0.29
   wget https://dl.espressif.com/dl/$LIBUSB_VER.tar.gz -O $LIBUSB_VER.tar.gz
   tar xzf $LIBUSB_VER.tar.gz && rm $LIBUSB_VER.tar.gz
   pushd $LIBUSB_VER
@@ -74,6 +74,9 @@
   wget https://dl.espressif.com/dl/$LIBJAYLINK_VER.tar.gz -O $LIBJAYLINK_VER.tar.gz
   tar xzf $LIBJAYLINK_VER.tar.gz && rm $LIBJAYLINK_VER.tar.gz
   pushd $LIBJAYLINK_VER
+  if [ $PLATFORM_NAME == "windows-arm64" ]; then
+    patch -p1 < ../.gitlab/ci/patches/win_arm64/libjaylink.patch
+  fi
   ./autogen.sh
   ./configure --prefix=$PWD/dist --host=${CONF_HOST} --disable-shared CC=${HOST_CC}
   make
@@ -85,6 +88,9 @@
   wget https://dl.espressif.com/dl/$JIMTCL_VER.tar.gz -O $JIMTCL_VER.tar.gz
   tar xzf $JIMTCL_VER.tar.gz && rm $JIMTCL_VER.tar.gz
   pushd $JIMTCL_VER
+  if [ ${PLATFORM_NAME:-} == "windows-arm64" ]; then
+    patch -p1 < ../.gitlab/ci/patches/win_arm64/jimtcl.patch
+  fi
   ./configure --prefix="$PWD/dist" --host=${CONF_HOST} --disable-shared --with-ext=json --minimal --disable-ssl CC=${HOST_CC}
   make
   # Running "make" does not create this file for static builds on Windows but "make install" still expects it
@@ -105,12 +111,15 @@
   image: $CI_DOCKER_REGISTRY/esp32-toolchain-arm-cross:3
   tags:
     - build
+    - internet
   artifacts:
     paths:
       - ${DIST_ART_DIR}
     when: always
     expire_in: 2 weeks
   needs: []
+  variables:
+    INSTALL_TARGET: "install-strip"
   script:
     - *get_release_name
     - export HOST_CC=${CONF_HOST}-gcc
@@ -120,7 +129,7 @@
     - mkdir _build && pushd _build/
     - ../configure CFLAGS="${TEST_CFLAGS:-}" --prefix=$PWD/../$DIST_INSTALLED_DIR --host=${CONF_HOST}  $OPENOCD_CONFIGURE_OPTS $GCOV_BUILD_OPTS
     - make -j `nproc`
-    - MAKEFLAGS= make install-strip
+    - MAKEFLAGS= make ${INSTALL_TARGET}
     - popd
     - >
       if [[ "${GCOV_BUILD_OPTS}" != "" ]]; then
@@ -135,6 +144,7 @@
   image: $CI_DOCKER_REGISTRY/esp32-toolchain-macos-cross:4
   tags:
     - build
+    - internet
   artifacts:
     paths:
       - ${DIST_ART_DIR}
@@ -157,6 +167,7 @@ build_linux:
   image: $CI_DOCKER_REGISTRY/esp32-toolchain
   tags:
     - build
+    - internet
   artifacts:
     paths:
       - ${DIST_ART_DIR}
@@ -189,6 +200,7 @@ build_linux_gcc_latest:
   stage: build_openocd
   tags:
     - build
+    - internet
   needs: []
   variables:
     CONF_HOST: ""
@@ -206,10 +218,11 @@ build_linux_armhf_test:
     CONF_HOST: "arm-linux-gnueabihf"
     PLATFORM_NAME: "linux-armhf-test"
     GCOV_BUILD_OPTS: "--enable-gcov"
+    INSTALL_TARGET: "install"
   before_script:
     - >
       if [[ $CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_TYPE == "run_sanitizer_tests" ]] ; then
-        export TEST_CFLAGS="-Wl,--no-as-needed -ldl -fsanitize=address -fsanitize=undefined -fsanitize-recover=address -ggdb3"
+        export TEST_CFLAGS="-Wl,--no-as-needed -ldl -fsanitize=address -fsanitize=undefined -fsanitize-recover=address -ggdb3 -fno-omit-frame-pointer"
       fi
   after_script:
     - >
@@ -256,6 +269,7 @@ build_linux_arm64_test:
   image: $CI_DOCKER_REGISTRY/esp32-toolchain-win-cross
   tags:
     - build
+    - internet
   artifacts:
     paths:
       - ${DIST_ART_DIR}
@@ -291,12 +305,20 @@ build_windows_win64:
   variables:
     PLATFORM_NAME: "win64"
 
+build_windows_arm64:
+  extends: .build_windows_template
+  image: dockcross/windows-arm64:20250808-0415f78
+  variables:
+    CONF_HOST: "aarch64-w64-mingw32"
+    HOST_CC: ${CONF_HOST}-gcc
+    PLATFORM_NAME: "windows-arm64"
+
 build_macos:
   <<: *build_macos_template
   variables:
     PLATFORM_NAME: "macos"
     CONF_HOST: "x86_64-apple-darwin21.1"
-    INSTALL_TARGET: "install-strip"
+    INSTALL_TARGET: "install"
     HOST_CC: ${CONF_HOST}-cc
 
 build_macos_arm64:
@@ -311,6 +333,7 @@ scan-build:
   stage: static_analyzers
   tags:
     - build
+    - internet
   variables:
     SCAN_BUILD_OUTPUT: "report"
     CONF_HOST: ""
@@ -340,6 +363,7 @@ sparse:
   stage: static_analyzers
   tags:
     - build
+    - internet
   variables:
     SPARSE_BUILD_OUTDIR: "sparse"
     SPARSE_BUILD_OUTFILE: "warnings.log"
@@ -370,6 +394,7 @@ build_linux_cmake:
   stage: build_openocd
   tags:
     - build
+    - internet
   needs: []
   variables:
     OPENOCD_CMAKE_CONFIGURE_OPTS: ""
@@ -385,6 +410,7 @@ build_linux_cmake:
   image: $CI_DOCKER_REGISTRY/esp32-toolchain-arm-cross:3
   tags:
     - build
+    - internet
   needs: []
   variables:
     OPENOCD_CMAKE_CONFIGURE_OPTS: ""
@@ -400,6 +426,7 @@ build_linux_cmake:
   image: $CI_DOCKER_REGISTRY/esp32-toolchain-win-cross
   tags:
     - build
+    - internet
   needs: []
   variables:
     OPENOCD_CMAKE_CONFIGURE_OPTS: ""

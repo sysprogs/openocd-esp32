@@ -13,8 +13,8 @@
     <ToolchainID>
       <ID>com.visualgdb.mingw32</ID>
       <Version>
-        <GCC>12.2.0</GCC>
-        <GDB>12.1</GDB>
+        <GCC>15.2.0</GCC>
+        <GDB>16.3</GDB>
         <Revision>1</Revision>
       </Version>
     </ToolchainID>

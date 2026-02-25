@@ -141,6 +141,7 @@ struct sockaddr_un {
 #endif
 
 #if IS_MINGW == 1
+#if defined(__x86_64__) || defined(__i386__)
 static inline unsigned char inb(unsigned short int port)
 {
 	unsigned char _v;
@@ -152,6 +153,7 @@ static inline void outb(unsigned char value, unsigned short int port)
 {
 	__asm__ __volatile__ ("outb %b0,%w1" : : "a" (value), "Nd" (port));
 }
+#endif
 
 /* mingw does not have ffs, so use gcc builtin types */
 #define ffs __builtin_ffs
@@ -222,6 +224,26 @@ static inline int socket_select(int max_fd,
 	return win_select(max_fd, rfds, wfds, efds, tv);
 #else
 	return select(max_fd, rfds, wfds, efds, tv);
+#endif
+}
+
+#if defined(WIN32)
+#define PORTABLE_FD_SET(fd, set) FD_SET((SOCKET)fd, set)
+#else
+#define PORTABLE_FD_SET(fd, set) FD_SET(fd, set)
+#endif
+
+static inline int socket_recv_timeout(int fd, unsigned long timeout_msec)
+{
+#ifdef _WIN32
+	DWORD timeout = timeout_msec;
+	return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout,
+			sizeof(timeout));
+#else
+	struct timeval tv;
+	tv.tv_sec = timeout_msec / 1000;
+	tv.tv_usec = (timeout_msec % 1000) * 1000;
+	return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
 #endif
 }
 

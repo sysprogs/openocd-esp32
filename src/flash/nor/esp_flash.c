@@ -65,14 +65,15 @@
 #include <target/espressif/esp.h>
 #include <helper/time_support.h>
 #include <helper/align.h>
-#include <target/smp.h>
 #include "contrib/loaders/flash/espressif/stub_flasher.h"
 #include <target/smp.h>
+#include <target/target_type.h>
 #include "esp_flash.h"
 
 #define ESP_FLASH_RW_TMO                20000	/* ms */
 #define ESP_FLASH_ERASE_TMO             60000	/* ms */
 #define ESP_FLASH_VERIFY_TMO            30000	/* ms */
+#define ESP_FLASH_WR_DEFLATE_TMO        60000	/* ms */
 #define ESP_FLASH_MAPS_MAX              2
 
 struct esp_flash_rw_args {
@@ -642,8 +643,8 @@ static int esp_algo_flash_write_state_init(struct target *target,
 		buffer_size,
 		duration_elapsed(&algo_time) * 1000);
 
-	state->stub_wargs.down_buf_addr = state->target_buf->address;
-	state->stub_wargs.down_buf_size = state->target_buf->size;
+	state->stub_wargs.ring_buf_addr = state->target_buf->address;
+	state->stub_wargs.ring_buf_size = state->target_buf->size;
 
 	ret = target_write_buffer(target, state->stub_wargs_area->address,
 		sizeof(state->stub_wargs), (uint8_t *)&state->stub_wargs);
@@ -754,6 +755,7 @@ int esp_algo_flash_write(struct flash_bank *bank, const uint8_t *buffer,
 		stack_size += ESP_STUB_IFLATOR_SIZE;
 	}
 
+	run.timeout_ms = esp_info->compression ? ESP_FLASH_WR_DEFLATE_TMO : 0;
 	run.stack_size = stack_size + ESP_STUB_UNZIP_BUFF_SIZE + stub_cfg->stack_data_pool_sz;
 	run.usr_func = esp_algo_flash_rw_do;
 	run.usr_func_arg = &wr_state;
@@ -770,8 +772,8 @@ int esp_algo_flash_write(struct flash_bank *bank, const uint8_t *buffer,
 	wr_state.stub_wargs.size = wr_state.rw.count;
 	wr_state.stub_wargs.total_size = count;
 	wr_state.stub_wargs.start_addr = esp_info->hw_flash_base + offset;
-	wr_state.stub_wargs.down_buf_addr = 0;
-	wr_state.stub_wargs.down_buf_size = 0;
+	wr_state.stub_wargs.ring_buf_addr = 0;
+	wr_state.stub_wargs.ring_buf_size = 0;
 	wr_state.stub_wargs.options = ESP_STUB_FLASH_WR_RAW;
 	if (esp_info->encryption_needed_on_chip)
 		wr_state.stub_wargs.options |= ESP_STUB_FLASH_ENCRYPT_BINARY;
@@ -1275,7 +1277,7 @@ int esp_algo_flash_breakpoint_remove(struct target *target, struct esp_flash_bre
 	run.usr_func_done = esp_algo_flash_bp_op_state_cleanup;
 	run.check_preloaded_binary = esp_info->stub_log_enabled ? false : esp_info->check_preloaded_binary;
 
-	init_mem_param(&mp[0], 1 /* First user arg */, 1 + num_bps * size_bp_inst /* size in bytes */, PARAM_OUT);
+	init_mem_param(&mp[0], 1 /* First user arg */, num_bps * size_bp_inst /* size in bytes */, PARAM_OUT);
 	/* bp0_flash_addr + bp1_flash_addr + bp2_flash_addr + ... bpn_flash_addr */
 	for (size_t slot = 0; slot < num_bps; ++slot)
 		target_buffer_set_u32(target, &mp[0].value[slot * size_bp_inst], sw_bp[slot].bp_flash_addr);
@@ -1624,6 +1626,12 @@ static int esp_flash_verify_bank_hash(struct target *target,
 		LOG_WARNING("File content exceeds flash bank size. Only comparing the "
 			"first %zu bytes of the file", length);
 
+	if (!strcmp(target->type->name, "esp32") && (length & 0x3)) {
+		LOG_WARNING("File size not divisible by 4. Not comparing the "
+			"last %zu bytes of the file", length & 0x3);
+		length = length & ~0x3;
+	}
+
 	LOG_DEBUG("File size: %zu bank_size: %u offset: %u",
 		filesize, bank->size, offset);
 
@@ -1745,6 +1753,8 @@ COMMAND_HANDLER(name) \
 	if (target->smp) { \
 		struct target_list *head; \
 		foreach_smp_target(head, target->smp_targets) { \
+			if (strstr(head->target->cmd_name, ".lp.cpu")) \
+				continue; \
 			int ret = CALL_COMMAND_HANDLER(handler, head->target); \
 			if (ret != ERROR_OK) \
 				return ret; \

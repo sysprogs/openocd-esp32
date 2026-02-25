@@ -113,6 +113,10 @@ if(BUILD_PRESTO)
     target_sources(ocdjtagdrivers PRIVATE presto.c)
 endif()
 
+if(BUILD_CH347)
+    target_sources(ocdjtagdrivers PRIVATE ch347.c)
+endif()
+
 if(BUILD_ESP_USB_JTAG)
     target_sources(ocdjtagdrivers PRIVATE esp_usb_jtag.c)
 endif()
@@ -188,8 +192,8 @@ if(BUILD_SYSFSGPIO)
     target_sources(ocdjtagdrivers PRIVATE sysfsgpio.c)
 endif()
 
-if(BUILD_XLNX_PCIE_XVC)
-    target_sources(ocdjtagdrivers PRIVATE xlnx-pcie-xvc.c)
+if(BUILD_XLNX_XVC)
+    target_sources(ocdjtagdrivers PRIVATE xlnx-xvc.c)
 endif()
 
 if(BUILD_BCM2835GPIO)
@@ -209,6 +213,10 @@ if(BUILD_CMSIS_DAP_USB)
     if(NOT BUILD_CMSIS_DAP_HID)
         target_sources(ocdjtagdrivers PRIVATE cmsis_dap.c)
     endif()
+endif()
+
+if(BUILD_CMSIS_DAP_TCP)
+    target_sources(ocdjtagdrivers PRIVATE cmsis_dap_tcp.c cmsis_dap.c)
 endif()
 
 if(BUILD_IMX_GPIO)

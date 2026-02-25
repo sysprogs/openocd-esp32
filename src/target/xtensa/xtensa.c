@@ -4,7 +4,6 @@
  *   Generic Xtensa target API for OpenOCD                                 *
  *   Copyright (C) 2020-2022 Cadence Design Systems, Inc.                  *
  *   Copyright (C) 2016-2019 Espressif Systems Ltd.                        *
- *   Derived from esp108.c                                                 *
  *   Author: Angus Gratton gus@projectgus.com                              *
  ***************************************************************************/
 
@@ -1593,7 +1592,7 @@ int xtensa_get_gdb_reg_list(struct target *target,
 	return ERROR_OK;
 }
 
-int xtensa_mmu_is_enabled(struct target *target, int *enabled)
+int xtensa_mmu_is_enabled(struct target *target, bool *enabled)
 {
 	struct xtensa *xtensa = target_to_xtensa(target);
 	*enabled = xtensa->core_config->mmu.itlb_entries_count > 0 ||
@@ -2099,9 +2098,6 @@ int xtensa_read_memory(struct target *target, target_addr_t address, uint32_t si
 		if (xtensa->probe_lsddr32p == -1)
 			xtensa->probe_lsddr32p = 1;
 		xtensa->suppress_dsr_errors = prev_suppress;
-		if (bswap)
-			buf_bswap32(albuff, albuff, addrend_al - addrstart_al);
-		memcpy(buffer, albuff + (address & 3), (size * count));
 	}
 	if (res != ERROR_OK) {
 		if (xtensa->probe_lsddr32p != 0) {
@@ -2115,8 +2111,11 @@ int xtensa_read_memory(struct target *target, target_addr_t address, uint32_t si
 			LOG_TARGET_WARNING(target, "Failed reading %d bytes at address "TARGET_ADDR_FMT,
 				count * size, address);
 		}
+	} else {
+		if (bswap)
+			buf_bswap32(albuff, albuff, addrend_al - addrstart_al);
+		memcpy(buffer, albuff + (address & 3), (size * count));
 	}
-
 	free(albuff);
 	return res;
 }
@@ -3557,6 +3556,14 @@ static void xtensa_free_reg_cache(struct target *target)
 		free(xtensa->optregs);
 	}
 	xtensa->optregs = NULL;
+	if (xtensa->contiguous_regs_desc) {
+		free(xtensa->contiguous_regs_desc);
+		xtensa->contiguous_regs_desc = NULL;
+	}
+	if (xtensa->contiguous_regs_list) {
+		free(xtensa->contiguous_regs_list);
+		xtensa->contiguous_regs_list = NULL;
+	}
 }
 
 void xtensa_target_deinit(struct target *target)

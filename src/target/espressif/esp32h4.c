@@ -66,6 +66,7 @@ enum esp32h4_reset_reason {
 	RESET_REASON_CORE_USB_UART   = 0x15,// USB UART resets the digital core (hp system)
 	RESET_REASON_CORE_USB_JTAG   = 0x16,// USB JTAG resets the digital core (hp system)
 	RESET_REASON_CPU0_JTAG       = 0x18,// JTAG resets the CPU 0
+	RESET_REASON_CPU_LOCKUP      = 0x1A,// Cpu lockup resets the chip
 };
 
 static const char *esp32h4_get_reset_reason(uint32_t reset_reason_reg_val, int shift_val)
@@ -105,6 +106,8 @@ static const char *esp32h4_get_reset_reason(uint32_t reset_reason_reg_val, int s
 		return "USB JTAG core reset";
 	case RESET_REASON_CPU0_JTAG:
 		return "JTAG cpu reset";
+	case RESET_REASON_CPU_LOCKUP:
+		return "CPU lockup reset";
 	}
 	return "Unknown reset cause";
 }
@@ -151,7 +154,7 @@ static const char *esp32h4_csrs[] = {
 	"mcycle", "minstret", "mcounteren", "mcountinhibit",
 	"mhpmcounter8", "mhpmcounter9", "mhpmcounter13", "mhpmevent8", "mhpmevent9", "mhpmevent13",
 	"mcycleh", "minstreth", "mhpmcounter8h", "mhpmcounter9h", "mhpmcounter13h",
-	"tdata3", "tinfo", "mcontext", "mintstatus",
+	"tdata3", "tinfo", "mcontext",// "mintstatus",
 	/* custom exposed CSRs will start with 'csr_' prefix*/
 	"csr_mclicbase", "csr_mxstatus", "csr_mhcr", "csr_mhint", "csr_mraddr", "csr_mexstatus",
 	"csr_mnmicause", "csr_mnmipc", "csr_mcpuid", "csr_cpu_testbus_ctrl", "csr_pm_user",
@@ -219,6 +222,16 @@ static int esp32h4_init_target(struct command_context *cmd_ctx,
 	return ERROR_OK;
 }
 
+static int esp32h4_get_gdb_memory_map(struct target *target, struct target_memory_map *memory_map)
+{
+	struct target_memory_region region = { 0 };
+
+	region.type = MEMORY_TYPE_ROM;
+	region.start = ESP32H4_IROM_MASK_LOW;
+	region.length = ESP32H4_IROM_MASK_HIGH - ESP32H4_IROM_MASK_LOW;
+	return target_add_memory_region(memory_map, &region);
+}
+
 static const struct command_registration esp32h4_command_handlers[] = {
 	{
 		.usage = "",
@@ -263,12 +276,13 @@ struct target_type esp32h4_target = {
 	.get_gdb_arch = riscv_get_gdb_arch,
 	.get_gdb_reg_list = esp_riscv_get_gdb_reg_list,
 	.get_gdb_reg_list_noread = riscv_get_gdb_reg_list_noread,
+	.get_gdb_memory_map = esp32h4_get_gdb_memory_map,
 
 	.add_breakpoint = esp_riscv_breakpoint_add,
 	.remove_breakpoint = esp_riscv_breakpoint_remove,
 
-	.add_watchpoint = esp_riscv_smp_watchpoint_add,
-	.remove_watchpoint = esp_riscv_smp_watchpoint_remove,
+	.add_watchpoint = riscv_add_watchpoint,
+	.remove_watchpoint = riscv_remove_watchpoint,
 	.hit_watchpoint = esp_riscv_hit_watchpoint,
 
 	.arch_state = riscv_arch_state,

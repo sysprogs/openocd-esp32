@@ -220,7 +220,7 @@ static int check_pending(struct connection *connection,
 	}
 
 	FD_ZERO(&read_fds);
-	FD_SET(connection->fd, &read_fds);
+	PORTABLE_FD_SET(connection->fd, &read_fds);
 
 	tv.tv_sec = timeout_s;
 	tv.tv_usec = 0;
@@ -474,7 +474,7 @@ static int gdb_put_packet_inner(struct connection *connection,
 
 		char local_buffer[1024];
 		local_buffer[0] = '$';
-		if ((size_t)len + 4 <= sizeof(local_buffer)) {
+		if ((size_t)len + 5 <= sizeof(local_buffer)) {
 			/* performance gain on smaller packets by only a single call to gdb_write() */
 			memcpy(local_buffer + 1, buffer, len++);
 			len += snprintf(local_buffer + len, sizeof(local_buffer) - len, "#%02x", my_checksum);
@@ -816,6 +816,8 @@ static void gdb_signal_reply(struct target *target, struct connection *connectio
 		if (target->rtos) {
 			target->rtos->current_threadid = target->rtos->current_thread;
 			target->rtos->gdb_target_for_threadid(connection, target->rtos->current_threadid, &ct);
+			/* Espressif - workaround for esp32p4, check whether this is ok or remove in OCD-1132 */
+			target->gdb_service->target = ct;
 		} else {
 			ct = target;
 		}
@@ -1041,8 +1043,8 @@ static int gdb_new_connection(struct connection *connection)
 	 * GDB session could leave dangling breakpoints if e.g. communication
 	 * timed out.
 	 */
-	breakpoint_clear_target(target);
-	watchpoint_clear_target(target);
+	breakpoint_remove_all(target);
+	watchpoint_remove_all(target);
 
 	/* Since version 3.95 (gdb-19990504), with the exclusion of 6.5~6.8, GDB
 	 * sends an ACK at connection with the following comment in its source code:
@@ -1566,7 +1568,7 @@ static int gdb_read_memory_packet(struct connection *connection,
 
 	buffer = malloc(len);
 
-	LOG_DEBUG("addr: 0x%16.16" PRIx64 ", len: 0x%8.8" PRIx32 "", addr, len);
+	LOG_DEBUG("addr: 0x%16.16" PRIx64 ", len: 0x%8.8" PRIx32, addr, len);
 
 	retval = ERROR_NOT_IMPLEMENTED;
 	if (target->rtos)
@@ -1638,7 +1640,7 @@ static int gdb_write_memory_packet(struct connection *connection,
 
 	buffer = malloc(len);
 
-	LOG_DEBUG("addr: 0x%" PRIx64 ", len: 0x%8.8" PRIx32 "", addr, len);
+	LOG_DEBUG("addr: 0x%" PRIx64 ", len: 0x%8.8" PRIx32, addr, len);
 
 	if (unhexify(buffer, separator, len) != len)
 		LOG_ERROR("unable to decode memory packet");
@@ -1714,7 +1716,7 @@ static int gdb_write_memory_binary_packet(struct connection *connection,
 	}
 
 	if (len) {
-		LOG_DEBUG("addr: 0x%" PRIx64 ", len: 0x%8.8" PRIx32 "", addr, len);
+		LOG_DEBUG("addr: 0x%" PRIx64 ", len: 0x%8.8" PRIx32, addr, len);
 
 		retval = ERROR_NOT_IMPLEMENTED;
 		if (target->rtos)
@@ -2035,7 +2037,7 @@ static int gdb_memory_map(struct connection *connection, char const *packet, int
 	int length;
 	char *separator;
 	unsigned int target_flash_banks = 0;
-	struct target_memory_map memory_map = { 0 };
+	struct target_memory_map memory_map = { .regions = NULL, .num_regions = 0, .capacity = 0 };
 
 	/* skip command character */
 	packet += 23;
@@ -2110,6 +2112,8 @@ static int gdb_memory_map(struct connection *connection, char const *packet, int
 	}
 
 	free(banks);
+
+	assert(memory_map.regions);
 
 	/* Sort all regions by start address in ascending order */
 	qsort(memory_map.regions, memory_map.num_regions, sizeof(struct target_memory_region), compare_memory_regions);
@@ -2979,7 +2983,7 @@ static int gdb_query_packet(struct connection *connection,
 			gdb_connection->output_flag = GDB_OUTPUT_NO;
 
 			if (retval == ERROR_OK) {
-				snprintf(gdb_reply, 10, "C%8.8" PRIx32 "", checksum);
+				snprintf(gdb_reply, 10, "C%8.8" PRIx32, checksum);
 				gdb_put_packet(connection, gdb_reply, 9);
 			} else {
 				retval = gdb_error(connection, retval);
@@ -3095,9 +3099,6 @@ static int gdb_query_packet(struct connection *connection,
 
 		free(xml);
 
-		/* ESPRESSIF: will be used to process lazy breakpoints */
-		target_call_event_callbacks(target, TARGET_EVENT_QXFER_THREAD_READ_END);
-
 		return ERROR_OK;
 	} else if (strncmp(packet, "QStartNoAckMode", 15) == 0) {
 		gdb_connection->noack_mode = 1;
@@ -3114,7 +3115,8 @@ static int gdb_query_packet(struct connection *connection,
 	return ERROR_OK;
 }
 
-static bool gdb_handle_vcont_packet(struct connection *connection, const char *packet, int packet_size)
+static bool gdb_handle_vcont_packet(struct connection *connection, const char *packet,
+	__attribute__((unused)) int packet_size)
 {
 	struct gdb_connection *gdb_connection = connection->priv;
 	struct target *target = get_available_target_from_connection(connection);
@@ -3327,8 +3329,8 @@ static void gdb_restart_inferior(struct connection *connection, const char *pack
 	struct gdb_connection *gdb_con = connection->priv;
 	struct target *target = get_target_from_connection(connection);
 
-	breakpoint_clear_target(target);
-	watchpoint_clear_target(target);
+	breakpoint_remove_all(target);
+	watchpoint_remove_all(target);
 	command_run_linef(connection->cmd_ctx, "ocd_gdb_restart %s",
 			target_name(target));
 	/* set connection as attached after reset */

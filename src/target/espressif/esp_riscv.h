@@ -48,6 +48,8 @@ struct esp_riscv_common {
 	size_t chip_specific_registers_size;
 	bool (*is_iram_address)(target_addr_t addr);
 	bool (*is_dram_address)(target_addr_t addr);
+	bool minimal_save_restore;
+	int (*examine_end)(struct target *target);
 };
 
 static inline struct esp_riscv_common *target_to_esp_riscv(const struct target *target)
@@ -90,11 +92,10 @@ int esp_riscv_alloc_trigger_addr(struct target *target);
 int esp_riscv_semihosting(struct target *target);
 int esp_riscv_breakpoint_add(struct target *target, struct breakpoint *breakpoint);
 int esp_riscv_breakpoint_remove(struct target *target, struct breakpoint *breakpoint);
-int esp_riscv_smp_watchpoint_add(struct target *target, struct watchpoint *watchpoint);
-int esp_riscv_smp_watchpoint_remove(struct target *target, struct watchpoint *watchpoint);
 int esp_riscv_hit_watchpoint(struct target *target, struct watchpoint **hit_watchpoint);
 int esp_riscv_resume(struct target *target, bool current, target_addr_t address,
 		bool handle_breakpoints, bool debug_execution);
+int esp_riscv_step(struct target *target, bool current, target_addr_t address, bool handle_breakpoints);
 int esp_riscv_start_algorithm(struct target *target,
 	int num_mem_params, struct mem_param *mem_params,
 	int num_reg_params, struct reg_param *reg_params,

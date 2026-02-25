@@ -172,6 +172,7 @@ Sleep
 WaitForSingleObject
 WSACleanup
 WSAGetLastError
+WSASetLastError
 WSAStartup
 dwHighDateTime
 dwLowDateTime
@@ -180,3 +181,6 @@ dwOSVersionInfoSize
 
 # OpenOCD exceptions that should be removed
 KiB
+
+# Espressif
+Uart_Init

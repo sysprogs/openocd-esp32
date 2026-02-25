@@ -384,6 +384,8 @@ enum {
 	ESP_FREERTOS_DEBUG_LIST_END_PREV,
 	ESP_FREERTOS_DEBUG_LIST_ITEM_PREV,
 	ESP_FREERTOS_DEBUG_LIST_ITEM_OWNER,
+	ESP_FREERTOS_DEBUG_TASK_COUNT_WIDTH,
+	ESP_FREERTOS_DEBUG_PTR_WIDTH,
 	/* New entries must be inserted here */
 	ESP_FREERTOS_DEBUG_TABLE_END,
 };
@@ -417,9 +419,15 @@ static int freertos_read_esp_symbol_table(struct rtos *rtos, int index, uint8_t 
 
 		LOG_DEBUG("FreeRTOS: esp_symbols table size (%d) ", table_size);
 
-		if (table_size == 0 || table_size > ESP_FREERTOS_DEBUG_TABLE_END) {
-			LOG_WARNING("esp_symbols table size (%d) is not valid!", table_size);
+		if (table_size <= ESP_FREERTOS_DEBUG_KERNEL_VER_BUILD) {
+			LOG_ERROR("esp_symbols table size (%d) is not valid!", table_size);
 			return ERROR_FAIL;
+		}
+
+		if (table_size > ESP_FREERTOS_DEBUG_TABLE_END) {
+			LOG_WARNING("esp_symbols table size (%d) is bigger than expected (%d)",
+						table_size, ESP_FREERTOS_DEBUG_TABLE_END);
+			table_size = ESP_FREERTOS_DEBUG_TABLE_END;
 		}
 
 		rtos_data->esp_symbols = (uint8_t *)calloc(table_size, sizeof(table_size));
@@ -452,7 +460,7 @@ static int freertos_read_esp_symbol_table(struct rtos *rtos, int index, uint8_t 
 
 static uint8_t freertos_get_vals_from_esp_symtab(struct rtos *rtos, const uint8_t *param, int symbol)
 {
-	uint8_t value;
+	uint8_t value = 0;
 
 	/* Attempt to read the value from the symbol table defined at the target */
 	if (freertos_read_esp_symbol_table(rtos, symbol, &value) == ERROR_OK)
@@ -497,19 +505,17 @@ static int freertos_smp_init(struct target *target)
 
 	/* use one of rtos instance for both target */
 	foreach_smp_target(head, target->smp_targets) {
-		if (head->target->rtos != rtos) {
-			struct freertos_data *smp_rtos_data =
-				(struct freertos_data *)head->target->rtos->rtos_specific_params;
+		struct target *curr = head->target;
+		struct freertos_data *smp_rtos_data = (struct freertos_data *)curr->rtos->rtos_specific_params;
+		free(smp_rtos_data->curr_threads_handles_buff);
+		if (curr->rtos != rtos) {
 			/*  remap smp target on rtos  */
-			free(head->target->rtos);
-			head->target->rtos = rtos;
+			free(curr->rtos);
+			curr->rtos = rtos;
 			free(smp_rtos_data);
 			rtos_data->nr_cpus++;
 		}
 	}
-
-	if (rtos_data->curr_threads_handles_buff)
-		free(rtos_data->curr_threads_handles_buff);
 
 	rtos_data->curr_threads_handles_buff = calloc(rtos_data->nr_cpus,
 		rtos_data->params->pointer_width);
@@ -1476,6 +1482,7 @@ static int freertos_clean(struct target *target)
 	if (!target->rtos_auto_detect)
 		return ERROR_OK;
 	free(rtos_data->curr_threads_handles_buff);
+	free(rtos_data->esp_symbols);
 	free(rtos_data);
 	target->rtos->rtos_specific_params = NULL;
 	return ERROR_OK;

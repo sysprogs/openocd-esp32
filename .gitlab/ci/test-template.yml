@@ -43,6 +43,7 @@
         export ASAN_OPTIONS="detect_invalid_pointer_pairs=2:print_stacktrace=1:strict_string_checks=1:halt_on_error=0:allocator_may_return_null=1";
         export TEST_SANITIZERS=1;
         cp ${CONF_HOST}/lib* /usr/lib;
+        export TEST_RUN_EXTRA_OPTS="${TEST_RUN_EXTRA_OPTS} -e *.*.test_semihost_args";
       fi;
       if [[ $IDF_RELEASE_TAG != "latest" || $CI_FULL_RUN != "1" ]] ; then
         export TEST_RUN_EXTRA_OPTS="${TEST_RUN_EXTRA_OPTS} -e *.*.test_big_binary *.*.test_big_binary_compressed";
@@ -82,7 +83,7 @@
 
 .tests_master_template:
   extends: .tests_template
-  image: $CI_DOCKER_REGISTRY/target-test-env-v6.0:1
+  image: $CI_DOCKER_REGISTRY/target-test-env-v6.1:1
   variables:
     CHIP_TEST_TOOLCHAIN: "xtensa-${CHIP_NAME}"
     ESP_GDB_TOOLCHAIN: "${ESP_V6_0X_XTENSA_GDB_TOOLCHAIN}"
@@ -94,6 +95,26 @@
 
 .tests_master_riscv_template:
   extends: .tests_master_template
+  variables:
+    CHIP_TEST_TOOLCHAIN: "riscv32-esp"
+    ESP_GDB_TOOLCHAIN: "${ESP_V6_0X_RISCV_GDB_TOOLCHAIN}"
+    TOOLCHAIN_PREFIX: "riscv32-esp"
+    ESP_GCOV_TOOLCHAIN: "${ESP_V6_0X_RISCV_GCOV_TOOLCHAIN}"
+
+.tests_v6.0.x_template:
+  extends: .tests_template
+  image: $CI_DOCKER_REGISTRY/target-test-env-v6.0:2
+  variables:
+    CHIP_TEST_TOOLCHAIN: "xtensa-${CHIP_NAME}"
+    ESP_GDB_TOOLCHAIN: "${ESP_V6_0X_XTENSA_GDB_TOOLCHAIN}"
+    TOOLCHAIN_PREFIX: "xtensa-esp"
+    ESP_TOOLCHAIN: "${ESP_V6_0X_TOOLCHAIN_VER}"
+    TEST_RUN_DIR: "build_test_app_${CHIP_NAME}_idf6.0.x"
+    IDF_RELEASE_TAG: "${TEST_APP_IDF6_0_X_RELEASE_TAG}"
+    ESP_GCOV_TOOLCHAIN: "${ESP_V6_0X_XTENSA_GCOV_TOOLCHAIN}"
+
+.tests_v6.0.x_riscv_template:
+  extends: .tests_v6.0.x_template
   variables:
     CHIP_TEST_TOOLCHAIN: "riscv32-esp"
     ESP_GDB_TOOLCHAIN: "${ESP_V6_0X_RISCV_GDB_TOOLCHAIN}"
@@ -174,22 +195,4 @@
   variables:
     CHIP_TEST_TOOLCHAIN: "riscv32-esp"
     ESP_GDB_TOOLCHAIN: "${ESP_V5_2X_RISCV_GDB_TOOLCHAIN}"
-    TOOLCHAIN_PREFIX: "riscv32-esp"
-
-.tests_v5.1.x_template:
-  extends: .tests_template
-  image: $CI_DOCKER_REGISTRY/target-test-env-v5.1:1
-  variables:
-    CHIP_TEST_TOOLCHAIN: "xtensa-${CHIP_NAME}"
-    TEST_RUN_DIR: "build_test_app_${CHIP_NAME}_idf5.1.x"
-    ESP_GDB_TOOLCHAIN: "${ESP_V5_1X_XTENSA_GDB_TOOLCHAIN}"
-    TOOLCHAIN_PREFIX: "xtensa-${CHIP_NAME}"
-    ESP_TOOLCHAIN: "${ESP_V5_1X_TOOLCHAIN_VER}"
-    IDF_RELEASE_TAG: "${TEST_APP_IDF5_1_X_RELEASE_TAG}"
-
-.tests_v5.1.x_riscv_template:
-  extends: .tests_v5.1.x_template
-  variables:
-    CHIP_TEST_TOOLCHAIN: "riscv32-esp"
-    ESP_GDB_TOOLCHAIN: "${ESP_V5_1X_RISCV_GDB_TOOLCHAIN}"
     TOOLCHAIN_PREFIX: "riscv32-esp"

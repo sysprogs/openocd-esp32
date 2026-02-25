@@ -12,6 +12,7 @@ NOR_DRIVERS = \
 	%D%/aduc702x.c \
 	%D%/aducm360.c \
 	%D%/ambiqmicro.c \
+	%D%/artery.c \
 	%D%/at91sam4.c \
 	%D%/at91sam4l.c \
 	%D%/at91samd.c \
@@ -37,12 +38,14 @@ NOR_DRIVERS = \
 	%D%/esp32s2.c \
 	%D%/esp32c2.c \
 	%D%/esp32h2.c \
+	%D%/esp32h4.c \
 	%D%/esp32c3.c \
 	%D%/esp32s3.c \
 	%D%/esp32c5.c \
 	%D%/esp32c6.c \
 	%D%/esp32c61.c \
 	%D%/esp32p4.c \
+	%D%/esp32p4_hw_rev3.c \
 	%D%/esirisc_flash.c \
 	%D%/faux.c \
 	%D%/fespi.c \
@@ -98,6 +101,7 @@ NOR_DRIVERS = \
 	%D%/xmc4xxx.c
 
 NORHEADERS = \
+	%D%/artery.h \
 	%D%/core.h \
 	%D%/cc3220sf.h \
 	%D%/bluenrg-x.h \
