@@ -355,6 +355,7 @@ static const struct {
 	/* These exist only when the Virtualization Extensions is present */
 	[42] = { .name = "sp_hyp", .cookie = 13, .mode = ARM_MODE_HYP, .gdb_index = 51, },
 	[43] = { .name = "spsr_hyp", .cookie = 16, .mode = ARM_MODE_HYP, .gdb_index = 52, },
+	// .gdb_index numbering continues by ARM_VFP_V3_D0
 };
 
 static const struct {
@@ -690,8 +691,6 @@ struct reg_cache *arm_build_reg_cache(struct target *target, struct arm *arm)
 			&& arm->core_type != ARM_CORE_TYPE_VIRT_EXT)
 			continue;
 
-		/* REVISIT handle Cortex-M, which only shadows R13/SP */
-
 		reg_arch_info[i].num = arm_core_regs[i].cookie;
 		reg_arch_info[i].mode = arm_core_regs[i].mode;
 		reg_arch_info[i].target = target;
@@ -704,9 +703,6 @@ struct reg_cache *arm_build_reg_cache(struct target *target, struct arm *arm)
 		reg_list[i].type = &arm_reg_type;
 		reg_list[i].arch_info = &reg_arch_info[i];
 		reg_list[i].exist = true;
-
-		/* This really depends on the calling convention in use */
-		reg_list[i].caller_save = false;
 
 		/* Registers data type, as used by GDB target description */
 		reg_list[i].reg_data_type = malloc(sizeof(struct reg_data_type));
@@ -728,9 +724,16 @@ struct reg_cache *arm_build_reg_cache(struct target *target, struct arm *arm)
 		if (reg_list[i].number <= 15 || reg_list[i].number == 25) {
 			reg_list[i].feature->name = "org.gnu.gdb.arm.core";
 			reg_list[i].group = "general";
+			/* Registers which should be preserved across GDB inferior function calls.
+			 * Avoid saving banked registers as GDB (version 16.2 in time of writing)
+			 * does not take the current mode into account and messes the value
+			 * by restoring both the not banked register and the banked alias of it
+			 * in the current mode. */
+			reg_list[i].caller_save = true;
 		} else {
 			reg_list[i].feature->name = "net.sourceforge.openocd.banked";
 			reg_list[i].group = "banked";
+			reg_list[i].caller_save = false;
 		}
 
 		cache->num_regs++;
@@ -750,7 +753,8 @@ struct reg_cache *arm_build_reg_cache(struct target *target, struct arm *arm)
 		reg_list[i].arch_info = &reg_arch_info[i];
 		reg_list[i].exist = true;
 
-		reg_list[i].caller_save = false;
+		/* Mark d0 - d31 and fpscr as save-restore for GDB */
+		reg_list[i].caller_save = true;
 
 		reg_list[i].reg_data_type = malloc(sizeof(struct reg_data_type));
 		reg_list[i].reg_data_type->type = arm_vfp_v3_regs[j].type;
@@ -1634,8 +1638,10 @@ int arm_checksum_memory(struct target *target,
 		retval = target_write_u32(target,
 				crc_algorithm->address + i * sizeof(uint32_t),
 				le_to_h_u32(&arm_crc_code_le[i * 4]));
-		if (retval != ERROR_OK)
-			goto cleanup;
+		if (retval != ERROR_OK) {
+			target_free_working_area(target, crc_algorithm);
+			return retval;
+		}
 	}
 
 	arm_algo.common_magic = ARM_COMMON_MAGIC;
@@ -1668,7 +1674,6 @@ int arm_checksum_memory(struct target *target,
 	destroy_reg_param(&reg_params[0]);
 	destroy_reg_param(&reg_params[1]);
 
-cleanup:
 	target_free_working_area(target, crc_algorithm);
 
 	return retval;
@@ -1681,7 +1686,8 @@ cleanup:
  *
  */
 int arm_blank_check_memory(struct target *target,
-	struct target_memory_check_block *blocks, int num_blocks, uint8_t erased_value)
+	struct target_memory_check_block *blocks, unsigned int num_blocks,
+	uint8_t erased_value, unsigned int *checked)
 {
 	struct working_area *check_algorithm;
 	struct reg_param reg_params[3];
@@ -1715,8 +1721,10 @@ int arm_blank_check_memory(struct target *target,
 				check_algorithm->address
 				+ i * sizeof(uint32_t),
 				le_to_h_u32(&check_code_le[i * 4]));
-		if (retval != ERROR_OK)
-			goto cleanup;
+		if (retval != ERROR_OK) {
+			target_free_working_area(target, check_algorithm);
+			return retval;
+		}
 	}
 
 	arm_algo.common_magic = ARM_COMMON_MAGIC;
@@ -1741,20 +1749,18 @@ int arm_blank_check_memory(struct target *target,
 			exit_var,
 			10000, &arm_algo);
 
-	if (retval == ERROR_OK)
+	if (retval == ERROR_OK) {
 		blocks[0].result = buf_get_u32(reg_params[2].value, 0, 32);
+		*checked = 1;	/* only one block has been checked */
+	}
 
 	destroy_reg_param(&reg_params[0]);
 	destroy_reg_param(&reg_params[1]);
 	destroy_reg_param(&reg_params[2]);
 
-cleanup:
 	target_free_working_area(target, check_algorithm);
 
-	if (retval != ERROR_OK)
-		return retval;
-
-	return 1;       /* only one block has been checked */
+	return retval;
 }
 
 static int arm_full_context(struct target *target)

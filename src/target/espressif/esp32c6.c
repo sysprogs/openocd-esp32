@@ -144,18 +144,21 @@ static const struct esp_flash_breakpoint_ops esp32c6_flash_brp_ops = {
 
 static const char *esp32c6_csrs[] = {
 	"mideleg", "medeleg", "mie", "mip",
-	/* custom exposed CSRs will start with 'csr_' prefix*/
-	"csr_ustatus", "csr_uie", "csr_utvec", "csr_uepc", "csr_ucause", "csr_utval", "csr_uip",
-	"csr_pma_cfg0", "csr_pma_cfg1", "csr_pma_cfg2", "csr_pma_cfg3", "csr_pma_cfg4", "csr_pma_cfg5",
-	"csr_pma_cfg6", "csr_pma_cfg7", "csr_pma_cfg8", "csr_pma_cfg9", "csr_pma_cfg10", "csr_pma_cfg11",
-	"csr_pma_cfg12", "csr_pma_cfg13", "csr_pma_cfg14", "csr_pma_cfg15", "csr_pma_addr0", "csr_pma_addr1",
-	"csr_pma_addr2", "csr_pma_addr3", "csr_pma_addr4", "csr_pma_addr5", "csr_pma_addr6", "csr_pma_addr7",
-	"csr_pma_addr8", "csr_pma_addr9", "csr_pma_addr10", "csr_pma_addr11", "csr_pma_addr12", "csr_pma_addr13",
-	"csr_pma_addr14", "csr_pma_addr15",
+	"ustatus", "uie", "utvec", "uepc", "ucause", "utval", "uip",
+	"pma_cfg0", "pma_cfg1", "pma_cfg2", "pma_cfg3", "pma_cfg4", "pma_cfg5",
+	"pma_cfg6", "pma_cfg7", "pma_cfg8", "pma_cfg9", "pma_cfg10", "pma_cfg11",
+	"pma_cfg12", "pma_cfg13", "pma_cfg14", "pma_cfg15", "pma_addr0", "pma_addr1",
+	"pma_addr2", "pma_addr3", "pma_addr4", "pma_addr5", "pma_addr6", "pma_addr7",
+	"pma_addr8", "pma_addr9", "pma_addr10", "pma_addr11", "pma_addr12", "pma_addr13",
+	"pma_addr14", "pma_addr15",
 };
 
 static struct esp_riscv_reg_class esp32c6_registers[] = {
-	{ esp32c6_csrs, ARRAY_SIZE(esp32c6_csrs), true, NULL },
+	{
+		.reg_array = esp32c6_csrs,
+		.reg_array_size = ARRAY_SIZE(esp32c6_csrs),
+		.save_restore = true
+	},
 };
 
 static int esp32c6_target_create(struct target *target)
@@ -183,6 +186,13 @@ static int esp32c6_target_create(struct target *target)
 		return ERROR_FAIL;
 
 	riscv_info_init(target, &esp_riscv->riscv);
+	struct riscv_private_config *config = target->private_config;
+	if (!config) {
+		config = alloc_default_riscv_private_config();
+		if (!config)
+			return ERROR_FAIL;
+		target->private_config = config;
+	}
 
 	return ERROR_OK;
 }

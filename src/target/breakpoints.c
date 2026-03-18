@@ -16,6 +16,7 @@
 #include <helper/log.h>
 #include "breakpoints.h"
 #include "smp.h"
+#include "helper/util.h"
 
 enum breakpoint_watchpoint {
 	BREAKPOINT,
@@ -56,6 +57,13 @@ static int breakpoint_add_internal(struct target *target,
 				address, breakpoint->unique_id);
 			return ERROR_TARGET_DUPLICATE_BREAKPOINT;
 		}
+		if (type == BKPT_SOFT &&
+				is_memory_regions_overlap(address, length, breakpoint->address, breakpoint->length)) {
+			LOG_TARGET_ERROR(target, "Breakpoint intersects with another one at " TARGET_ADDR_FMT
+				" of length %u (BP %" PRIu32 ")", breakpoint->address,
+				breakpoint->length, breakpoint->unique_id);
+			return ERROR_TARGET_INTERSECT_BREAKPOINT;
+		}
 		breakpoint_p = &breakpoint->next;
 		breakpoint = breakpoint->next;
 	}
@@ -78,7 +86,7 @@ static int breakpoint_add_internal(struct target *target,
 		reason = "resource not available";
 		goto fail;
 	case ERROR_TARGET_NOT_HALTED:
-		reason = "target running";
+		reason = "target not halted";
 		goto fail;
 	default:
 		reason = "unknown reason";
@@ -549,7 +557,7 @@ static int watchpoint_add_internal(struct target *target, target_addr_t address,
 		reason = "resource not available";
 		goto bye;
 	case ERROR_TARGET_NOT_HALTED:
-		reason = "target running";
+		reason = "target not halted";
 		goto bye;
 	default:
 		reason = "unrecognized error";
@@ -664,6 +672,20 @@ int watchpoint_hit(struct target *target, enum watchpoint_rw *rw,
 	struct watchpoint *hit_watchpoint;
 
 	retval = target_hit_watchpoint(target, &hit_watchpoint);
+	if (retval == ERROR_NOT_IMPLEMENTED
+			&& target->debug_reason == DBG_REASON_WATCHPOINT) {
+		// Handle the trivial case: only one watchpoint is set
+		unsigned int cnt = 0;
+		struct watchpoint *wp = target->watchpoints;
+		while (wp) {
+			cnt++;
+			wp = wp->next;
+		}
+		if (cnt == 1) {
+			retval = ERROR_OK;
+			hit_watchpoint = target->watchpoints;
+		}
+	}
 	if (retval != ERROR_OK)
 		return ERROR_FAIL;
 

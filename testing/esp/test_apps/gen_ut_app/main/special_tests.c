@@ -128,8 +128,8 @@ TEST_DECL(gh264_psram_check, "test_special.PsramTests*.test_psram_with_flash_bre
 TEST_DECL(illegal_instruction_ex, "test_special.DebuggerSpecialTests*.test_exception_illegal_instruction")
 {
     __asm__ __volatile__ (
-        ".global exception_bp\n" \
-        ".type   exception_bp,@function\n" \
+        ".global exception_bp_1\n" \
+        ".type   exception_bp_1,@function\n" \
         "exception_bp_1:\n" \
         "ILL\n" \
     );
@@ -201,8 +201,8 @@ TEST_DECL(pseudo_coprocessor_ex, "test_special.DebuggerSpecialTests*.test_except
 TEST_DECL(illegal_instruction_ex, "test_special.DebuggerSpecialTests*.test_exception_illegal_instruction")
 {
     __asm__ __volatile__ (
-        ".global exception_bp\n" \
-        ".type   exception_bp,@function\n" \
+        ".global exception_bp_1\n" \
+        ".type   exception_bp_1,@function\n" \
         "exception_bp_1:\n" \
         "unimp\n" \
     );
@@ -304,6 +304,62 @@ TEST_DECL(abort_ex, "test_special.DebuggerSpecialTests*.test_exception_abort")
 	abort();
 }
 
+#if CONFIG_IDF_TARGET_ESP32P4 || CONFIG_IDF_TARGET_ESP32S3
+#if CONFIG_IDF_TARGET_ARCH_RISCV
+static inline void pie_multiply() {
+    __asm__ __volatile__ ("esp.vmulas.u16.qacc q0, q1");
+}
+
+static inline void pie_disable() {
+    __asm__ __volatile__ (
+        "csrci 0x7F2, 0x1\n" // mext_pie_status.STATE = OFF
+    );
+}
+
+static inline void pie_write(uint16_t q0[], uint16_t q1[]) {
+    __asm__ __volatile__ (
+        "mv a0, %0\n"
+        "mv a1, %1\n"
+        "esp.vld.128.ip q0, a0, 0\n"
+        "esp.vld.128.ip q1, a1, 0" :: "r"(q0), "r"(q1) : "a0", "a1"
+    );
+}
+#else /* CONFIG_IDF_TARGET_ARCH_XTENSA */
+static inline void pie_multiply() {
+    __asm__ __volatile__ ("EE.VMULAS.U16.QACC q0, q1");
+}
+
+static inline void pie_disable() {
+    __asm__ __volatile__ (
+        "rsr.cpenable a4\n"
+        "movi a0, ~8\n"
+        "and a4, a4, a0\n"
+        "wsr.cpenable a4\n"
+        "rsync\n":::"a0", "a4"
+    );
+}
+
+static inline void pie_write(uint16_t q0[], uint16_t q1[]) {
+    __asm__ __volatile__ (
+        "LD.QR q0, %0, 0\n"
+        "LD.QR q1, %1, 0" :: "r"(q0), "r"(q1)
+    );
+}
+#endif
+
+TEST_DECL(pie_registers, "test_special.DebuggerSpecialTests*.test_pie_registers")
+{
+    uint16_t reg_val0[] = {0, 1, 2, 3, 4, 5, 6, 7};
+    uint16_t reg_val1[] = {8, 9, 10, 11, 12, 13, 14, 15};
+    pie_write(reg_val0, reg_val1);
+    while (1) {
+        pie_multiply(); TEST_BREAK_LOC(pie_multiply);
+        // to test openocd access while disabled
+        pie_disable(); TEST_BREAK_LOC(pie_disable);
+    }
+}
+#endif
+
 ut_result_t special_test_do(int test_num, int core_num)
 {
     if (core_num < 0 || core_num >= portNUM_PROCESSORS)
@@ -343,6 +399,10 @@ ut_result_t special_test_do(int test_num, int core_num)
         xTaskCreatePinnedToCore(TEST_ENTRY(gh264_psram_check), "gh264_psram_check_task", 4096, NULL, 5, NULL, core_num);
     } else if (TEST_ID_MATCH(TEST_ID_PATTERN(psram_with_flash_breakpoints), test_num)) {
         xTaskCreatePinnedToCore(TEST_ENTRY(psram_with_flash_breakpoints), "psram_task", 4096, NULL, 5, NULL, core_num);
+#if CONFIG_IDF_TARGET_ESP32P4 || CONFIG_IDF_TARGET_ESP32S3
+    } else if (TEST_ID_MATCH(TEST_ID_PATTERN(pie_registers), test_num)) {
+        xTaskCreatePinnedToCore(TEST_ENTRY(pie_registers), "pie_registers", 4096, NULL, 5, NULL, core_num);
+#endif
     } else {
         return UT_UNSUPPORTED;
     }

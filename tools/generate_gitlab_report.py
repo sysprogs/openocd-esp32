@@ -29,6 +29,7 @@ def main():
     with open(args.input, "r") as report:
         if args.type == 'sparse':
             rows = report.readlines()
+            rows = [x for x in rows if "note: in included file:" not in x]
         else:
             soup = BeautifulSoup(report, 'html.parser')
             tbody = soup.find('tbody')

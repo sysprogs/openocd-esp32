@@ -13,7 +13,6 @@
       - $TEST_RUN_DIR/debug_backend_tests.log
       - $TEST_RUN_DIR/esp_cov_files
       - $TEST_RUN_DIR/sanitizer_errors.log
-      - $TEST_RUN_DIR/results
     reports:
       junit:
         - $TEST_RUN_DIR/results/*
@@ -35,10 +34,6 @@
         export PLATFORM_NAME="linux-arm64-test";
       fi;
       echo "PLATFORM_NAME: ${PLATFORM_NAME}";
-      if [ ! -z "$ESP_GCOV_TOOLCHAIN" ] ; then
-        export ESP_GCOV_TOOLCHAIN="${ESP_GCOV_TOOLCHAIN}-${CONF_HOST}";
-        echo "ESP_GCOV_TOOLCHAIN: ${ESP_GCOV_TOOLCHAIN}";
-      fi;
       if [[ $SCHEDULE_TYPE == "run_sanitizer_tests" ]] ; then
         export ASAN_OPTIONS="detect_invalid_pointer_pairs=2:print_stacktrace=1:strict_string_checks=1:halt_on_error=0:allocator_may_return_null=1";
         export TEST_SANITIZERS=1;
@@ -54,52 +49,42 @@
     - . $PWD/${TEST_RUN_DIR}/gen_ut_app/gcov_data/gcov_env.sh
     - !reference [.run_tests_linux, script]
   after_script:
-    # Below lines gets esp related file paths from tools/format-esp.sh
-    # and change file extension as .gcno and .gcda
     - >
-      input="tools/format-esp.sh";
-      file_full_path="";
-      dir_path="";
-      file_name="";
-      command_arg="";
-      splitter_line="# Stub flasher related files";
-      while IFS= read -r line ; do
-        if [[ ${line:0:2} == "./" ]] ; then
-          file_full_path=${line##*.sh };
-          file_name=${file_full_path##*/} ;
-          dir_path=${file_full_path%$file_name} ;
-          command_arg+="--include "${dir_path}"*"${file_name:0:-2}".gcno ";
-          command_arg+="--include "${dir_path}"*"${file_name:0:-2}".gcda ";
-        fi
-        if [[ $line == ${splitter_line}* ]] ; then
-          break;
-        fi
-      done < "$input"
+      command_arg+="--include src/jtag/drivers/*esp_*.gcno ";
+      command_arg+="--include src/jtag/drivers/*esp_*.gcda ";
+      command_arg+="--include src/target/espressif/*.gcno ";
+      command_arg+="--include src/target/espressif/*.gcda ";
+      command_arg+="--include src/target/xtensa/*.gcno ";
+      command_arg+="--include src/target/xtensa/*.gcda ";
+      command_arg+="--include src/target/riscv/*.gcno ";
+      command_arg+="--include src/target/riscv/*.gcda ";
+      command_arg+="--include src/flash/nor/*esp32*.gcno ";
+      command_arg+="--include src/flash/nor/*esp32*.gcda ";
+      command_arg+="--include src/flash/nor/*esp_*.gcno ";
+      command_arg+="--include src/flash/nor/*esp_*.gcda ";
+      command_arg+="--include src/rtos/*.gcno ";
+      command_arg+="--include src/rtos/*.gcda ";
     - mkdir ${TEST_RUN_DIR}/esp_cov_files
     - rsync -a --prune-empty-dirs --include '*/' ${command_arg} --exclude '*' ${TEST_RUN_DIR}/${DIST_INSTALLED_DIR}/_build ${TEST_RUN_DIR}/esp_cov_files
     - cp ${PWD}/${TEST_RUN_DIR}/${DIST_INSTALLED_DIR}/bin/gcov ${TEST_RUN_DIR}/esp_cov_files
-    # Patch up test reports to include IDF_RELEASE_TAG and CHIP_NAME in the test name
-    - sed ${TEST_RUN_DIR}/results/*.xml -i -e "s/testcase classname=\"/testcase classname=\"${IDF_RELEASE_TAG}-${CHIP_NAME}./g"
 
 .tests_master_template:
   extends: .tests_template
   image: $CI_DOCKER_REGISTRY/target-test-env-v6.1:1
   variables:
     CHIP_TEST_TOOLCHAIN: "xtensa-${CHIP_NAME}"
-    ESP_GDB_TOOLCHAIN: "${ESP_V6_0X_XTENSA_GDB_TOOLCHAIN}"
+    ESP_GDB_TOOLCHAIN: "${ESP_V6_1X_XTENSA_GDB_TOOLCHAIN}"
     TOOLCHAIN_PREFIX: "xtensa-esp"
-    ESP_TOOLCHAIN: "${ESP_V6_0X_TOOLCHAIN_VER}"
+    ESP_TOOLCHAIN: "${ESP_V6_1X_TOOLCHAIN_VER}"
     TEST_RUN_DIR: "build_test_app_${CHIP_NAME}"
     IDF_RELEASE_TAG: "latest"
-    ESP_GCOV_TOOLCHAIN: "${ESP_V6_0X_XTENSA_GCOV_TOOLCHAIN}"
 
 .tests_master_riscv_template:
   extends: .tests_master_template
   variables:
     CHIP_TEST_TOOLCHAIN: "riscv32-esp"
-    ESP_GDB_TOOLCHAIN: "${ESP_V6_0X_RISCV_GDB_TOOLCHAIN}"
+    ESP_GDB_TOOLCHAIN: "${ESP_V6_1X_RISCV_GDB_TOOLCHAIN}"
     TOOLCHAIN_PREFIX: "riscv32-esp"
-    ESP_GCOV_TOOLCHAIN: "${ESP_V6_0X_RISCV_GCOV_TOOLCHAIN}"
 
 .tests_v6.0.x_template:
   extends: .tests_template
@@ -111,7 +96,6 @@
     ESP_TOOLCHAIN: "${ESP_V6_0X_TOOLCHAIN_VER}"
     TEST_RUN_DIR: "build_test_app_${CHIP_NAME}_idf6.0.x"
     IDF_RELEASE_TAG: "${TEST_APP_IDF6_0_X_RELEASE_TAG}"
-    ESP_GCOV_TOOLCHAIN: "${ESP_V6_0X_XTENSA_GCOV_TOOLCHAIN}"
 
 .tests_v6.0.x_riscv_template:
   extends: .tests_v6.0.x_template
@@ -119,7 +103,6 @@
     CHIP_TEST_TOOLCHAIN: "riscv32-esp"
     ESP_GDB_TOOLCHAIN: "${ESP_V6_0X_RISCV_GDB_TOOLCHAIN}"
     TOOLCHAIN_PREFIX: "riscv32-esp"
-    ESP_GCOV_TOOLCHAIN: "${ESP_V6_0X_RISCV_GCOV_TOOLCHAIN}"
 
 .tests_v5.5.x_template:
   extends: .tests_template
@@ -131,7 +114,6 @@
     ESP_TOOLCHAIN: "${ESP_V5_5X_TOOLCHAIN_VER}"
     TEST_RUN_DIR: "build_test_app_${CHIP_NAME}_idf5.5.x"
     IDF_RELEASE_TAG: "${TEST_APP_IDF5_5_X_RELEASE_TAG}"
-    ESP_GCOV_TOOLCHAIN: "${ESP_V5_5X_XTENSA_GCOV_TOOLCHAIN}"
 
 .tests_v5.5.x_riscv_template:
   extends: .tests_v5.5.x_template
@@ -139,7 +121,6 @@
     CHIP_TEST_TOOLCHAIN: "riscv32-esp"
     ESP_GDB_TOOLCHAIN: "${ESP_V5_5X_RISCV_GDB_TOOLCHAIN}"
     TOOLCHAIN_PREFIX: "riscv32-esp"
-    ESP_GCOV_TOOLCHAIN: "${ESP_V5_5X_RISCV_GCOV_TOOLCHAIN}"
 
 .tests_v5.4.x_template:
   extends: .tests_template
@@ -151,7 +132,6 @@
     ESP_TOOLCHAIN: "${ESP_V5_4X_TOOLCHAIN_VER}"
     TEST_RUN_DIR: "build_test_app_${CHIP_NAME}_idf5.4.x"
     IDF_RELEASE_TAG: "${TEST_APP_IDF5_4_X_RELEASE_TAG}"
-    ESP_GCOV_TOOLCHAIN: "${ESP_V5_4X_XTENSA_GCOV_TOOLCHAIN}"
 
 .tests_v5.4.x_riscv_template:
   extends: .tests_v5.4.x_template
@@ -159,7 +139,6 @@
     CHIP_TEST_TOOLCHAIN: "riscv32-esp"
     ESP_GDB_TOOLCHAIN: "${ESP_V5_4X_RISCV_GDB_TOOLCHAIN}"
     TOOLCHAIN_PREFIX: "riscv32-esp"
-    ESP_GCOV_TOOLCHAIN: "${ESP_V5_4X_RISCV_GCOV_TOOLCHAIN}"
 
 .tests_v5.3.x_template:
   extends: .tests_template

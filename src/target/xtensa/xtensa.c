@@ -163,16 +163,6 @@
 
 #define XT_WATCHPOINTS_NUM_MAX  2
 
-/* Special register number macro for DDR, PS, WB, A3, A4 registers.
- * These get used a lot so making a shortcut is useful.
- */
-#define XT_SR_DDR         (xtensa_regs[XT_REG_IDX_DDR].reg_num)
-#define XT_SR_PS          (xtensa_regs[XT_REG_IDX_PS].reg_num)
-#define XT_SR_WB          (xtensa_regs[XT_REG_IDX_WINDOWBASE].reg_num)
-#define XT_REG_A0         (xtensa_regs[XT_REG_IDX_AR0].reg_num)
-#define XT_REG_A3         (xtensa_regs[XT_REG_IDX_AR3].reg_num)
-#define XT_REG_A4         (xtensa_regs[XT_REG_IDX_AR4].reg_num)
-
 #define XT_PS_REG_NUM               (0xe6U)
 #define XT_EPS_REG_NUM_BASE         (0xc0U)	/* (EPS2 - 2), for adding DBGLEVEL */
 #define XT_EPC_REG_NUM_BASE         (0xb0U)	/* (EPC1 - 1), for adding DBGLEVEL */
@@ -504,7 +494,6 @@ static int xtensa_core_reg_set(struct reg *reg, uint8_t *buf)
 	struct xtensa *xtensa = (struct xtensa *)reg->arch_info;
 	struct target *target = xtensa->target;
 
-	assert(reg->size <= 64 && "up to 64-bit regs are supported only!");
 	if (target->state != TARGET_HALTED)
 		return ERROR_TARGET_NOT_HALTED;
 
@@ -738,7 +727,8 @@ static int xtensa_write_dirty_registers(struct target *target)
 		if (reg_list[i].dirty) {
 			if (rlist[ridx].type == XT_REG_SPECIAL ||
 				rlist[ridx].type == XT_REG_USER ||
-				rlist[ridx].type == XT_REG_FR) {
+				rlist[ridx].type == XT_REG_FR ||
+				rlist[ridx].type == XT_REG_TIE) {
 				scratch_reg_dirty = true;
 				if (i == XT_REG_IDX_CPENABLE) {
 					delay_cpenable = true;
@@ -757,6 +747,14 @@ static int xtensa_write_dirty_registers(struct target *target)
 						xtensa_queue_exec_ins(xtensa, XT_INS_WUR(xtensa, reg_num, XT_REG_A3));
 					} else if (rlist[ridx].type == XT_REG_FR) {
 						xtensa_queue_exec_ins(xtensa, XT_INS_WFR(xtensa, reg_num, XT_REG_A3));
+					} else if (rlist[ridx].type == XT_REG_TIE) {
+						if (xtensa->tie_reg_access) {
+							/* No need to check return value, any errors are already logged */
+							xtensa->tie_reg_access(target, i, true);
+						} else {
+							LOG_TARGET_WARNING(target,
+								"TIE register (regid=%u) found but target missing an access function", i);
+						}
 					} else {/*SFR */
 						if (reg_num == XT_PC_REG_NUM_VIRTUAL) {
 							if (xtensa->core_config->core_type == XT_LX) {
@@ -930,12 +928,6 @@ static int xtensa_write_dirty_registers(struct target *target)
 	return res;
 }
 
-static inline bool xtensa_is_stopped(struct target *target)
-{
-	struct xtensa *xtensa = target_to_xtensa(target);
-	return xtensa->dbg_mod.core_status.dsr & OCDDSR_STOPPED;
-}
-
 int xtensa_examine(struct target *target)
 {
 	struct xtensa *xtensa = target_to_xtensa(target);
@@ -1066,6 +1058,11 @@ static void xtensa_imprecise_exception_clear(struct target *target)
 				xtensa->core_cache->reg_list[ridx].name, value);
 		}
 	}
+}
+
+uint32_t xtensa_ins_rsr(struct xtensa *xtensa, unsigned int sr, unsigned int t)
+{
+	return XT_INS_RSR(xtensa, sr, t);
 }
 
 int xtensa_core_status_check(struct target *target)
@@ -1386,6 +1383,17 @@ int xtensa_fetch_all_regs(struct target *target)
 			case XT_REG_FR:
 				xtensa_queue_exec_ins(xtensa, XT_INS_RFR(xtensa, reg_num, XT_REG_A3));
 				break;
+			case XT_REG_TIE:
+				if (xtensa->tie_reg_access) {
+					/* No need to check return value, any errors are already logged */
+					if (xtensa->tie_reg_access(target, i, false) != ERROR_OK)
+						memset(reg_list[i].value, 0, reg_list[i].size / 8);
+				} else {
+					LOG_TARGET_WARNING(target,
+						"TIE register (regid=%u) found but target missing an access function", i);
+				}
+				reg_fetched = false;
+				break;
 			case XT_REG_SPECIAL:
 				if (reg_num == XT_PC_REG_NUM_VIRTUAL) {
 					if (xtensa->core_config->core_type == XT_LX) {
@@ -1478,7 +1486,7 @@ int xtensa_fetch_all_regs(struct target *target)
 					xtensa_reg_val_t regval = buf_get_u32(regvals[rlist[ridx].reg_num].buf, 0, 32);
 					LOG_DEBUG("%s = 0x%x", rlist[ridx].name, regval);
 				}
-			} else {
+			} else if (rlist[ridx].type != XT_REG_TIE) {
 				xtensa_reg_val_t regval = buf_get_u32(regvals[i].buf, 0, 32);
 				bool is_dirty = (i == XT_REG_IDX_CPENABLE);
 				if (xtensa_extra_debug_log)
@@ -3040,8 +3048,8 @@ static int xtensa_build_reg_cache(struct target *target)
 		for (unsigned int i = 0; i < listsize; i++, didx++) {
 			reg_list[didx].exist = rlist[i].exist;
 			reg_list[didx].name = rlist[i].name;
-			reg_list[didx].size = 32;
-			reg_list[didx].value = calloc(1, 4 /*XT_REG_LEN*/);	/* make Clang Static Analyzer happy */
+			reg_list[didx].size = rlist[i].type == XT_REG_TIE ? 128 : 32;
+			reg_list[didx].value = calloc(1, reg_list[didx].size / 8);
 			if (!reg_list[didx].value) {
 				LOG_ERROR("Failed to alloc reg list value!");
 				goto fail;
@@ -3556,14 +3564,10 @@ static void xtensa_free_reg_cache(struct target *target)
 		free(xtensa->optregs);
 	}
 	xtensa->optregs = NULL;
-	if (xtensa->contiguous_regs_desc) {
-		free(xtensa->contiguous_regs_desc);
-		xtensa->contiguous_regs_desc = NULL;
-	}
-	if (xtensa->contiguous_regs_list) {
-		free(xtensa->contiguous_regs_list);
-		xtensa->contiguous_regs_list = NULL;
-	}
+	free(xtensa->contiguous_regs_desc);
+	xtensa->contiguous_regs_desc = NULL;
+	free(xtensa->contiguous_regs_list);
+	xtensa->contiguous_regs_list = NULL;
 }
 
 void xtensa_target_deinit(struct target *target)
@@ -3967,6 +3971,10 @@ COMMAND_HELPER(xtensa_cmd_xtreg_do, struct xtensa *xtensa)
 		xtensa->total_regs_num = numregs;
 		xtensa->core_regs_num = 0;
 		xtensa->num_optregs = 0;
+		/* Prevent memory leak in case xtregs is called twice */
+		free(xtensa->optregs);
+		free(xtensa->contiguous_regs_desc);
+		xtensa->contiguous_regs_desc = NULL;
 		/* A little more memory than required, but saves a second initialization pass */
 		xtensa->optregs = calloc(xtensa->total_regs_num, sizeof(struct xtensa_reg_desc));
 		if (!xtensa->optregs) {
@@ -4044,7 +4052,7 @@ COMMAND_HELPER(xtensa_cmd_xtreg_do, struct xtensa *xtensa)
 			rptr->type = XT_REG_RELGEN;
 			rptr->reg_num += XT_REG_IDX_ARFIRST;
 			rptr->dbreg_num += XT_REG_IDX_ARFIRST;
-		} else if ((regnum & XT_REG_TIE_MASK) != 0) {
+		} else if ((regnum & XT_REG_TIE_MASK) == XT_REG_TIE_VAL) {
 			rptr->type = XT_REG_TIE;
 		} else {
 			rptr->type = XT_REG_OTHER;

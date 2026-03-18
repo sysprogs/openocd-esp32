@@ -123,3 +123,6 @@ compile_commands.json
 /VisualGDBCache
 /.vs
 .visualgdb
+
+# Created when running tests
+testing/esp/test_apps/gen_ut_app/*.gcov.json.gz

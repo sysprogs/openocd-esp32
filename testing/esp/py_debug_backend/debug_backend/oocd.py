@@ -84,7 +84,8 @@ class Oocd(threading.Thread):
                 self._oocd_proc = subprocess.Popen(
                     bufsize=0, args=[oocd_exec] + oocd_full_args,
                     stdin=None, stdout=self.STDOUT_DEST, stderr=subprocess.STDOUT,
-                    creationflags=self.CREATION_FLAGS, universal_newlines=True
+                    creationflags=self.CREATION_FLAGS, universal_newlines=True,
+                    errors="backslashreplace"
                 )
                 time.sleep(1)
             except FileNotFoundError:
@@ -138,13 +139,18 @@ class Oocd(threading.Thread):
         self._logger.debug('Close TCL conn')
         try:
             self._tcl_send("exit")
-        finally:
             self._tcl_sock.close()
+        except:
+            self._tcl_sock.shutdown(socket.SHUT_RDWR)
         self._logger.debug('Close Telnet conn')
         self._tn.close()
         self._logger.debug('Stop OpenOCD')
         self.do_work = False
         self._oocd_proc.terminate()
+        try:
+            self._oocd_proc.wait(timeout=60)
+        except:
+            self._oocd_proc.kill()
         self._logger.debug('Join thread')
         self.join()
         self._logger.debug('Close stdout')
@@ -211,7 +217,7 @@ class Oocd(threading.Thread):
     # also can be used to parse output of the 'reg' command executed via GDB's 'monitor'
     def parse_reg_val(self, nm, res_str):
         # format: pc (/32): 0x400E4E72
-        tokens = re.match(r'%s[ \t]+\(/\d+\):[ \t]+(?P<val>0x[0-9a-fA-F]+)' % nm, res_str)
+        tokens = re.search(r'%s[ \t]+\(/\d+\):[ \t]+(?P<val>0x[0-9a-fA-F]+)' % nm, res_str)
         return int(tokens.group('val'), 0)
 
     def get_reg(self, nm):

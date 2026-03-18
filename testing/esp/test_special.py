@@ -2,6 +2,7 @@ import json
 import logging
 import unittest
 import subprocess
+import random
 import re
 import debug_backend as dbg
 from debug_backend_tests import *
@@ -92,7 +93,6 @@ class DebuggerSpecialTestsImpl:
         self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'vTaskDelay', ['vTaskDelay0'])
         self.clear_bps()
 
-    @skip_for_chip(['esp32c5'], "skipped - OCD-1224")
     def test_debugging_works_after_hw_reset(self):
         """
             This test checks that debugging works after HW reset.
@@ -109,7 +109,10 @@ class DebuggerSpecialTestsImpl:
         # avoid simultaneous access to UART with SerialReader
         if self.uart_reader:
             self.uart_reader.pause()
-        cmd = ['esptool.py', '-p', self.port_name, '--no-stub', 'chip_id']
+        cmd = ['esptool.py', '-p', self.port_name, 'chip_id']
+        # TODO OCD-868
+        if testee_info.hw_id == 'esp32s3-builtin':
+            cmd = ['esptool.py', '-p', self.port_name, '--no-stub', 'chip_id']
         proc = subprocess.run(cmd)
         proc.check_returncode()
         if self.uart_reader:
@@ -136,8 +139,7 @@ class DebuggerSpecialTestsImpl:
             # watchpoint hit on read var in 'target_bp_func2'
             self.run_to_bp_and_check_location(dbg.TARGET_STOP_REASON_SIGTRAP, 'target_bp_func2', 'target_wp_var2_2')
 
-    @skip_for_chip(['esp32', 'esp32s3'], "skipped - OCD-868")
-    @skip_for_chip(['esp32c5'], "skipped - OCD-1224")
+    @skip_for_hw_id(['esp32s3-builtin'], "skipped - OCD-868")
     def test_debugging_works_after_esptool_flash(self):
         """
             This test checks that debugging works after flashing with esptool.
@@ -152,7 +154,7 @@ class DebuggerSpecialTestsImpl:
         time.sleep(2.0)
         assert self.port_name is not None
         tested_args = [
-            ('-p', self.port_name, '--no-stub'),
+            ('-p', self.port_name),
         ]
         with open(os.path.join(self.test_app_cfg.build_bins_dir(), 'flasher_args.json'), 'rb') as f:
             args = json.load(f)
@@ -244,6 +246,7 @@ class DebuggerSpecialTestsImpl:
                 self.resume_exec()
                 rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED , 5)
                 self.assertTrue(rsn == dbg.TARGET_STATE_STOPPED or rsn == dbg.TARGET_STOP_REASON_SIGTRAP)
+
                 self.step() # Without step OpenOCD may not print the exception cause
             finally:
                 self.gdb.stream_handler_remove('target', _target_stream_handler)
@@ -273,6 +276,91 @@ class DebuggerSpecialTestsImpl:
             self.gdb.target_reset()
             self.add_bp('app_main')
             self.run_to_bp(dbg.TARGET_STOP_REASON_BP, 'app_main')
+
+    @only_for_chip(['esp32p4', 'esp32s3'])
+    def test_pie_registers(self):
+        """
+            This test checks that PIE registers are accessed correctly.
+            1) Select appropriate sub-test number on target.
+            2) Check expected value of registers set by program after a PIE multiplication instruction executes.
+            3) Set new register values from debugger.
+            4) Check again after a PIE multiplication instruction executes, that the registers were updated correctly.
+        """
+        def int128_to_v8_int16(n):
+            return [(n >> (16 * i)) & 0xFFFF for i in reversed(range(8))]
+
+        def int160_to_v4_int40(n):
+            return [(n >> (40 * i)) & 0xFFFFFFFFFF for i in reversed(range(4))]
+
+        reg_len = 128
+        if testee_info.arch == "xtensa":
+            reg_len = 64 # test lower 64bits only as we cannot set higher values from GDB yet
+            def get_qacc():
+                return int160_to_v4_int40(self.gdb.get_reg('qacc_h')) + int160_to_v4_int40(self.gdb.get_reg('qacc_l'))
+
+            def clear_qacc():
+                self.gdb.set_reg('qacc_h', '0')
+                self.gdb.set_reg('qacc_l', '0')
+                self.assertEqual(sum(get_qacc()), 0)
+
+            def set_q0(val):
+                self.gdb.set_reg('q0', hex(val))
+                self.assertEqual(self.gdb.get_reg('q0'), val)
+
+            def set_q1(val):
+                self.gdb.set_reg('q1', hex(val))
+                self.assertEqual(self.gdb.get_reg('q1'), val)
+        else:
+            def get_qacc():
+                qacc = self.gdb.get_reg('qacc_l_l.v2_int64') + self.gdb.get_reg('qacc_l_h.v2_int64') \
+                    + self.gdb.get_reg('qacc_h_l.v2_int64') + self.gdb.get_reg('qacc_h_h.v2_int64')
+                return list(reversed(qacc))
+
+            def clear_qacc():
+                self.gdb.set_reg('qacc_l_l.uint128', '0')
+                self.gdb.set_reg('qacc_l_h.uint128', '0')
+                self.gdb.set_reg('qacc_h_l.uint128', '0')
+                self.gdb.set_reg('qacc_h_h.uint128', '0')
+                self.assertEqual(sum(get_qacc()), 0)
+
+            def set_q0(val):
+                hex_str = format(val,'032x')
+                self.gdb.set_reg('q0.v2_int64', '{0x' + hex_str[16:] + ', 0x' + hex_str[:16] + '}')
+                self.assertEqual(self.gdb.get_reg('q0.uint128'), val)
+
+            def set_q1(val):
+                hex_str = format(val,'032x')
+                self.gdb.set_reg('q1.v2_int64', '{0x' + hex_str[16:] + ', 0x' + hex_str[:16] + '}')
+                self.assertEqual(self.gdb.get_reg('q1.uint128'), val)
+
+
+        def check_mul(src1, src2):
+            src_vec1 = int128_to_v8_int16(src1)
+            src_vec2 = int128_to_v8_int16(src2)
+            qacc = get_qacc()
+            for i in range(8):
+                self.assertEqual(src_vec1[i] * src_vec2[i], qacc[i])
+
+        self.add_bp('pie_multiply')
+        self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'pie_multiply', ['pie_multiply'], outmost_func_name='pie_registers_task')
+
+        # Multiply with q0, q1 set by program ({0, 1, 2, ...}, {4, 5, 6, ...})
+        self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'pie_multiply', ['pie_multiply'], outmost_func_name='pie_registers_task')
+        check_mul(0x70006000500040003000200010000, 0xf000e000d000c000b000a00090008)
+
+        a = random.getrandbits(reg_len)
+        b = random.getrandbits(reg_len)
+        set_q0(a)
+        set_q1(b)
+        clear_qacc()
+
+        # Move breakpoint to make sure we dont hit again after handling coproc-disabled interrupt
+        self.clear_bps()
+        self.add_bp('pie_disable')
+
+        # Multiply random numbers set from debugger
+        self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'pie_disable', ['pie_disable'], outmost_func_name='pie_registers_task')
+        check_mul(a, b)
 
 
 @only_for_chip(["esp32", "esp32s2", "esp32s3", "esp32c5", "esp32c61"], 'skipped - OCD-1154')
@@ -318,7 +406,7 @@ class PsramTestsImpl:
         # Filling HW breakpoints slots to make test using SW flash breakpoints
         self.fill_hw_bps(keep_avail=2)
         # 2 HW breaks + 1 flash SW break + RAM SW break
-        bps = ['gh264_psram_check_bp_1', 'gh264_psram_check_bp_2', 'gh264_psram_check_bp_3']
+        bps = ['app_main', 'gh264_psram_check_bp_1', 'gh264_psram_check_bp_2', 'gh264_psram_check_bp_3']
         for f in bps:
             self.add_bp(f)
         for i in range(3):
@@ -353,7 +441,10 @@ class DebuggerSpecialTestsDual(DebuggerGenericTestAppTestsDual, DebuggerSpecialT
         # avoid simultaneous access to UART with SerialReader
         if self.uart_reader:
             self.uart_reader.pause()
-        cmd = ['esptool.py', '-p', self.port_name, '--no-stub', 'chip_id']
+        cmd = ['esptool.py', '-p', self.port_name, 'chip_id']
+        # TODO OCD-868
+        if testee_info.hw_id == 'esp32s3-builtin':
+            cmd = ['esptool.py', '-p', self.port_name, '--no-stub', 'chip_id']
         proc = subprocess.run(cmd)
         proc.check_returncode()
         if self.uart_reader:
@@ -375,12 +466,12 @@ class DebuggerSpecialTestsSingle(DebuggerGenericTestAppTestsSingle, DebuggerSpec
             2) Uses GDB command to check that registers have expected values
         """
         regs = self.gdb.get_reg_names()
+        ocd_regs = [x.split()[1] for x in self.oocd.cmd_exec("reg").strip().split('\n')]
         i = 0
 
         # GDB sets registers in current thread, here we assume that it always belongs to CPU0
         # select CPU0 as current target in OpenOCD for multi-core chips
-        _, res_str = self.gdb.monitor_run('target names', output_type='stdout')
-        targets = res_str.strip().split()
+        targets = self.oocd.targets()
         if len(targets) > 1:
             for t in targets:
                 if t.endswith('.cpu0'):
@@ -395,7 +486,12 @@ class DebuggerSpecialTestsSingle(DebuggerGenericTestAppTestsSingle, DebuggerSpec
 
             self.gdb.console_cmd_run('flushregs')
 
-            gdb_val = int(self.gdb.get_reg_values(fmt='u',reg_no=[regs.index(reg)])[0]['value'])
+            val = self.gdb.get_reg_values(fmt='u',reg_no=[regs.index(reg)])[0]['value']
+            try:
+                gdb_val = int(val)
+            except ValueError:
+                # in case of vector, last element in the union should be an integer
+                gdb_val = int(val.split()[-1][:-1])
 
             if ocd_val == val:
                 # general purpose registers can be written with any value, and expected to contain the same
@@ -409,20 +505,17 @@ class DebuggerSpecialTestsSingle(DebuggerGenericTestAppTestsSingle, DebuggerSpec
                 self.assertEqual(ocd_val, gdb_val)
 
         for reg in regs:
-            if (len(reg) == 0):
+            if len(reg) == 0:
                 continue
 
-            if reg == "csr_mext_ill_reg":
-                # GDB requests all regs, reading hwloop regs can change value of bit 1 here
-                set_reg_and_check(reg, 0)
-                set_reg_and_check(reg, 1)
+            if testee_info.arch == "xtensa" and (reg not in ocd_regs or reg in [f'a{i}' for i in range(16)]):
                 continue
 
             # slow counters are not suitable for this test
             if reg == "timeh":
                 continue
 
-            if reg == 'csr_mexstatus':
+            if reg == 'mexstatus':
                 # this register is not safe to write
                 set_reg_and_check(reg, None)
                 continue
@@ -431,9 +524,6 @@ class DebuggerSpecialTestsSingle(DebuggerGenericTestAppTestsSingle, DebuggerSpec
                 # set to reasonable value, because GDB tries to read memory @ pc
                 set_reg_and_check(reg, 0x40000400)
                 continue
-
-            if reg == 'mmid' or reg == 'q0':
-                break
 
             set_reg_and_check(reg, 0)
             set_reg_and_check(reg, 0xffffffff)

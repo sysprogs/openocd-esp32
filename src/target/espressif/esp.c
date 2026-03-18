@@ -589,7 +589,7 @@ static int esp_common_clear_flash_breakpoints_on_hit(struct target *target)
 			return ERROR_OK;
 		}
 	} else {
-		if (riscv_get_register(target, &pc, GDB_REGNO_PC) != ERROR_OK) {
+		if (riscv_reg_get(target, &pc, GDB_REGNO_PC) != ERROR_OK) {
 			LOG_TARGET_WARNING(target, "Failed to read pc register!");
 			return ERROR_FAIL;
 		}

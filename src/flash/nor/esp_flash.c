@@ -981,6 +981,7 @@ int esp_algo_flash_probe(struct flash_bank *bank)
 	if (bank->sectors) {
 		free(bank->sectors);
 		bank->sectors = NULL;
+		bank->num_sectors = 0;
 	}
 
 	int ret = esp_algo_flash_get_mappings(bank,
@@ -1284,6 +1285,7 @@ int esp_algo_flash_breakpoint_remove(struct target *target, struct esp_flash_bre
 
 	init_mem_param(&mp[1], 2 /* 2nd usr arg */, num_bps * size_bp_inst /* size in bytes */, PARAM_OUT);
 	struct esp_flash_stub_bp_instructions *bp_insts = (struct esp_flash_stub_bp_instructions *)mp[1].value;
+	memset(bp_insts, 0, num_bps * size_bp_inst);
 	for (size_t slot = 0; slot < num_bps; ++slot) {
 		bp_insts[slot].size = sw_bp[slot].insn_sz;
 		memcpy(&bp_insts[slot].buff, sw_bp[slot].insn, sw_bp[slot].insn_sz);

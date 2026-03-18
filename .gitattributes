@@ -3,3 +3,10 @@
 *.png   binary
 *.bin   binary
 *.elf   binary
+
+# Old stub images
+contrib/loaders/flash/espressif/**/inc/*.inc     -diff gitlab-generated
+
+# New stub images
+contrib/loaders/flash/espressif/images/**/*.inc  -diff gitlab-generated
+contrib/loaders/flash/espressif/images/**/*.h    -diff gitlab-generated

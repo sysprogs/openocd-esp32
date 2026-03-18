@@ -192,7 +192,7 @@ COMMAND_HANDLER(handle_flash_erase_check_command)
 		command_print(CMD, "successfully checked erase state");
 	else {
 		command_print(CMD,
-			"unknown error when checking erase state of flash bank #%s at "
+			"Error: checking erase state of flash bank #%s at "
 			TARGET_ADDR_FMT,
 			CMD_ARGV[0],
 			p->base);
@@ -720,7 +720,8 @@ COMMAND_HANDLER(handle_flash_md_command)
 
 	retval = flash_driver_read(bank, buffer, offset, sizebytes);
 	if (retval == ERROR_OK)
-		target_handle_md_output(CMD, target, address, wordsize, count, buffer);
+		target_handle_md_output(CMD, target, address, wordsize, count,
+				buffer, true);
 
 	free(buffer);
 
@@ -1459,7 +1460,7 @@ COMMAND_HANDLER(handle_flash_list)
 	for (struct flash_bank *p = flash_bank_list(); p; p = p->next) {
 		command_print(CMD,
 			"{\n"
-			"    name       %s\n"
+			"    name       {%s}\n"
 			"    driver     %s\n"
 			"    base       " TARGET_ADDR_FMT "\n"
 			"    size       0x%" PRIx32 "\n"

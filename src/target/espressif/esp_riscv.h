@@ -10,6 +10,7 @@
 
 #include <target/target.h>
 #include <target/riscv/riscv.h>
+#include <target/riscv/riscv_reg.h>
 #include <target/riscv/debug_defines.h>
 #include "esp_riscv_apptrace.h"
 #include "esp_riscv_algorithm.h"
@@ -22,7 +23,9 @@ struct esp_riscv_reg_class {
 	const char **reg_array;
 	size_t reg_array_size;
 	bool save_restore;
-	struct reg_arch_type *arch_type;
+	unsigned int reg_width;
+	struct reg_arch_type *reg_arch_type;
+	struct reg_data_type *reg_data_type;
 };
 
 extern struct reg_arch_type esp_riscv_fpu_csr_type;

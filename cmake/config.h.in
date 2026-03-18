@@ -97,6 +97,9 @@
 /* 0 if you don't want MPSSE mode of FTDI based devices */
 #cmakedefine01 BUILD_FTDI
 
+/* 0 if you don't want cJTAG (OScan1, JScan3) tunneled thru MPSSE */
+#cmakedefine01 BUILD_FTDI_CJTAG
+
 /* 0 if you don't want ST-Link Programmer */
 #cmakedefine01 BUILD_HLADAPTER_STLINK
 

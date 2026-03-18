@@ -10,6 +10,7 @@ add_library(ocdflashnor
 	ath79.c
 	atsamv.c
 	avrf.c
+	bl602.c
 	bluenrg-x.c
 	cc26xx.c
 	cc3220sf.c
@@ -21,10 +22,24 @@ add_library(ocdflashnor
 	em357.c
 	esirisc_flash.c
 	esp32.c
+	esp32s2.c
+	esp32c2.c
+	esp32c3.c
+	esp32s3.c
+	esp32c5.c
+	esp32c6.c
+	esp32c61.c
+	esp32h2.c
+	esp32h21.c
+	esp32h4.c
+	esp32p4.c
+	esp32p4_hw_rev3.c
+	esirisc_flash.c
 	faux.c
 	fespi.c
 	fm3.c
 	fm4.c
+	hpm_xpi.c
 	jtagspi.c
 	kinetis.c
 	kinetis_ke.c
@@ -46,6 +61,7 @@ add_library(ocdflashnor
 	psoc5lp.c
 	psoc6.c
 	qn908x.c
+	read_only.c
 	renesas_rpchf.c
 	rsl10.c
 	sfdp.c

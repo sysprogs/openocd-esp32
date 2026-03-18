@@ -20,6 +20,7 @@
 #include <target/smp.h>
 #include <target/semihosting_common.h>
 #include <rtos/rtos.h>
+#include <target/riscv/riscv_reg.h>
 
 #include "esp_riscv.h"
 #include "esp_semihosting.h"
@@ -105,11 +106,11 @@ static const char *esp_riscv_get_exception_reason(enum esp_riscv_exception_cause
 	case PMP_STORE_ACCESS_FAULT:
 		return "PMP Store access fault";
 	case ECALL_FROM_U_MODE:
-		return "ECALL from U mode";
+		return "ECALL from U-mode";
 	case ECALL_FROM_S_MODE:
 		return "ECALL from S-mode";
 	case ECALL_FROM_M_MODE:
-		return "ECALL from M mode";
+		return "ECALL from M-mode";
 	case INSTR_PAGE_FAULT:
 		return "Instruction page fault";
 	case LOAD_PAGE_FAULT:
@@ -133,7 +134,7 @@ static void esp_riscv_print_exception_reason(struct target *target)
 		return;
 
 	riscv_reg_t mcause;
-	int result = riscv_get_register(target, &mcause, GDB_REGNO_MCAUSE);
+	int result = riscv_reg_get(target, &mcause, GDB_REGNO_MCAUSE);
 	if (result != ERROR_OK) {
 		LOG_ERROR("Failed to read mcause register. Unknown exception reason!");
 		return;
@@ -148,7 +149,7 @@ static void esp_riscv_print_exception_reason(struct target *target)
 
 	if (ESP_RISCV_EXCEPTION_CAUSE(mcause) == ILLEGAL_INSTRUCTION) {
 		riscv_reg_t mtval;
-		result = riscv_get_register(target, &mtval, CSR_MTVAL + GDB_REGNO_CSR0);
+		result = riscv_reg_get(target, &mtval, CSR_MTVAL + GDB_REGNO_CSR0);
 		if (result != ERROR_OK) {
 			LOG_ERROR("Failed to read mtval register!");
 			return;
@@ -238,8 +239,8 @@ static const char *esp_riscv_csrs[] = {
 	"pmpaddr8", "pmpaddr9", "pmpaddr10", "pmpaddr11", "pmpaddr12", "pmpaddr13", "pmpaddr14", "pmpaddr15",
 	"tselect", "tdata1", "tdata2", "tcontrol",
 	"dcsr", "dpc", "dscratch0", "dscratch1",
-	"csr_mpcer",  "csr_mpcmr", "csr_mpccr",
-	"csr_cpu_gpio_oen", "csr_cpu_gpio_in", "csr_cpu_gpio_out",
+	"mpcer",  "mpcmr", "mpccr",
+	"cpu_gpio_oen", "cpu_gpio_in", "cpu_gpio_out",
 };
 
 /* Read only registers */
@@ -272,10 +273,25 @@ int esp_riscv_examine(struct target *target)
 	*/
 
 	struct esp_riscv_reg_class esp_riscv_registers[] = {
-		{ esp_riscv_gprs, ARRAY_SIZE(esp_riscv_gprs), true, NULL },
-		{ esp_riscv_fprs, ARRAY_SIZE(esp_riscv_fprs), true, NULL },
-		{ esp_riscv_csrs, ARRAY_SIZE(esp_riscv_csrs), true, NULL },
-		{ esp_riscv_ro_csrs, ARRAY_SIZE(esp_riscv_ro_csrs), false, NULL },
+		{
+			.reg_array = esp_riscv_gprs,
+			.reg_array_size = ARRAY_SIZE(esp_riscv_gprs),
+			.save_restore = true
+		},
+		{
+			.reg_array = esp_riscv_fprs,
+			.reg_array_size = ARRAY_SIZE(esp_riscv_fprs),
+			.save_restore = true
+		},
+		{
+			.reg_array = esp_riscv_csrs,
+			.reg_array_size = ARRAY_SIZE(esp_riscv_csrs),
+			.save_restore = true
+		},
+		{
+			.reg_array = esp_riscv_ro_csrs,
+			.reg_array_size = ARRAY_SIZE(esp_riscv_ro_csrs)
+		},
 	};
 
 	for (unsigned int i = 0; i < target->reg_cache->num_regs; i++) {
@@ -291,8 +307,23 @@ int esp_riscv_examine(struct target *target)
 				continue;
 			reg->exist = true;
 			reg->caller_save = reg_class->save_restore;
-			if (reg_class->arch_type)
-				reg->type = reg_class->arch_type;
+			if (reg_class->reg_arch_type)
+				reg->type = reg_class->reg_arch_type;
+			if (reg_class->reg_width) {
+				reg->size = reg_class->reg_width;
+				free(reg->value);
+				reg->value = calloc(1, DIV_ROUND_UP(reg->size, 8));
+			}
+			if (reg_class->reg_data_type)
+				reg->reg_data_type = reg_class->reg_data_type;
+		}
+	}
+
+	for (unsigned int i = 0; i < target->reg_cache->num_regs; i++) {
+		struct reg *reg = &target->reg_cache->reg_list[i];
+		if (!reg->exist) {
+			free(reg->value);
+			reg->value = NULL;
 		}
 	}
 
@@ -304,17 +335,17 @@ int esp_riscv_csr_access_enable(struct reg *reg, uint8_t *buf, enum gdb_regno en
 {
 	struct target *target = ((riscv_reg_info_t *)(reg->arch_info))->target;
 	riscv_reg_t reg_val;
-	riscv_get_register(target, &reg_val, enable_reg);
+	riscv_reg_get(target, &reg_val, enable_reg);
 	riscv_reg_t state = get_field(reg_val, enable_field_mask);
 	if (state == enable_field_off)
-		riscv_set_register(target, enable_reg, set_field(reg_val, enable_field_mask, enable_field_on));
+		riscv_reg_set(target, enable_reg, set_field(reg_val, enable_field_mask, enable_field_on));
 	int ret;
 	if (buf)
 		ret = target->reg_cache->reg_list[GDB_REGNO_A0].type->set(reg, buf);
 	else
 		ret = target->reg_cache->reg_list[GDB_REGNO_A0].type->get(reg);
 	if (state == enable_field_off)
-		riscv_set_register(target, enable_reg, reg_val);
+		riscv_reg_set(target, enable_reg, reg_val);
 	return ret;
 }
 
@@ -584,23 +615,14 @@ int esp_riscv_breakpoint_add(struct target *target, struct breakpoint *breakpoin
 
 	int res = riscv_add_breakpoint(target, breakpoint);
 
-	if (breakpoint->type == BKPT_HARD) {
-		if (res == ERROR_OK) {
-			RISCV_INFO(info);
-			/* manual_hwbp_set is required to be set for all harts.
-			 * Otherwise bps coming from hart1 will not be handled properly during step.
-			 * TODO: Check if needs to be set earlier in the first TDATA1 or TDATA2 modification.
-			*/
-			info->manual_hwbp_set = true;
-		} else if (res == ERROR_TARGET_RESOURCE_NOT_AVAILABLE) {
-			/* For SMP target return OK if SW flash breakpoint is already set using another
-			*core; GDB causes call to esp_algo_flash_breakpoint_add() for every core, since it
-			*treats flash breakpoints as HW ones */
-			esp_riscv = target_to_esp_riscv(target);
-			if (target->smp && esp_common_flash_breakpoint_exists(&esp_riscv->esp, breakpoint->address))
-				return ERROR_OK;
-			return esp_common_flash_breakpoint_add(target, &esp_riscv->esp, breakpoint);
-		}
+	if (res == ERROR_TARGET_RESOURCE_NOT_AVAILABLE && breakpoint->type == BKPT_HARD) {
+		/* For SMP target return OK if SW flash breakpoint is already set using another
+		*core; GDB causes call to esp_algo_flash_breakpoint_add() for every core, since it
+		*treats flash breakpoints as HW ones */
+		esp_riscv = target_to_esp_riscv(target);
+		if (target->smp && esp_common_flash_breakpoint_exists(&esp_riscv->esp, breakpoint->address))
+			return ERROR_OK;
+		return esp_common_flash_breakpoint_add(target, &esp_riscv->esp, breakpoint);
 	}
 
 	return res;
@@ -637,12 +659,29 @@ int esp_riscv_hit_watchpoint(struct target *target, struct watchpoint **hit_watc
 
 static bool esp_riscv_is_bp_set_in_flash(struct target *target, struct esp_common *esp)
 {
+	/* State can be UNAVAILABLE in single core config */
+	if (target->state != TARGET_HALTED)
+		return false;
+
 	riscv_reg_t pc;
-	if (riscv_get_register(target, &pc, GDB_REGNO_PC) != ERROR_OK) {
+	if (riscv_reg_get(target, &pc, GDB_REGNO_PC) != ERROR_OK) {
 		LOG_TARGET_WARNING(target, "Failed to read pc register!");
 		return false;
 	}
 	return esp_common_flash_breakpoint_exists(esp, pc);
+}
+
+static bool esp_riscv_is_bp_wp_set_by_program(struct target *target)
+{
+	if (target->smp) {
+		struct target_list *head;
+		foreach_smp_target(head, target->smp_targets) {
+			if (esp_riscv_is_bp_set_by_program(head->target) || esp_riscv_is_wp_set_by_program(head->target))
+				return true;
+		}
+		return false;
+	}
+	return esp_riscv_is_bp_set_by_program(target) || esp_riscv_is_wp_set_by_program(target);
 }
 
 int esp_riscv_resume(struct target *target, bool current, target_addr_t address,
@@ -661,19 +700,8 @@ int esp_riscv_resume(struct target *target, bool current, target_addr_t address,
 	/* If one of the target stopped due to breakpoint/watchpoint set by program,
 	 * we need to handle_breakpoints to make single step
 	 */
-	if (!handle_breakpoints) {
-		if (target->smp) {
-			struct target_list *head;
-			foreach_smp_target(head, target->smp_targets) {
-				if (esp_riscv_is_bp_set_by_program(head->target) || esp_riscv_is_wp_set_by_program(head->target)) {
-					handle_breakpoints = true;
-					break;
-				}
-			}
-		} else {
-			handle_breakpoints = esp_riscv_is_bp_set_by_program(target) || esp_riscv_is_wp_set_by_program(target);
-		}
-	}
+	if (!handle_breakpoints)
+		handle_breakpoints = esp_riscv_is_bp_wp_set_by_program(target);
 
 	struct esp_common *esp = target_to_esp_common(target);
 	if (target->smp) {
@@ -702,8 +730,14 @@ int esp_riscv_step(struct target *target, bool current, target_addr_t address, b
 	struct esp_common *esp = target_to_esp_common(target);
 	struct esp_flash_breakpoint *flash_bps = esp->flash_brps.brps;
 
+	/* If one of the target stopped due to breakpoint/watchpoint set by program,
+	 * we need to handle_breakpoints to make single step
+	 */
+	if (!handle_breakpoints)
+		handle_breakpoints = esp_riscv_is_bp_wp_set_by_program(target);
+
 	riscv_reg_t pc = 0;
-	if (riscv_get_register(target, &pc, GDB_REGNO_PC) != ERROR_OK) {
+	if (riscv_reg_get(target, &pc, GDB_REGNO_PC) != ERROR_OK) {
 		LOG_TARGET_WARNING(target, "Failed to read pc register, stepping may fail!");
 		return riscv_openocd_step(target, current, address, handle_breakpoints);
 	}
@@ -738,7 +772,7 @@ int esp_riscv_step(struct target *target, bool current, target_addr_t address, b
 static int esp_riscv_on_halt(struct target *target)
 {
 	riscv_reg_t reg_value;
-	if (riscv_get_register(target, &reg_value, GDB_REGNO_DPC) == ERROR_OK)
+	if (riscv_reg_get(target, &reg_value, GDB_REGNO_DPC) == ERROR_OK)
 		LOG_TARGET_INFO(target, "Target halted, PC=0x%08" PRIX64 ", debug_reason=%08x",
 			reg_value, target->debug_reason);
 	esp_riscv_print_exception_reason(target);
@@ -834,9 +868,7 @@ int esp_riscv_start_algorithm(struct target *target,
 	}
 
 	/* Disable Interrupts before attempting to run the algorithm. */
-	int retval = riscv_interrupts_disable(target,
-		MSTATUS_MIE | MSTATUS_HIE | MSTATUS_SIE | MSTATUS_UIE,
-		&algorithm_info->masked_mstatus);
+	int retval = riscv_interrupts_disable(target, &algorithm_info->masked_mstatus);
 	if (retval != ERROR_OK)
 		return retval;
 
@@ -879,9 +911,9 @@ int esp_riscv_wait_algorithm(struct target *target,
 			for (unsigned int i = 0; i < ARRAY_SIZE(regnums); i++) {
 				enum gdb_regno regno = regnums[i];
 				riscv_reg_t reg_value;
-				if (riscv_get_register(target, &reg_value, regno) != ERROR_OK)
+				if (riscv_reg_get(target, &reg_value, regno) != ERROR_OK)
 					break;
-				LOG_TARGET_ERROR(target, "%s = 0x%" PRIx64, gdb_regno_name(target, regno), reg_value);
+				LOG_TARGET_ERROR(target, "%s = 0x%" PRIx64, riscv_reg_gdb_regno_name(target, regno), reg_value);
 			}
 			return ERROR_TARGET_TIMEOUT;
 		}
@@ -950,7 +982,7 @@ int esp_riscv_wait_algorithm(struct target *target,
 	if (riscv_interrupts_restore(target, algorithm_info->masked_mstatus) != ERROR_OK)
 		return ERROR_FAIL;
 
-	if (riscv_flush_registers(target) != ERROR_OK)
+	if (riscv_reg_flush_all(target) != ERROR_OK)
 		return ERROR_FAIL;
 	return ERROR_OK;
 }
@@ -1049,7 +1081,7 @@ int esp_riscv_write_memory(struct target *target, target_addr_t address,
 void esp_riscv_deinit_target(struct target *target)
 {
 	struct esp_riscv_common *esp_riscv = target_to_esp_riscv(target);
-	if (esp_riscv->semi_ops->post_reset)
+	if (esp_riscv->semi_ops && esp_riscv->semi_ops->post_reset)
 		esp_riscv->semi_ops->post_reset(target);
 
 	free(esp_riscv->target_bp_addr);

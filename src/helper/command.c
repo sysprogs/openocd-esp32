@@ -344,50 +344,54 @@ void command_output_text(struct command_context *context, const char *data)
 		context->output_handler(context, data);
 }
 
+static void command_vprint(struct command_invocation *cmd,
+		va_list ap, const char *format, bool add_lf)
+{
+	assert(cmd);
+
+	// Quit on previous allocation error
+	if (cmd->output == CMD_PRINT_OOM)
+		return;
+
+	char *string = alloc_vprintf(format, ap);
+	if (!string)
+		goto alloc_error;
+
+	char *output = cmd->output ? cmd->output : "";
+	output = alloc_printf("%s%s%s", output, string, add_lf ? "\n" : "");
+	free(string);
+	if (!output)
+		goto alloc_error;
+
+	free(cmd->output);
+	cmd->output = output;
+
+	return;
+
+alloc_error:
+	LOG_ERROR("Out of memory");
+	free(cmd->output);
+	cmd->output = CMD_PRINT_OOM;
+}
+
 void command_print_sameline(struct command_invocation *cmd, const char *format, ...)
 {
-	char *string;
-
 	va_list ap;
 	va_start(ap, format);
 
-	string = alloc_vprintf(format, ap);
-	if (string && cmd) {
-		/* we want this collected in the log + we also want to pick it up as a tcl return
-		 * value.
-		 *
-		 * The latter bit isn't precisely neat, but will do for now.
-		 */
-		Jim_AppendString(cmd->ctx->interp, cmd->output, string, -1);
-		/* We already printed it above
-		 * command_output_text(context, string); */
-		free(string);
-	}
+	bool add_lf = false;
+	command_vprint(cmd, ap, format, add_lf);
 
 	va_end(ap);
 }
 
 void command_print(struct command_invocation *cmd, const char *format, ...)
 {
-	char *string;
-
 	va_list ap;
 	va_start(ap, format);
 
-	string = alloc_vprintf(format, ap);
-	if (string && cmd) {
-		strcat(string, "\n");	/* alloc_vprintf guaranteed the buffer to be at least one
-					 *char longer */
-		/* we want this collected in the log + we also want to pick it up as a tcl return
-		 * value.
-		 *
-		 * The latter bit isn't precisely neat, but will do for now.
-		 */
-		Jim_AppendString(cmd->ctx->interp, cmd->output, string, -1);
-		/* We already printed it above
-		 * command_output_text(context, string); */
-		free(string);
-	}
+	bool add_lf = true;
+	command_vprint(cmd, ap, format, add_lf);
 
 	va_end(ap);
 }
@@ -436,34 +440,42 @@ static int jim_exec_command(Jim_Interp *interp, struct command_context *context,
 		.argc = argc - 1,
 		.argv = words + 1,
 		.jimtcl_argv = argv + 1,
+		.output = NULL,
 	};
 
-	cmd.output = Jim_NewEmptyStringObj(context->interp);
-	Jim_IncrRefCount(cmd.output);
-
 	int retval = c->handler(&cmd);
+
+	// Handle allocation error in command_print()
+	if (cmd.output == CMD_PRINT_OOM) {
+		cmd.output = NULL;
+		if (retval == ERROR_OK)
+			retval = ERROR_FAIL;
+	}
+
 	if (retval == ERROR_COMMAND_SYNTAX_ERROR) {
-		/* Print help for command */
-		command_run_linef(context, "usage %s", words[0]);
+		// Print command syntax
+		Jim_EvalObjPrefix(context->interp, Jim_NewStringObj(context->interp, "usage", -1), 1, argv);
 	} else if (retval == ERROR_COMMAND_CLOSE_CONNECTION) {
 		/* just fall through for a shutdown request */
 	} else {
 		if (retval != ERROR_OK)
 			LOG_DEBUG("Command '%s' failed with error code %d",
 						words[0], retval);
-		/*
-		 * Use the command output as the Tcl result.
-		 * Drop last '\n' to allow command output concatenation
-		 * while keep using command_print() everywhere.
-		 */
-		const char *output_txt = Jim_String(cmd.output);
-		int len = strlen(output_txt);
-		if (len && output_txt[len - 1] == '\n')
-			--len;
-		Jim_SetResultString(context->interp, output_txt, len);
+		if (cmd.output) {
+			/*
+			 * Use the command output as the Tcl result.
+			 * Drop last '\n' to allow command output concatenation
+			 * while keep using command_print() everywhere.
+			 */
+			int len = strlen(cmd.output);
+			if (len && cmd.output[len - 1] == '\n')
+				--len;
+			Jim_SetResultString(context->interp, cmd.output, len);
+		} else {
+			Jim_SetEmptyResult(context->interp);
+		}
 	}
-	Jim_DecrRefCount(context->interp, cmd.output);
-
+	free(cmd.output);
 	free(words);
 
 	if (retval == ERROR_OK)
@@ -472,6 +484,11 @@ static int jim_exec_command(Jim_Interp *interp, struct command_context *context,
 	// used by telnet server to close one connection
 	if (retval == ERROR_COMMAND_CLOSE_CONNECTION)
 		return JIM_EXIT;
+
+	Jim_Obj *error_code = Jim_NewListObj(context->interp, NULL, 0);
+	Jim_ListAppendElement(context->interp, error_code, Jim_NewStringObj(context->interp, "OpenOCD", -1));
+	Jim_ListAppendElement(context->interp, error_code, Jim_NewIntObj(context->interp, retval));
+	Jim_SetGlobalVariableStr(context->interp, "errorCode", error_code);
 
 	return JIM_ERR;
 }
@@ -673,12 +690,16 @@ static COMMAND_HELPER(command_help_show_list, bool show_help, const char *cmd_ma
 
 #define HELP_LINE_WIDTH(_n) (int)(76 - (2 * _n))
 
-static void command_help_show_indent(unsigned int n)
+static COMMAND_HELPER(command_help_show_indent, unsigned int n)
 {
 	for (unsigned int i = 0; i < n; i++)
-		LOG_USER_N("  ");
+		command_print_sameline(CMD, "  ");
+
+	return ERROR_OK;
 }
-static void command_help_show_wrap(const char *str, unsigned int n, unsigned int n2)
+
+static COMMAND_HELPER(command_help_show_wrap,
+	const char *str, unsigned int n, unsigned int n2)
 {
 	const char *cp = str, *last = str;
 	while (*cp) {
@@ -691,11 +712,13 @@ static void command_help_show_wrap(const char *str, unsigned int n, unsigned int
 		} while ((next - last < HELP_LINE_WIDTH(n)) && *next != '\0');
 		if (next - last < HELP_LINE_WIDTH(n))
 			cp = next;
-		command_help_show_indent(n);
-		LOG_USER("%.*s", (int)(cp - last), last);
+		CALL_COMMAND_HANDLER(command_help_show_indent, n);
+		command_print(CMD, "%.*s", (int)(cp - last), last);
 		last = cp + 1;
 		n = n2;
 	}
+
+	return ERROR_OK;
 }
 
 static COMMAND_HELPER(command_help_show, struct help_entry *c,
@@ -714,10 +737,10 @@ static COMMAND_HELPER(command_help_show, struct help_entry *c,
 	if (is_match) {
 		if (c->usage && strlen(c->usage) > 0) {
 			char *msg = alloc_printf("%s %s", c->cmd_name, c->usage);
-			command_help_show_wrap(msg, n, n + 5);
+			CALL_COMMAND_HANDLER(command_help_show_wrap, msg, n, n + 5);
 			free(msg);
 		} else {
-			command_help_show_wrap(c->cmd_name, n, n + 5);
+			CALL_COMMAND_HANDLER(command_help_show_wrap, c->cmd_name, n, n + 5);
 		}
 	}
 
@@ -751,7 +774,7 @@ static COMMAND_HELPER(command_help_show, struct help_entry *c,
 			return ERROR_FAIL;
 		}
 
-		command_help_show_wrap(msg, n + 3, n + 3);
+		CALL_COMMAND_HANDLER(command_help_show_wrap, msg, n + 3, n + 3);
 		free(msg);
 	}
 

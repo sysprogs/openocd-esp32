@@ -96,8 +96,8 @@ enum xtensa_reg_type {
 	XT_REG_RELGEN_VAL               = 0x0000,
 	XT_REG_FR_MASK                  = 0xFFF0,
 	XT_REG_FR_VAL                   = 0x0030,
-	XT_REG_TIE_MASK                 = 0xF000,
-	XT_REG_TIE_VAL                  = 0xF000,	/* unused */
+	XT_REG_TIE_MASK                 = 0xFFF0,
+	XT_REG_TIE_VAL                  = 0x1000,
 	XT_REG_OTHER_MASK               = 0xFFFF,
 	XT_REG_OTHER_VAL                = 0xF000,	/* unused */
 
@@ -131,5 +131,15 @@ struct xtensa_reg_desc {
 	  .flags = (f) }
 
 extern struct xtensa_reg_desc xtensa_regs[XT_NUM_REGS];
+
+/* Special register number macro for DDR, PS, WB, A3, A4 registers.
+ * These get used a lot so making a shortcut is useful.
+ */
+#define XT_SR_DDR         (xtensa_regs[XT_REG_IDX_DDR].reg_num)
+#define XT_SR_PS          (xtensa_regs[XT_REG_IDX_PS].reg_num)
+#define XT_SR_WB          (xtensa_regs[XT_REG_IDX_WINDOWBASE].reg_num)
+#define XT_REG_A0         (xtensa_regs[XT_REG_IDX_AR0].reg_num)
+#define XT_REG_A3         (xtensa_regs[XT_REG_IDX_AR3].reg_num)
+#define XT_REG_A4         (xtensa_regs[XT_REG_IDX_AR4].reg_num)
 
 #endif	/* OPENOCD_TARGET_XTENSA_REGS_H */

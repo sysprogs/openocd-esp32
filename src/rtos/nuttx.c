@@ -131,6 +131,10 @@ static const struct nuttx_params nuttx_params_list[] = {
 		.stacking = &rtos_standard_riscv32_stacking,
 	},
 	{
+		.target_name = "esp32h21",
+		.stacking = &rtos_standard_riscv32_stacking,
+	},
+	{
 		.target_name = "esp32c5",
 		.stacking = &rtos_standard_riscv32_stacking,
 	},
@@ -394,7 +398,8 @@ static int nuttx_getreg_current_thread(struct rtos *rtos,
 	for (int i = 0; i < *num_regs; i++) {
 		(*reg_list)[i].number = gdb_reg_list[i]->number;
 		(*reg_list)[i].size = gdb_reg_list[i]->size;
-		memcpy((*reg_list)[i].value, gdb_reg_list[i]->value, ((*reg_list)[i].size + 7) / 8);
+		if (gdb_reg_list[i]->exist)
+			memcpy((*reg_list)[i].value, gdb_reg_list[i]->value, ((*reg_list)[i].size + 7) / 8);
 	}
 
 	free(gdb_reg_list);

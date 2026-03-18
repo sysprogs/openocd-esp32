@@ -203,7 +203,6 @@ class BreakpointTestsImpl:
             sleep(0.1) #sleep 100ms
             self.gdb.connect()
 
-    @skip_for_chip(['esp32p4'], "skipped - OCD-1287")
     def test_bp_in_isr(self):
         """
             This test checks that the breakpoints are handled in ISR properly
@@ -226,7 +225,7 @@ class BreakpointTestsImpl:
             self.run_to_bp_and_check_basic(dbg.TARGET_STOP_REASON_BP, 'test_timer_isr_func', run_bt=run_bt)
             self.run_to_bp_and_check_basic(dbg.TARGET_STOP_REASON_BP, 'test_timer_isr_ram_func', run_bt=run_bt)
 
-    @skip_for_chip(['esp32c5', 'esp32c61', 'esp32p4'], 'rom-elf files are not released yet')
+    @skip_for_chip(['esp32c5', 'esp32c61', 'esp32p4', 'esp32h4', 'esp32h21'], 'rom-elf files are not released yet')
     @idf_ver_min('5.3') # idf < 5.3: gdbinit files are not generated in build time.
     def test_bp_in_rom(self):
         """
@@ -410,6 +409,11 @@ def appcpu_early_hw_bps(self):
         self.resume_exec()
         self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 10)
         check_bp_hit_on_cpu(1)
+    # Get out of the early code to ensure system is in consistent state for following tests
+    # See "CPU0 needs to disable the cache in system_early_init" comment in ESP-IDF
+    self.gdb.delete_bp(self.bpns.pop())
+    self.add_bp('app_main', hw=True)
+    self.run_to_bp_and_check_basic(dbg.TARGET_STOP_REASON_BP, 'app_main')
 
 class DebuggerBreakpointTestsDual(DebuggerGenericTestAppTestsDual, BreakpointTestsImpl):
     """ Test cases for breakpoints in dual core mode
@@ -422,7 +426,6 @@ class DebuggerBreakpointTestsDual(DebuggerGenericTestAppTestsDual, BreakpointTes
     def test_2cores_concurrently_hit_bps(self):
         two_cores_concurrently_hit_bps(self)
 
-    @skip_for_chip(['esp32p4'], "skipped - OCD-1288")
     def test_appcpu_early_hw_bps(self):
         appcpu_early_hw_bps(self)
 
@@ -519,7 +522,7 @@ class DebuggerTestsSingle4MB(DebuggerGenericTestAppTestsSingle):
         self.test_app_cfg.bin_dir = os.path.join('output', 'single_core_4MB')
         self.test_app_cfg.build_dir = os.path.join('builds', 'single_core_4MB')
 
-@only_for_chip(['esp32c2', 'esp32c6', 'esp32h2'])
+@only_for_chip(['esp32c2', 'esp32c6', 'esp32h2', 'esp32h21'])
 class FlashTestsSingle4MB(DebuggerTestsSingle4MB, BreakpointTestsImpl):
     """ Breakpoint test cases via GDB in single core mode with 4MB flash config
     """

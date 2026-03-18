@@ -175,6 +175,23 @@ static const struct freertos_params freertos_params_list[] = {
 		rtos_freertos_riscv_pick_stacking_info,	/* fn to pick stacking_info */
 	},
 	{
+		"esp32h21",				/* target_name */
+		4,						/* thread_count_width; */
+		4,						/* pointer_width; */
+		12,						/* list_next_offset; */
+		8,						/* list_end_offset; */
+		20,						/* list_width; */
+		4,						/* list_elem_next_offset; */
+		12,						/* list_elem_content_offset */
+		0,						/* thread_stack_offset; */
+		52,						/* thread_name_offset; */
+		4,						/* thread_counter_width */
+		NULL,					/* stacking_info */
+		NULL,
+		NULL,
+		rtos_freertos_riscv_pick_stacking_info,	/* fn to pick stacking_info */
+	},
+	{
 		"esp32c3",				/* target_name */
 		4,						/* thread_count_width; */
 		4,						/* pointer_width; */
@@ -1222,7 +1239,8 @@ static int freertos_get_current_thread_registers(struct rtos *rtos, int64_t thre
 	for (int i = 0; i < *num_regs; i++) {
 		(*reg_list)[i].number = gdb_reg_list[i]->number;
 		(*reg_list)[i].size = gdb_reg_list[i]->size;
-		memcpy((*reg_list)[i].value, gdb_reg_list[i]->value, ((*reg_list)[i].size + 7) / 8);
+		if (gdb_reg_list[i]->exist)
+			memcpy((*reg_list)[i].value, gdb_reg_list[i]->value, ((*reg_list)[i].size + 7) / 8);
 	}
 	free(gdb_reg_list);
 	return ERROR_OK;
@@ -1351,10 +1369,9 @@ static int freertos_get_thread_reg_list(struct rtos *rtos, int64_t thread_id,
 }
 
 static int freertos_get_thread_reg(struct rtos *rtos, int64_t thread_id,
-	uint32_t reg_num, struct rtos_reg *reg)
+	uint32_t reg_num, struct rtos_reg *rtos_reg)
 {
 	int retval;
-	bool is_curr_thread = false;
 	struct rtos_reg *reg_list;
 	int num_regs;
 
@@ -1366,25 +1383,42 @@ static int freertos_get_thread_reg(struct rtos *rtos, int64_t thread_id,
 
 	LOG_DEBUG("freertos_get_thread_reg thread_id=0x%x", (uint32_t)thread_id);
 
-	retval = freertos_get_current_thread_registers(rtos,
-		thread_id,
-		REG_CLASS_ALL,
-		&is_curr_thread,
-		&reg_list,
-		&num_regs);
+	struct target *curr = NULL;
+	if (rtos->target->smp)
+		freertos_find_target_from_threadid(rtos->target, thread_id, &curr);
+	else if (thread_id == rtos->current_thread)
+		curr = rtos->target;
+
+	if (curr) {
+		if (!target_was_examined(curr))
+			return ERROR_FAIL;
+
+		struct reg *reg = register_get_by_number(curr->reg_cache, reg_num, true);
+		if (!reg) {
+			LOG_TARGET_ERROR(curr, "Couldn't find register %" PRIu32 " in thread %" PRId64, reg_num, thread_id);
+			return ERROR_FAIL;
+		}
+
+		if (!reg->valid && reg->type->get(reg) != ERROR_OK)
+			return ERROR_FAIL;
+
+		rtos_reg->number = reg->number;
+		rtos_reg->size = reg->size;
+		unsigned int bytes = (reg->size + 7) / 8;
+		assert(bytes <= sizeof(rtos_reg->value));
+		memcpy(rtos_reg->value, reg->value, bytes);
+
+		return ERROR_OK;
+	}
+
+	/* All registers (general + privileged ones) can be accessed for the threads currently running on cores.
+			It is enough for now. For non-current threads this function can return general registers only. */
+	retval = freertos_get_thread_reg_list(rtos, thread_id, &reg_list, &num_regs);
 	if (retval != ERROR_OK)
 		return retval;
-
-	if (!is_curr_thread) {
-		/* All registers (general + privileged ones) can be accessed for the threads currently running on cores.
-		        It is enough for now. For non-current threads this function can return general registers only. */
-		retval = freertos_get_thread_reg_list(rtos, thread_id, &reg_list, &num_regs);
-		if (retval != ERROR_OK)
-			return retval;
-	}
 	for (int i = 0; i < num_regs; ++i) {
 		if (reg_list[i].number == (uint32_t)reg_num) {
-			memcpy(reg, &reg_list[i], sizeof(*reg));
+			memcpy(rtos_reg, &reg_list[i], sizeof(*rtos_reg));
 			free(reg_list);
 			return ERROR_OK;
 		}

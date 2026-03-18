@@ -1432,8 +1432,14 @@ static int gdb_get_register_packet(struct connection *connection,
 
 	if ((reg_list_size <= reg_num) || !reg_list[reg_num] ||
 		!reg_list[reg_num]->exist || reg_list[reg_num]->hidden) {
-		LOG_ERROR("gdb requested a non-existing register (reg_num=%d)", reg_num);
-		return ERROR_SERVER_REMOTE_CLOSED;
+		free(reg_list);
+		/* Espressif - do not return ERROR_SERVER_REMOTE_CLOSED here.
+		 * We have to handle case with different register sets within a SMP group for LP cores.
+		 * As GDB only gets a single register description, it can ask for non-existent registers.
+		 */
+		LOG_DEBUG("gdb requested a non-existing register (reg_num=%d)", reg_num);
+		gdb_put_packet(connection, "E01", 3);
+		return ERROR_OK;
 	}
 
 	reg_packet = calloc(DIV_ROUND_UP(reg_list[reg_num]->size, 8) * 2 + 1, 1); /* plus one for string termination null */
@@ -2070,44 +2076,59 @@ static int gdb_memory_map(struct connection *connection, char const *packet, int
 
 		p = banks[i];
 
-		/* Report adjacent groups of same-size sectors.  So for
-		 * example top boot CFI flash will list an initial region
-		 * with several large sectors (maybe 128KB) and several
-		 * smaller ones at the end (maybe 32KB).  STR7 will have
-		 * regions with 8KB, 32KB, and 64KB sectors; etc.
-		 */
-		for (unsigned int j = 0; j < p->num_sectors; j++) {
-
-			/* Maybe start a new group of sectors. */
-			if (sector_size == 0) {
-				if (p->sectors[j].offset + p->sectors[j].size > p->size) {
-					LOG_WARNING("The flash sector at offset 0x%08" PRIx32
-						" overflows the end of %s bank.",
-						p->sectors[j].offset, p->name);
-					LOG_WARNING("The rest of bank will not show in gdb memory map.");
-					break;
-				}
+		if (p->read_only) {
+			region.type = MEMORY_TYPE_ROM;
+			region.start = p->base;
+			region.length = p->size;
+			region.block_size = 0;
+			target_add_memory_region(&memory_map, &region);
+		} else {
+			if (p->num_sectors == 0) {
 				region.type = MEMORY_TYPE_FLASH;
-				region.start = p->base + p->sectors[j].offset;
-				sector_size = p->sectors[j].size;
-				group_len = sector_size;
-			} else {
-				group_len += sector_size; /* equal to p->sectors[j].size */
+				region.start = p->base;
+				region.length = p->size;
+				region.block_size = p->size;
+				target_add_memory_region(&memory_map, &region);
 			}
 
-			/* Does this finish a group of sectors?
-			 * If not, continue an already-started group.
-			 */
-			if (j < p->num_sectors - 1
-					&& p->sectors[j + 1].size == sector_size
-					&& p->sectors[j + 1].offset == p->sectors[j].offset + sector_size
-					&& p->sectors[j + 1].offset + p->sectors[j + 1].size <= p->size)
-				continue;
+			/* Report adjacent groups of same-size sectors.  So for
+			* example top boot CFI flash will list an initial region
+			* with several large sectors (maybe 128KB) and several
+			* smaller ones at the end (maybe 32KB).  STR7 will have
+			* regions with 8KB, 32KB, and 64KB sectors; etc.
+			*/
+			for (unsigned int j = 0; j < p->num_sectors; j++) {
+				// Maybe start a new group of sectors
+				if (sector_size == 0) {
+					if (p->sectors[j].offset + p->sectors[j].size > p->size) {
+						LOG_WARNING("The flash sector at offset 0x%08" PRIx32
+							" overflows the end of %s bank.",
+							p->sectors[j].offset, p->name);
+						LOG_WARNING("The rest of bank will not show in gdb memory map.");
+						break;
+					}
+					region.type = MEMORY_TYPE_FLASH;
+					region.start = p->base + p->sectors[j].offset;
+					sector_size = p->sectors[j].size;
+					group_len = sector_size;
+				} else {
+					group_len += sector_size; /* equal to p->sectors[j].size */
+				}
 
-			region.length = group_len;
-			region.block_size = sector_size;
-			target_add_memory_region(&memory_map, &region);
-			sector_size = 0;
+				/* Does this finish a group of sectors?
+				* If not, continue an already-started group.
+				*/
+				if (j < p->num_sectors - 1
+						&& p->sectors[j + 1].size == sector_size
+						&& p->sectors[j + 1].offset == p->sectors[j].offset + sector_size
+						&& p->sectors[j + 1].offset + p->sectors[j + 1].size <= p->size)
+					continue;
+
+				region.length = group_len;
+				region.block_size = sector_size;
+				target_add_memory_region(&memory_map, &region);
+				sector_size = 0;
+			}
 		}
 	}
 
@@ -3964,12 +3985,11 @@ static const struct service_driver gdb_service_driver = {
 
 static int gdb_target_start(struct target *target, const char *port)
 {
-	struct gdb_service *gdb_service;
-	int ret;
-	gdb_service = malloc(sizeof(struct gdb_service));
-
-	if (!gdb_service)
-		return -ENOMEM;
+	struct gdb_service *gdb_service = malloc(sizeof(struct gdb_service));
+	if (!gdb_service) {
+		LOG_ERROR("Out of memory");
+		return ERROR_FAIL;
+	}
 
 	LOG_TARGET_INFO(target, "starting gdb server on %s", port);
 
@@ -3978,17 +3998,22 @@ static int gdb_target_start(struct target *target, const char *port)
 	gdb_service->core[1] = -1;
 	target->gdb_service = gdb_service;
 
-	ret = add_service(&gdb_service_driver, port, target->gdb_max_connections, gdb_service);
-	/* initialize all targets gdb service with the same pointer */
-	{
-		struct target_list *head;
-		foreach_smp_target(head, target->smp_targets) {
-			struct target *curr = head->target;
-			if (curr != target)
-				curr->gdb_service = gdb_service;
-		}
+	int retval = add_service(&gdb_service_driver, port,
+			target->gdb_max_connections, gdb_service);
+	if (retval != ERROR_OK) {
+		free(gdb_service);
+		return retval;
 	}
-	return ret;
+
+	/* initialize all targets gdb service with the same pointer */
+	struct target_list *head;
+	foreach_smp_target(head, target->smp_targets) {
+		struct target *curr = head->target;
+		if (curr != target)
+			curr->gdb_service = gdb_service;
+	}
+
+	return ERROR_OK;
 }
 
 static int gdb_target_add_one(struct target *target)

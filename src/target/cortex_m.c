@@ -876,6 +876,10 @@ static int cortex_m_debug_entry(struct target *target)
 	}
 
 	// read caches state
+	retval = armv7m_deferred_identify_cache(target);
+	if (retval != ERROR_OK)
+		return retval;
+
 	uint32_t ccr = 0;
 	if (armv7m->armv7m_cache.info_valid) {
 		retval = mem_ap_read_u32(armv7m->debug_ap, CCR, &ccr);
@@ -1018,6 +1022,10 @@ static int cortex_m_poll_one(struct target *target)
 
 		/* S_RESET_ST was expected (in a reset command). Continue processing
 		 * to quickly get out of TARGET_RESET state */
+	} else {
+		retval = armv7m_deferred_identify_cache(target);
+		if (retval != ERROR_OK)
+			return retval;
 	}
 
 	if (target->state == TARGET_RESET) {
@@ -1892,7 +1900,6 @@ int cortex_m_set_breakpoint(struct target *target, struct breakpoint *breakpoint
 	int retval;
 	unsigned int fp_num = 0;
 	struct cortex_m_common *cortex_m = target_to_cm(target);
-	struct cortex_m_fp_comparator *comparator_list = cortex_m->fp_comparator_list;
 
 	if (breakpoint->is_set) {
 		LOG_TARGET_WARNING(target, "breakpoint (BPID: %" PRIu32 ") already set", breakpoint->unique_id);
@@ -1901,6 +1908,12 @@ int cortex_m_set_breakpoint(struct target *target, struct breakpoint *breakpoint
 
 	if (breakpoint->type == BKPT_HARD) {
 		uint32_t fpcr_value;
+		struct cortex_m_fp_comparator *comparator_list = cortex_m->fp_comparator_list;
+		if (!comparator_list) {
+			LOG_TARGET_ERROR(target, "No comparator list. Not examined?");
+			return ERROR_FAIL;
+		}
+
 		while (comparator_list[fp_num].used && (fp_num < cortex_m->fp_num_code))
 			fp_num++;
 		if (fp_num >= cortex_m->fp_num_code) {
@@ -1989,7 +2002,6 @@ int cortex_m_unset_breakpoint(struct target *target, struct breakpoint *breakpoi
 {
 	int retval;
 	struct cortex_m_common *cortex_m = target_to_cm(target);
-	struct cortex_m_fp_comparator *comparator_list = cortex_m->fp_comparator_list;
 
 	if (!breakpoint->is_set) {
 		LOG_TARGET_WARNING(target, "breakpoint not set");
@@ -2009,6 +2021,13 @@ int cortex_m_unset_breakpoint(struct target *target, struct breakpoint *breakpoi
 			LOG_TARGET_DEBUG(target, "Invalid FP Comparator number in breakpoint");
 			return ERROR_OK;
 		}
+
+		struct cortex_m_fp_comparator *comparator_list = cortex_m->fp_comparator_list;
+		if (!comparator_list) {
+			LOG_TARGET_ERROR(target, "No comparator list. Not examined?");
+			return ERROR_FAIL;
+		}
+
 		comparator_list[fp_num].used = false;
 		comparator_list[fp_num].fpcr_value = 0;
 		target_write_u32(target, comparator_list[fp_num].fpcr_address,
@@ -2287,6 +2306,13 @@ void cortex_m_enable_watchpoints(struct target *target)
 			cortex_m_set_watchpoint(target, watchpoint);
 		watchpoint = watchpoint->next;
 	}
+}
+
+static bool cortex_m_memory_ready(struct target *target)
+{
+	struct armv7m_common *armv7m = target_to_armv7m(target);
+
+	return armv7m->debug_ap;
 }
 
 static int cortex_m_read_memory(struct target *target, target_addr_t address,
@@ -2791,8 +2817,6 @@ int cortex_m_examine(struct target *target)
 	}
 
 	if (!target_was_examined(target)) {
-		target_set_examined(target);
-
 		/* Read from Device Identification Registers */
 		retval = target_read_u32(target, CPUID, &cpuid);
 		if (retval != ERROR_OK)
@@ -2887,7 +2911,7 @@ int cortex_m_examine(struct target *target)
 		if (armv7m->fp_feature != FPV5_MVE_F && armv7m->fp_feature != FPV5_MVE_I)
 			armv7m->arm.core_cache->reg_list[ARMV8M_VPR].exist = false;
 
-		if (cortex_m->core_info->arch == ARM_ARCH_V8M) {
+		if (armv7m->arm.arch == ARM_ARCH_V8M) {
 			bool cm_has_tz = cortex_m_has_tz(target);
 			bool main_ext = cortex_m_main_extension(target, cpuid);
 			bool baseline = !main_ext;
@@ -2908,6 +2932,11 @@ int cortex_m_examine(struct target *target)
 					armv7m->arm.core_cache->reg_list[ARMV8M_PSPLIM_NS].exist = false;
 					armv7m->arm.core_cache->reg_list[ARMV8M_MSPLIM].exist = false;
 					armv7m->arm.core_cache->reg_list[ARMV8M_PSPLIM].exist = false;
+
+					armv7m->arm.core_cache->reg_list[ARMV8M_BASEPRI_S].exist = false;
+					armv7m->arm.core_cache->reg_list[ARMV8M_FAULTMASK_S].exist = false;
+					armv7m->arm.core_cache->reg_list[ARMV8M_BASEPRI_NS].exist = false;
+					armv7m->arm.core_cache->reg_list[ARMV8M_FAULTMASK_NS].exist = false;
 				} else {
 					/* There is no separate regsel for msplim/psplim of ARMV8M mainline
 					with the security extension that would point to correct alias
@@ -2917,6 +2946,11 @@ int cortex_m_examine(struct target *target)
 					armv7m->arm.core_cache->reg_list[ARMV8M_PSPLIM].exist = false;
 				}
 			}
+
+			if (baseline) {
+				armv7m->arm.core_cache->reg_list[ARMV7M_BASEPRI].exist = false;
+				armv7m->arm.core_cache->reg_list[ARMV7M_FAULTMASK].exist = false;
+			}
 		} else {
 			/* Security extension and stack limit checking introduced in ARMV8M */
 			for (size_t idx = ARMV8M_TZ_FIRST_REG; idx <= ARMV8M_TZ_LAST_REG; idx++)
@@ -2924,6 +2958,11 @@ int cortex_m_examine(struct target *target)
 
 			armv7m->arm.core_cache->reg_list[ARMV8M_MSPLIM].exist = false;
 			armv7m->arm.core_cache->reg_list[ARMV8M_PSPLIM].exist = false;
+
+			if (armv7m->arm.arch == ARM_ARCH_V6M) {
+				armv7m->arm.core_cache->reg_list[ARMV7M_BASEPRI].exist = false;
+				armv7m->arm.core_cache->reg_list[ARMV7M_FAULTMASK].exist = false;
+			}
 		}
 
 		if (!armv7m->is_hla_target) {
@@ -2936,6 +2975,18 @@ int cortex_m_examine(struct target *target)
 		retval = target_read_u32(target, DCB_DHCSR, &cortex_m->dcb_dhcsr);
 		if (retval != ERROR_OK)
 			return retval;
+
+		/*
+		 * Use a safe value of sticky S_RESET_ST for cache detection, before
+		 * clearing it below.
+		 */
+		if (!armv7m->is_hla_target) {
+			retval = armv7m_identify_cache(target);
+			if (retval != ERROR_OK) {
+				LOG_ERROR("Cannot detect cache");
+				return retval;
+			}
+		}
 
 		/*  Don't cumulate sticky S_RESET_ST at the very first read of DHCSR
 		 *  as S_RESET_ST may indicate a reset that happened long time ago
@@ -3006,12 +3057,6 @@ int cortex_m_examine(struct target *target)
 		LOG_TARGET_INFO(target, "target has %d breakpoints, %d watchpoints",
 			cortex_m->fp_num_code,
 			cortex_m->dwt_num_comp);
-
-		retval = armv7m_identify_cache(target);
-		if (retval != ERROR_OK) {
-			LOG_ERROR("Cannot detect cache");
-			return retval;
-		}
 	}
 
 	return ERROR_OK;
@@ -3432,6 +3477,7 @@ struct target_type cortexm_target = {
 	.get_gdb_arch = arm_get_gdb_arch,
 	.get_gdb_reg_list = armv7m_get_gdb_reg_list,
 
+	.memory_ready = cortex_m_memory_ready,
 	.read_memory = cortex_m_read_memory,
 	.write_memory = cortex_m_write_memory,
 	.checksum_memory = armv7m_checksum_memory,

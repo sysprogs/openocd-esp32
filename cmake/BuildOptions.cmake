@@ -54,6 +54,7 @@ option(BUILD_OPENDOUS "eStick/opendous JTAG Programmer" ON)
 option(BUILD_ARMJTAGEW "Olimex ARM-JTAG-EW Programmer" ON)
 option(BUILD_RLINK "Raisonance RLink JTAG Programmer" ON)
 option(BUILD_CH347 "CH347-based JTAG Programmer" ON)
+option(BUILD_FTDI_CJTAG "cJTAG (OScan1, JScan3) tunneled thru MPSSE" ON)
 option(BUILD_USBPROG "USBProg JTAG Programmer" ON)
 option(BUILD_ESP_USB_JTAG "Espressif JTAG Programmer" ON)
 
