@@ -16,6 +16,7 @@
 #include <target/register.h>
 #include <target/semihosting_common.h>
 #include <target/riscv/debug_defines.h>
+#include <target/riscv/riscv.h>
 
 #include "esp_semihosting.h"
 #include "esp_riscv_apptrace.h"
@@ -41,6 +42,9 @@
 #define ESP32C3_IRAM_HIGH                       0x403E0000
 #define ESP32C3_DRAM_LOW                        0x3FC80000
 #define ESP32C3_DRAM_HIGH                       0x3FCE0000
+
+#define ESP32C3_EFUSE_BLOCK1_WORD3_ADDR          0x60008850
+#define ESP32C3_EFUSE_BLOCK1_WORD5_ADDR          0x60008858
 
 enum esp32c3_reset_reason {
 	ESP32C3_CHIP_POWER_ON_RESET      = 0x01,	/* Power on reset */
@@ -118,6 +122,43 @@ static void esp32c3_print_reset_reason(struct target *target, uint32_t reset_rea
 		esp32c3_get_reset_reason(reset_reason_reg_val));
 }
 
+static int esp32c3_read_hw_rev(struct target *target)
+{
+	static uint32_t hw_rev;
+	static bool hw_rev_read;
+
+	if (hw_rev_read) {
+		target->hw_rev = hw_rev;
+		return ERROR_OK;
+	}
+
+	uint32_t word3, word5;
+
+	int ret = target_read_u32(target, ESP32C3_EFUSE_BLOCK1_WORD3_ADDR, &word3);
+	if (ret == ERROR_OK)
+		ret = target_read_u32(target, ESP32C3_EFUSE_BLOCK1_WORD5_ADDR, &word5);
+	if (ret != ERROR_OK) {
+		LOG_TARGET_ERROR(target, "Failed to read HW rev (%d)", ret);
+		return ret;
+	}
+
+	unsigned int major = (word5 >> 24) & 0x03;
+	unsigned int minor = (((word5 >> 23) & 0x01) << 3) | ((word3 >> 18) & 0x07);
+
+	hw_rev = 100 * major + minor;
+	target->hw_rev = hw_rev;
+	hw_rev_read = true;
+	LOG_TARGET_INFO(target, "Chip revision v%u.%u", major, minor);
+
+	return ERROR_OK;
+}
+
+static int esp32c3_examine_end(struct target *target)
+{
+	esp32c3_read_hw_rev(target);
+	return ERROR_OK;
+}
+
 static bool esp32c3_is_iram_address(target_addr_t addr)
 {
 	return addr >= ESP32C3_IRAM_LOW && addr < ESP32C3_IRAM_HIGH;
@@ -159,6 +200,7 @@ static int esp32c3_target_create(struct target *target)
 	esp_riscv->chip_specific_registers_size = 0;
 	esp_riscv->is_dram_address = esp32c3_is_dram_address;
 	esp_riscv->is_iram_address = esp32c3_is_iram_address;
+	esp_riscv->examine_end = esp32c3_examine_end;
 
 	if (esp_riscv_alloc_trigger_addr(target) != ERROR_OK)
 		return ERROR_FAIL;
@@ -228,6 +270,7 @@ struct target_type esp32c3_target = {
 	.name = "esp32c3",
 
 	.target_create = esp32c3_target_create,
+	.target_jim_configure = riscv_jim_configure,
 	.init_target = esp32c3_init_target,
 	.deinit_target = esp_riscv_deinit_target,
 	.examine = esp_riscv_examine,
@@ -242,6 +285,7 @@ struct target_type esp32c3_target = {
 	.assert_reset = esp_riscv_assert_reset,
 	.deassert_reset = riscv_deassert_reset,
 
+	.memory_ready = esp_riscv_memory_ready,
 	.read_memory = esp_riscv_read_memory,
 	.write_memory = esp_riscv_write_memory,
 

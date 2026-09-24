@@ -21,7 +21,7 @@
   export BATCH_BUILD=1
   export V=0
 
-  IDF_REPO_URL="https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/espressif/esp-idf.git"
+  IDF_REPO_URL="http://gitmirror.brew:6688/${CI_SERVER_HOST}:${CI_SERVER_PORT}/espressif/esp-idf"
 
   # -----------------------------
   # Decide custom IDF branch (based on docker image + vars)
@@ -35,6 +35,8 @@
       # Checkout from gitlab master
       TEST_APP_CUSTOM_BRANCH="master"
     fi
+  elif [ "${TEST_APP_IDF_DOCKER_IMAGE}" = "${TEST_APP_IDF6_1_RELEASE_DOCKER_IMAGE}" ] && [ -n "${TEST_APP_IDF6_1_BRANCH:-}" ]; then
+    TEST_APP_CUSTOM_BRANCH="$TEST_APP_IDF6_1_BRANCH"
   elif [ "${TEST_APP_IDF_DOCKER_IMAGE}" = "${TEST_APP_IDF6_0_RELEASE_DOCKER_IMAGE}" ] && [ -n "${TEST_APP_IDF6_0_BRANCH:-}" ]; then
     TEST_APP_CUSTOM_BRANCH="$TEST_APP_IDF6_0_BRANCH"
   elif [ "${TEST_APP_IDF_DOCKER_IMAGE}" = "${TEST_APP_IDF5_5_RELEASE_DOCKER_IMAGE}" ] && [ -n "${TEST_APP_IDF5_5_BRANCH:-}" ]; then
@@ -43,10 +45,6 @@
     TEST_APP_CUSTOM_BRANCH="$TEST_APP_IDF5_4_BRANCH"
   elif [ "${TEST_APP_IDF_DOCKER_IMAGE}" = "${TEST_APP_IDF5_3_RELEASE_DOCKER_IMAGE}" ] && [ -n "${TEST_APP_IDF5_3_BRANCH:-}" ]; then
     TEST_APP_CUSTOM_BRANCH="$TEST_APP_IDF5_3_BRANCH"
-  elif [ "${TEST_APP_IDF_DOCKER_IMAGE}" = "${TEST_APP_IDF5_2_RELEASE_DOCKER_IMAGE}" ] && [ -n "${TEST_APP_IDF5_2_BRANCH:-}" ]; then
-    TEST_APP_CUSTOM_BRANCH="$TEST_APP_IDF5_2_BRANCH"
-  elif [ "${TEST_APP_IDF_DOCKER_IMAGE}" = "${TEST_APP_IDF5_1_RELEASE_DOCKER_IMAGE}" ] && [ -n "${TEST_APP_IDF5_1_BRANCH:-}" ]; then
-    TEST_APP_CUSTOM_BRANCH="$TEST_APP_IDF5_1_BRANCH"
   fi
 
   # -----------------------------
@@ -141,6 +139,16 @@
     ${TOOLCHAIN_PREFIX}-elf-objcopy --rename-section .flash.text=.text ${elf_path} ${elf_path}.gprof
   done
 
+.fetch_stub_bins: &fetch_stub_bins |
+  if [ "${FETCH_STUB_BINS:-0}" = "1" ]; then
+    OOCD_DIST_NAME=$(cat "${CI_PROJECT_DIR}/${DIST_ART_DIR}/dist_name_linux-arm64-test")
+    mkdir -p "${CI_PROJECT_DIR}/pipeline_openocd"
+    tar -C "${CI_PROJECT_DIR}/pipeline_openocd" -x -m -f "${CI_PROJECT_DIR}/${DIST_ART_DIR}/${OOCD_DIST_NAME}"
+    export OPENOCD_SCRIPTS="${CI_PROJECT_DIR}/pipeline_openocd/${DIST_INSTALLED_DIR}/share/openocd/scripts"
+    echo "Overriding OPENOCD_SCRIPTS=${OPENOCD_SCRIPTS} (pipeline-built OpenOCD)"
+    ls -la "${OPENOCD_SCRIPTS}/../espressif/stub_bins/${CHIP_NAME}"
+  fi
+
 .build_test_app_template:
   image: ${TEST_APP_IDF_DOCKER_IMAGE}
   tags:
@@ -174,12 +182,15 @@
     expire_in: 2 weeks
   script:
     - *prepare_test_app_build
+    - *fetch_stub_bins
     - *do_build_test_app
     - *finish_test_app_build
     - *prepare_espytrace_package
     - *prepare_sysview_config
     - *prepare_gprof_compatible_elfs
-  needs: []
+  needs:
+    - pipeline: $PARENT_PIPELINE_ID
+      job: build_linux_arm64_test
   rules:
     - if: '$CI_FULL_RUN == "1" || $UT_GET_IDF_VER == "0"'
       when: always
@@ -220,6 +231,12 @@
   variables:
     TEST_APP_IDF_DOCKER_IMAGE: "${TEST_APP_IDF6_0_RELEASE_DOCKER_IMAGE}"
     BUILD_TEST_APP_DIR: "build_test_app_${CHIP_NAME}_idf6.0.x"
+  extends: .build_test_app_template
+
+.build_idf61x_test_app_template:
+  variables:
+    TEST_APP_IDF_DOCKER_IMAGE: "${TEST_APP_IDF6_1_RELEASE_DOCKER_IMAGE}"
+    BUILD_TEST_APP_DIR: "build_test_app_${CHIP_NAME}_idf6.1.x"
   extends: .build_test_app_template
 
 .build_idf_master_test_app_template:

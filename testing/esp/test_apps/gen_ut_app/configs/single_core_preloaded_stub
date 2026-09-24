@@ -1,2 +1,5 @@
 CONFIG_FREERTOS_UNICORE=y
 CONFIG_ESP_DEBUG_INCLUDE_OCD_STUB_BINS=y
+
+# ESP32-P4 rev >= v3 the prebuilt stub is linked at _iram_start (0x4FF80000)
+CONFIG_CACHE_L2_CACHE_512KB=y

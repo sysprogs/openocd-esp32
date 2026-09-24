@@ -620,7 +620,7 @@ static struct jim_nvp nvp_config_opts[] = {
 	{ .name = NULL, .value = RISCV_CFG_INVALID }
 };
 
-static int riscv_jim_configure(struct target *target,
+int riscv_jim_configure(struct target *target,
 		struct jim_getopt_info *goi)
 {
 	struct riscv_private_config *config = target->private_config;
@@ -2537,28 +2537,36 @@ static int riscv_examine(struct target *target)
 		LOG_TARGET_ERROR(target, "Could not read dtmcontrol. Check JTAG connectivity/board power.");
 		return ERROR_FAIL;
 	}
-	LOG_TARGET_DEBUG(target, "dtmcontrol=0x%x", dtmcontrol);
-	info->dtm_version = get_field(dtmcontrol, DTMCONTROL_VERSION);
-	LOG_TARGET_DEBUG(target, "version=0x%x", info->dtm_version);
+	LOG_TARGET_DEBUG(target, "dtmcontrol=0x%" PRIx32, dtmcontrol);
+	uint32_t dtm_version = get_field(dtmcontrol, DTMCONTROL_VERSION);
+	LOG_TARGET_DEBUG(target, "version=0x%" PRIx32, dtm_version);
 
-	int examine_status = ERROR_FAIL;
-	struct target_type *tt = get_target_type(target);
-	if (!tt)
-		goto examine_fail;
+	struct target_type *tt;
+	if (info->dtm_version == DTM_DTMCS_VERSION_UNKNOWN) {
+		info->dtm_version = dtm_version;
+		tt = get_target_type(target);
+		if (!tt) {
+			info->dtm_version = DTM_DTMCS_VERSION_UNKNOWN;
+			return ERROR_FAIL;
+		}
 
-	examine_status = tt->init_target(info->cmd_ctx, target);
-	if (examine_status != ERROR_OK)
-		goto examine_fail;
+		int retval = tt->init_target(info->cmd_ctx, target);
+		if (retval != ERROR_OK) {
+			info->dtm_version = DTM_DTMCS_VERSION_UNKNOWN;
+			return retval;
+		}
+	} else {
+		if (info->dtm_version != dtm_version) {
+			// REVISIT: could we deinit_target, change version and init_target again?
+			LOG_TARGET_ERROR(target, "dtmcs.version changed to 0x%" PRIx32, dtm_version);
+			return ERROR_FAIL;
+		}
+		tt = get_target_type(target);
+		if (!tt)
+			return ERROR_FAIL;
+	}
 
-	examine_status = tt->examine(target);
-	if (examine_status != ERROR_OK)
-		goto examine_fail;
-
-	return ERROR_OK;
-
-examine_fail:
-	info->dtm_version = DTM_DTMCS_VERSION_UNKNOWN;
-	return examine_status;
+	return tt->examine(target);
 }
 
 static int oldriscv_poll(struct target *target)
@@ -3627,11 +3635,7 @@ int riscv_arch_state(struct target *target)
 			target_name(target),
 			debug_reason_name(target),
 			semihosting_active ? " Semihosting is active." : "");
-	struct target_type *tt = get_target_type(target);
-	if (!tt)
-		return ERROR_FAIL;
-	assert(tt->arch_state);
-	return tt->arch_state(target);
+	return ERROR_OK;
 }
 
 /* Algorithm must end with a software breakpoint instruction. */
@@ -4456,7 +4460,7 @@ static bool parse_csr_address(const char *reg_address_str, unsigned int *reg_add
 {
 	*reg_addr = -1;
 	/* skip initial spaces */
-	while (isspace(reg_address_str[0]))
+	while (isspace((unsigned char)reg_address_str[0]))
 		++reg_address_str;
 	/* try to detect if string starts with 0x or 0X */
 	bool is_hex_address = strncmp(reg_address_str, "0x", 2) == 0 ||
@@ -5078,6 +5082,11 @@ COMMAND_HANDLER(riscv_itrigger)
 	struct target *target = get_current_target(CMD_CTX);
 	const int ITRIGGER_UNIQUE_ID = -CSR_TDATA1_TYPE_ITRIGGER;
 
+	if (!target_was_examined(target)) {
+		LOG_TARGET_ERROR(target, "not examined");
+		return ERROR_TARGET_NOT_EXAMINED;
+	}
+
 	if (riscv_enumerate_triggers(target) != ERROR_OK)
 		return ERROR_FAIL;
 
@@ -5142,6 +5151,11 @@ COMMAND_HANDLER(riscv_icount)
 
 	struct target *target = get_current_target(CMD_CTX);
 	const int ICOUNT_UNIQUE_ID = -CSR_TDATA1_TYPE_ICOUNT;
+
+	if (!target_was_examined(target)) {
+		LOG_TARGET_ERROR(target, "not examined");
+		return ERROR_TARGET_NOT_EXAMINED;
+	}
 
 	if (riscv_enumerate_triggers(target) != ERROR_OK)
 		return ERROR_FAIL;
@@ -5208,6 +5222,11 @@ COMMAND_HANDLER(riscv_etrigger)
 	struct target *target = get_current_target(CMD_CTX);
 	const int ETRIGGER_UNIQUE_ID = -CSR_TDATA1_TYPE_ETRIGGER;
 
+	if (!target_was_examined(target)) {
+		LOG_TARGET_ERROR(target, "not examined");
+		return ERROR_TARGET_NOT_EXAMINED;
+	}
+
 	if (riscv_enumerate_triggers(target) != ERROR_OK)
 		return ERROR_FAIL;
 
@@ -5265,6 +5284,11 @@ COMMAND_HANDLER(riscv_etrigger)
 COMMAND_HANDLER(handle_repeat_read)
 {
 	struct target *target = get_current_target(CMD_CTX);
+	if (!target_was_examined(target)) {
+		LOG_TARGET_ERROR(target, "not examined");
+		return ERROR_TARGET_NOT_EXAMINED;
+	}
+
 	RISCV_INFO(r);
 
 	if (CMD_ARGC < 2 || CMD_ARGC > 3)
@@ -5479,6 +5503,11 @@ COMMAND_HANDLER(riscv_exec_progbuf)
 
 	struct target *target = get_current_target(CMD_CTX);
 
+	if (!target_was_examined(target)) {
+		LOG_TARGET_ERROR(target, "not examined");
+		return ERROR_TARGET_NOT_EXAMINED;
+	}
+
 	RISCV_INFO(r);
 	if (r->dtm_version != DTM_DTMCS_VERSION_1_0) {
 		LOG_TARGET_ERROR(target, "exec_progbuf: Program buffer is "
@@ -5585,6 +5614,11 @@ static COMMAND_HELPER(report_reserved_triggers, struct target *target)
 COMMAND_HANDLER(handle_reserve_trigger)
 {
 	struct target *target = get_current_target(CMD_CTX);
+	if (!target_was_examined(target)) {
+		command_print(CMD, "Error: Target not examined");
+		return ERROR_TARGET_NOT_EXAMINED;
+	}
+
 	if (CMD_ARGC == 0)
 		return CALL_COMMAND_HANDLER(report_reserved_triggers, target);
 
@@ -5960,6 +5994,31 @@ static unsigned int riscv_data_bits(struct target *target)
 	return riscv_xlen(target);
 }
 
+static int riscv_insn_set(struct command_invocation *cmd,
+	struct target *target, const char **insn_set)
+{
+	if (!target_was_examined(target)) {
+		command_print(cmd, "[%s] target not examined yet", target_name(target));
+		return ERROR_TARGET_NOT_EXAMINED;
+	}
+
+	switch (riscv_xlen(target)) {
+	case 32:
+		*insn_set = "riscv32";
+		break;
+
+	case 64:
+		*insn_set = "riscv64";
+		break;
+
+	default:
+		command_print(cmd, "[%s] unsupported instruction set", target_name(target));
+		return ERROR_FAIL;
+	}
+
+	return ERROR_OK;
+}
+
 struct target_type riscv_target = {
 	.name = "riscv",
 
@@ -6007,7 +6066,9 @@ struct target_type riscv_target = {
 	.commands = riscv_command_handlers,
 
 	.address_bits = riscv_xlen_nonconst,
-	.data_bits = riscv_data_bits
+	.data_bits = riscv_data_bits,
+
+	.insn_set = riscv_insn_set,
 };
 
 /*** RISC-V Interface ***/

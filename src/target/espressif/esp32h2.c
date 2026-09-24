@@ -16,6 +16,7 @@
 #include <target/register.h>
 #include <target/semihosting_common.h>
 #include <target/riscv/debug_defines.h>
+#include <target/riscv/riscv.h>
 
 #include "esp_semihosting.h"
 #include "esp_riscv_apptrace.h"
@@ -39,6 +40,8 @@
 #define ESP32H2_IROM_MASK_HIGH  0x40020000
 #define ESP32H2_DRAM_LOW        0x40800000
 #define ESP32H2_DRAM_HIGH       0x40850000
+
+#define ESP32H2_EFUSE_HW_REV_ADDR               0x600B0850
 
 enum esp32h2_reset_reason {
 	ESP32H2_CHIP_POWER_ON_RESET     = 0x01,	/* Vbat power on reset */
@@ -118,6 +121,39 @@ static void esp32h2_print_reset_reason(struct target *target, uint32_t reset_rea
 		esp32h2_get_reset_reason(reset_reason_reg_val));
 }
 
+static int esp32h2_read_hw_rev(struct target *target)
+{
+	static uint32_t hw_rev;
+	static bool hw_rev_read;
+
+	if (hw_rev_read) {
+		target->hw_rev = hw_rev;
+		return ERROR_OK;
+	}
+
+	int ret = target_read_u32(target, ESP32H2_EFUSE_HW_REV_ADDR, &hw_rev);
+	if (ret != ERROR_OK) {
+		LOG_TARGET_ERROR(target, "Failed to read HW rev (%d)", ret);
+		return ret;
+	}
+
+	unsigned int major = (hw_rev >> 21) & 0x03;
+	unsigned int minor = (hw_rev >> 18) & 0x07;
+
+	hw_rev = 100 * major + minor;
+	target->hw_rev = hw_rev;
+	hw_rev_read = true;
+	LOG_TARGET_INFO(target, "Chip revision v%u.%u", major, minor);
+
+	return ERROR_OK;
+}
+
+static int esp32h2_examine_end(struct target *target)
+{
+	esp32h2_read_hw_rev(target);
+	return ERROR_OK;
+}
+
 static bool esp32h2_is_idram_address(target_addr_t addr)
 {
 	return addr >= ESP32H2_DRAM_LOW && addr < ESP32H2_DRAM_HIGH;
@@ -136,20 +172,12 @@ static const struct esp_flash_breakpoint_ops esp32h2_flash_brp_ops = {
 
 static const char *esp32h2_csrs[] = {
 	"mideleg", "medeleg", "mie", "mip",
-	"ustatus", "uie", "utvec", "uepc", "ucause", "utval", "uip",
-	"pma_cfg0", "pma_cfg1", "pma_cfg2", "pma_cfg3", "pma_cfg4", "pma_cfg5",
-	"pma_cfg6", "pma_cfg7", "pma_cfg8", "pma_cfg9", "pma_cfg10", "pma_cfg11",
-	"pma_cfg12", "pma_cfg13", "pma_cfg14", "pma_cfg15", "pma_addr0", "pma_addr1",
-	"pma_addr2", "pma_addr3", "pma_addr4", "pma_addr5", "pma_addr6", "pma_addr7",
-	"pma_addr8", "pma_addr9", "pma_addr10", "pma_addr11", "pma_addr12", "pma_addr13",
-	"pma_addr14", "pma_addr15",
 };
 
 static struct esp_riscv_reg_class esp32h2_registers[] = {
 	{
 		.reg_array = esp32h2_csrs,
 		.reg_array_size = ARRAY_SIZE(esp32h2_csrs),
-		.save_restore = true
 	},
 };
 
@@ -173,6 +201,7 @@ static int esp32h2_target_create(struct target *target)
 	esp_riscv->chip_specific_registers_size = ARRAY_SIZE(esp32h2_registers);
 	esp_riscv->is_dram_address = esp32h2_is_idram_address;
 	esp_riscv->is_iram_address = esp32h2_is_idram_address;
+	esp_riscv->examine_end = esp32h2_examine_end;
 
 	if (esp_riscv_alloc_trigger_addr(target) != ERROR_OK)
 		return ERROR_FAIL;
@@ -242,6 +271,7 @@ struct target_type esp32h2_target = {
 	.name = "esp32h2",
 
 	.target_create = esp32h2_target_create,
+	.target_jim_configure = riscv_jim_configure,
 	.init_target = esp32h2_init_target,
 	.deinit_target = esp_riscv_deinit_target,
 	.examine = esp_riscv_examine,
@@ -256,6 +286,7 @@ struct target_type esp32h2_target = {
 	.assert_reset = esp_riscv_assert_reset,
 	.deassert_reset = riscv_deassert_reset,
 
+	.memory_ready = esp_riscv_memory_ready,
 	.read_memory = esp_riscv_read_memory,
 	.write_memory = esp_riscv_write_memory,
 

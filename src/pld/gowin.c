@@ -172,10 +172,10 @@ static int gowin_read_fs_file(struct gowin_bit_file *bit_file, const char *filen
 
 static int gowin_read_file(struct gowin_bit_file *bit_file, const char *filename, bool *is_fs)
 {
-	memset(bit_file, 0, sizeof(struct gowin_bit_file));
-
 	if (!filename || !bit_file)
 		return ERROR_COMMAND_SYNTAX_ERROR;
+
+	memset(bit_file, 0, sizeof(struct gowin_bit_file));
 
 	const char *file_suffix_pos = strrchr(filename, '.');
 	if (!file_suffix_pos) {
@@ -421,9 +421,7 @@ static int gowin_load_to_sram(struct pld_device *pld_device, const char *filenam
 	if (retval != ERROR_OK)
 		return retval;
 
-	retval = jtag_execute_queue();
-
-	return retval;
+	return jtag_execute_queue();
 }
 
 static int gowin_read_register_command(struct pld_device *pld_device, uint32_t cmd, uint32_t *value)

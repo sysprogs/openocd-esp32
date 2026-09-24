@@ -18,7 +18,6 @@
 #include "register.h"
 #include "dsp563xx.h"
 #include "dsp563xx_once.h"
-#include "openocd.h"
 
 #define ASM_REG_W_R0    0x60F400
 #define ASM_REG_W_R1    0x61F400
@@ -916,8 +915,6 @@ static int dsp563xx_examine(struct target *target)
 	}
 
 	if (!target_was_examined(target)) {
-		target_set_examined(target);
-
 		/* examine core and chip derivate number */
 		chip = (target->tap->idcode>>12) & 0x3ff;
 		/* core number 0 means DSP563XX */
@@ -1460,6 +1457,9 @@ static int dsp563xx_run_algorithm(struct target *target,
 	return ERROR_OK;
 }
 
+/* global command context from openocd.c */
+extern struct command_context *global_cmd_ctx;
+
 static int dsp563xx_get_default_memory(void)
 {
 	Jim_Interp *interp;
@@ -1996,7 +1996,6 @@ static int dsp563xx_remove_custom_watchpoint(struct target *target)
 
 COMMAND_HANDLER(dsp563xx_add_watchpoint_command)
 {
-	int err = ERROR_OK;
 	struct target *target = get_current_target(CMD_CTX);
 
 	uint32_t mem_type = 0;
@@ -2054,9 +2053,7 @@ COMMAND_HANDLER(dsp563xx_add_watchpoint_command)
 		return ERROR_COMMAND_SYNTAX_ERROR;
 	}
 
-	err = dsp563xx_add_custom_watchpoint(target, address, mem_type, rw, cond);
-
-	return err;
+	return dsp563xx_add_custom_watchpoint(target, address, mem_type, rw, cond);
 }
 
 /* Adding a breakpoint using the once breakpoint logic.

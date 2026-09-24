@@ -27,6 +27,7 @@
 #include "config.h"
 #endif
 
+#include <helper/tcl-common.h>
 #include <target/breakpoints.h>
 #include <target/target_request.h>
 #include <target/register.h>
@@ -220,7 +221,7 @@ static int check_pending(struct connection *connection,
 	}
 
 	FD_ZERO(&read_fds);
-	PORTABLE_FD_SET(connection->fd, &read_fds);
+	OCD_FD_SET(connection->fd, &read_fds);
 
 	tv.tv_sec = timeout_s;
 	tv.tv_usec = 0;
@@ -233,7 +234,7 @@ static int check_pending(struct connection *connection,
 		else
 			return ERROR_OK;
 	}
-	*got_data = FD_ISSET(connection->fd, &read_fds) != 0;
+	*got_data = OCD_FD_ISSET(connection->fd, &read_fds) != 0;
 	return ERROR_OK;
 }
 
@@ -424,6 +425,19 @@ static void gdb_log_outgoing_packet(struct connection *connection, const char *p
 	else
 		LOG_TARGET_DEBUG(target, "{%d} sending packet: $%.*s#%2.2x",
 			gdb_connection->unique_index, packet_len, packet_buf, checksum);
+}
+
+static void gdb_log_outgoing_async_notif(struct connection *connection, const char *buf,
+	unsigned int len)
+{
+	if (!LOG_LEVEL_IS(LOG_LVL_DEBUG))
+		return;
+
+	struct target *target = get_target_from_connection(connection);
+	struct gdb_connection *gdb_connection = connection->priv;
+
+	LOG_TARGET_DEBUG(target, "{%d} sending packet: %.*s",
+		gdb_connection->unique_index, len, buf);
 }
 
 static int gdb_put_packet_inner(struct connection *connection,
@@ -1434,11 +1448,13 @@ static int gdb_get_register_packet(struct connection *connection,
 		!reg_list[reg_num]->exist || reg_list[reg_num]->hidden) {
 		free(reg_list);
 		/* Espressif - do not return ERROR_SERVER_REMOTE_CLOSED here.
-		 * We have to handle case with different register sets within a SMP group for LP cores.
+		 * We have to handle case with different register sets within an SMP group for LP cores,
+		 * and ESP32-S31 PIE registers.
 		 * As GDB only gets a single register description, it can ask for non-existent registers.
+		 * Respond with "x" packet to signal unavailable register value.
 		 */
 		LOG_DEBUG("gdb requested a non-existing register (reg_num=%d)", reg_num);
-		gdb_put_packet(connection, "E01", 3);
+		gdb_put_packet(connection, "xx", 2);
 		return ERROR_OK;
 	}
 
@@ -2547,7 +2563,8 @@ static int smp_reg_list_noread(struct target *target,
 				}
 			}
 			if (!found) {
-				LOG_TARGET_WARNING(head->target, "Register %s does not exist, which is part of an SMP group where "
+				/* Espressif */
+				LOG_TARGET_DEBUG(head->target, "Register %s does not exist, which is part of an SMP group where "
 					    "this register does exist.", a->name);
 			}
 		}
@@ -2936,7 +2953,6 @@ static int gdb_query_packet(struct connection *connection,
 			cmd_ctx->current_target_override = saved_target_override;
 
 			current_gdb_connection = NULL;
-			target_call_timer_callbacks_now();
 			gdb_connection->output_flag = GDB_OUTPUT_NO;
 			free(cmd);
 			if (retval == JIM_RETURN)
@@ -2950,6 +2966,9 @@ static int gdb_query_packet(struct connection *connection,
 			} else {
 				retmsg = strdup(cretmsg);
 			}
+
+			target_call_timer_callbacks_now();
+
 			if (!retmsg)
 				return ERROR_GDB_BUFFER_TOO_SMALL;
 
@@ -3839,18 +3858,30 @@ static int gdb_input_inner(struct connection *connection)
 					break;
 
 				case 'j':
-					/* DEPRECATED */
-					/* packet supported only by smp target i.e cortex_a.c*/
-					/* handle smp packet replying coreid played to gbd */
-					gdb_read_smp_packet(connection, packet, packet_size);
+					if (strncmp(packet, "jc", 2) == 0) {
+						/* DEPRECATED */
+						/* packet supported only by smp target i.e cortex_a.c*/
+						/* handle smp packet replying coreid played to gbd */
+						gdb_read_smp_packet(connection, packet, packet_size);
+					} else {
+						/* ignore unknown packets */
+						LOG_DEBUG("ignoring 0x%2.2x packet", packet[0]);
+						retval = gdb_put_packet(connection, "", 0);
+					}
 					break;
 
 				case 'J':
-					/* DEPRECATED */
-					/* packet supported only by smp target i.e cortex_a.c */
-					/* handle smp packet setting coreid to be played at next
-					 * resume to gdb */
-					gdb_write_smp_packet(connection, packet, packet_size);
+					if (strncmp(packet, "jc", 2) == 0) {
+						/* DEPRECATED */
+						/* packet supported only by smp target i.e cortex_a.c */
+						/* handle smp packet setting coreid to be played at next
+						* resume to gdb */
+						gdb_read_smp_packet(connection, packet, packet_size);
+					} else {
+						/* ignore unknown packets */
+						LOG_DEBUG("ignoring 0x%2.2x packet", packet[0]);
+						retval = gdb_put_packet(connection, "", 0);
+					}
 					break;
 
 				case 'F':
@@ -3947,6 +3978,7 @@ static void gdb_async_notif(struct connection *connection)
 	LOG_DEBUG("sending packet '%s'", buf);
 #endif
 
+	gdb_log_outgoing_async_notif(connection, buf, len);
 	gdb_write(connection, buf, len);
 }
 
@@ -3974,6 +4006,20 @@ static void gdb_keep_client_alive(struct connection *connection)
 	}
 }
 
+static COMMAND_HELPER(gdb_service_info, const struct service *service)
+{
+	struct gdb_service *gdb_service = service->priv;
+
+	char *cmd_name = tcl_escape_alloc(CMD_CTX->interp, gdb_service->target->cmd_name);
+	if (!cmd_name) {
+		LOG_ERROR("Unable to escape Tcl string");
+		return ERROR_FAIL;
+	}
+	command_print(cmd, "    target %s", cmd_name);
+	free(cmd_name);
+	return ERROR_OK;
+}
+
 static const struct service_driver gdb_service_driver = {
 	.name = "gdb",
 	.new_connection_during_keep_alive_handler = NULL,
@@ -3981,6 +4027,7 @@ static const struct service_driver gdb_service_driver = {
 	.input_handler = gdb_input,
 	.connection_closed_handler = gdb_connection_closed,
 	.keep_client_alive_handler = gdb_keep_client_alive,
+	.service_info_handler = gdb_service_info,
 };
 
 static int gdb_target_start(struct target *target, const char *port)

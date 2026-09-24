@@ -259,6 +259,39 @@ BOARD_TCL_CONFIG = {
         'chip_name' : 'esp32s3',
         'target_triple' : 'xtensa-esp32s3-elf'
     },
+
+    'esp32s31-ftdi' :  {
+        'files' : [
+            os.path.join('board', 'esp32s31-ftdi.cfg')
+        ],
+        'commands' : [],
+        'chip_name' : 'esp32s31',
+        'target_triple' : 'riscv32-esp-elf'
+    },
+    'esp32s31-builtin' :  {
+        'files' : [
+            os.path.join('board', 'esp32s31-builtin.cfg')
+        ],
+        'commands' : [],
+        'chip_name' : 'esp32s31',
+        'target_triple' : 'riscv32-esp-elf'
+    },
+    'esp32s31-lpcore-ftdi' :  {
+        'files' : [
+            os.path.join('board', 'esp32s31-lpcore-ftdi.cfg')
+        ],
+        'commands' : [],
+        'chip_name' : 'esp32s31',
+        'target_triple' : 'riscv32-esp-elf'
+    },
+    'esp32s31-lpcore-builtin' :  {
+        'files' : [
+            os.path.join('board', 'esp32s31-lpcore-builtin.cfg')
+        ],
+        'commands' : [],
+        'chip_name' : 'esp32s31',
+        'target_triple' : 'riscv32-esp-elf'
+    },
 }
 
 class SerialPortReader(threading.Thread):
@@ -316,7 +349,7 @@ class SerialPortReader(threading.Thread):
 
 
 def dbg_start(toolchain, oocd, oocd_tcl, oocd_cfg_files, oocd_cfg_cmds, debug_oocd,
-              chip_name, target_triple, log_level, log_stream, log_file, gdb_log):
+              chip_name, target_triple, log_level, log_stream, log_file, gdb_log, no_gdb, oocd_log):
     global _oocd_inst, _gdb_inst
     connect_tmo = 15
     remote_tmo = 10
@@ -330,21 +363,21 @@ def dbg_start(toolchain, oocd, oocd_tcl, oocd_cfg_files, oocd_cfg_cmds, debug_oo
                         oocd_debug=debug_oocd,
                         log_level=log_level,
                         log_stream_handler=log_stream,
-                        log_file_handler=log_file)
+                        log_file_handler=log_file,
+                        log_file=oocd_log)
     _oocd_inst.start()
+    if no_gdb:
+        return
     try:
         # reset the board if it is stuck from the previous test run
         _oocd_inst.cmd_exec('reset halt')
-        # Enable GDB fix
-        # TODO: Remove
-        os.environ["ESP_XTENSA_GDB_PRIV_REGS_FIX"] = "1"
         gdb_utils = debug_backend_tests.GDBUtils()
         _gdb_inst = gdb_utils.create_gdb(chip_name, target_triple, toolchain, log_level,
                                             log_stream, log_file, gdb_log, debug_oocd)
         _gdb_inst.connect(tmo=connect_tmo)
     except Exception as e:
-        _oocd_inst.stop()
         if type(e) == dbg.DebuggerTargetStateTimeoutError:
+            _oocd_inst.stop()
             sys.exit(os.EX_TEMPFAIL)
         raise e
 
@@ -418,9 +451,9 @@ def main():
     board_uart_reader = None
     if args.log_uart:
         try:
-            board_uart_reader = SerialPortReader(args.serial_port)
+            board_uart_reader = SerialPortReader(args.serial_ports[0])
         except serial.SerialException as e:
-            sys.stderr.write('Could not start reader for serial port {}: {}\n'.format(args.serial_port, e))
+            sys.stderr.write('Could not start reader for serial port {}: {}\n'.format(args.serial_ports[0], e))
             sys.exit(1)
     log_formatter = logging.Formatter('%(asctime)-15s %(name)s: %(levelname)s - %(message)s')
     ch = logging.StreamHandler()
@@ -472,7 +505,7 @@ def main():
     try:
         dbg_start(args.toolchain, args.oocd, args.oocd_tcl, board_tcl['files'], board_tcl['commands'],
                             args.debug_oocd, board_tcl['chip_name'], board_tcl['target_triple'],
-                            log_lev, ch, fh, args.gdb_log_folder)
+                            log_lev, ch, fh, args.gdb_log_folder, args.no_gdb, args.oocd_log_file)
     except RuntimeError:
         # flash an app and try again
         import json, subprocess
@@ -491,7 +524,7 @@ def main():
                 flasher_args += [addr, bin]
         if board_uart_reader:
             board_uart_reader.stop()
-        cmd = ['esptool.py', '-p', args.serial_port, '--no-stub', 'write_flash', *flasher_args]
+        cmd = ['esptool.py', '-p', args.serial_ports[0], '--no-stub', 'write_flash', *flasher_args]
         proc = subprocess.run(cmd, cwd=output_dir)
         proc.check_returncode()
         # flashing succeeded, return special code EX_TEMPFAIL (75), configured in CI to retry the job
@@ -520,7 +553,7 @@ def main():
         suite.load_app_bins = not args.no_load
         global _oocd_inst, _gdb_inst
         arg_list = [args.debug_oocd, log_lev, args.gdb_log_folder, ch, fh]
-        suite.config_tests(_oocd_inst, _gdb_inst, args.toolchain, board_uart_reader, args.serial_port, arg_list)
+        suite.config_tests(_oocd_inst, _gdb_inst, args.toolchain, board_uart_reader, args.serial_ports, arg_list)
         # RUN TESTS
         res = test_runner.run(suite)
         if not res.wasSuccessful() and args.retry:
@@ -530,19 +563,23 @@ def main():
             # restart debugger
             dbg_stop()
             time.sleep(1)
+            if args.gdb_log_folder:
+                args.gdb_log_folder += "_retry"
+            if args.oocd_log_file:
+                args.oocd_log_file += "_retry"
             dbg_start(args.toolchain, args.oocd, args.oocd_tcl, board_tcl['files'], board_tcl['commands'],
                                 args.debug_oocd, board_tcl['chip_name'], board_tcl['target_triple'],
-                                log_lev, ch, fh, args.gdb_log_folder)
+                                log_lev, ch, fh, args.gdb_log_folder, args.no_gdb, args.oocd_log_file)
             err_suite = debug_backend_tests.DebuggerTestsBunch()
 
             if not board_uart_reader:
                 try:
-                    board_uart_reader = SerialPortReader(args.serial_port)
+                    board_uart_reader = SerialPortReader(args.serial_ports[0])
                     setup_logger(board_uart_reader.get_logger(), ch, fh, log_lev)
                     board_uart_reader.start()
                     time.sleep(1)
                 except serial.SerialException as e:
-                    sys.stderr.write('Could not start reader for serial port {}: {}\n'.format(args.serial_port, e))
+                    sys.stderr.write('Could not start reader for serial port {}: {}\n'.format(args.serial_ports[0], e))
                     board_uart_reader = None
 
             ids = [x[0].id() for x in res.errors + res.failures]
@@ -551,7 +588,7 @@ def main():
                     err_suite.addTest(t)
             err_suite.load_app_bins = not args.no_load
             arg_list = [args.debug_oocd, log_lev, args.gdb_log_folder, ch, fh]
-            err_suite.config_tests(_oocd_inst, _gdb_inst, args.toolchain, board_uart_reader, args.serial_port, arg_list)
+            err_suite.config_tests(_oocd_inst, _gdb_inst, args.toolchain, board_uart_reader, args.serial_ports, arg_list)
 
             # to output new report instead of overwriting previous one
             if args.test_runner == 'x':
@@ -609,6 +646,9 @@ if __name__ == '__main__':
     parser.add_argument('--no-load', '-n',
                         help='Do not load test app binaries',
                         action='store_true', default=False)
+    parser.add_argument('--no-gdb', '-ng',
+                        help='Do not connect GDB',
+                        action='store_true', default=False)
     parser.add_argument('--retry', '-r',
                         help='Try to rerun failed tests',
                         action='store_true', default=False)
@@ -623,10 +663,12 @@ if __name__ == '__main__':
                         type=int, default=2)
     parser.add_argument('--log-file', '-l',
                         help='Path to log file. Use "stdout" to log to console.')
+    parser.add_argument('--oocd-log-file', '-ol',
+                        help='Path to OpenOCD log file.')
     parser.add_argument('--gdb-log-folder', '-gl',
                         help='Path to folder for GDB log files.', default='')
-    parser.add_argument('--serial-port', '-u',
-                        help='Name of serial port to grab board\'s UART output.')
+    parser.add_argument('--serial-ports', '-u',
+                        help='Name of serial ports to use for testing, grab board\'s UART output from first one.', nargs='*')
     parser.add_argument('--log-uart', '-lu',
                         help='Connect to UART and log data from it.',
                         action='store_true', default=False)
@@ -639,6 +681,9 @@ if __name__ == '__main__':
                         help='Output dir for runners needed to it',
                         type=str, default='./results')
     args = parser.parse_args()
+    if args.serial_ports is None:
+        args.serial_ports = ['/dev/serial_ports/ttyUSB-esp32', '/dev/serial_ports/ttyACM-esp32'] \
+            if 'builtin' in args.board_type else ['/dev/serial_ports/ttyUSB-esp32']
     if len(args.stats_file) > 0:
         if args.stats_file == 'stdout':
             fhnd,fname = tempfile.mkstemp()

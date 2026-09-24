@@ -9,6 +9,7 @@
 #define OPENOCD_TARGET_ESP32_SYSVIEW_H
 
 #include <stdint.h>
+#include <stdbool.h>
 #include "esp32_apptrace.h"
 
 struct esp32_sysview_cmd_data {
@@ -17,7 +18,7 @@ struct esp32_sysview_cmd_data {
 	struct esp32_apptrace_dest data_dests[ESP32_APPTRACE_MAX_CORES_NUM];
 	uint32_t sv_acc_time_delta;
 	unsigned int sv_last_core_id;
-	int sv_trace_running;
+	int sv_core_stopped[ESP32_APPTRACE_MAX_CORES_NUM];
 	int multicore_fd; /* File descriptor for multicore trace file. Supported since Segger SysView v3.60 */
 };
 
@@ -33,6 +34,11 @@ int esp32_sysview_process_data(struct esp32_apptrace_cmd_ctx *ctx,
 	unsigned int core_id,
 	uint8_t *data,
 	uint32_t data_len);
+
+int esp32_sysview_finish_dests(struct esp32_apptrace_cmd_ctx *ctx);
+
+/* True once every core dest has received TRACE_STOP. */
+bool esp32_sysview_all_stopped(struct esp32_apptrace_cmd_ctx *ctx);
 
 int esp32_sysview_combine_files(int fdout, int fd_core0, int fd_core1);
 

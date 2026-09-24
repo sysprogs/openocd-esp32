@@ -154,15 +154,15 @@ USB-based, parallel port-based, and other standalone boxes that run
 OpenOCD internally. @xref{Debug Adapter Hardware}.
 
 @b{GDB Debug:} It allows ARM7 (ARM7TDMI and ARM720t), ARM9 (ARM920T,
-ARM922T, ARM926EJ--S, ARM966E--S), XScale (PXA25x, IXP42x), Cortex-M3
-(Stellaris LM3, STMicroelectronics STM32 and Energy Micro EFM32) and
+ARM922T, ARM926EJ--S, ARM966E--S), XScale (PXA25x, IXP42x), Cortex-M
+(Stellaris LM3, STMicroelectronics STM32 and Silicon Labs EFM32/EFR32) and
 Intel Quark (x10xx) based cores to be debugged via the GDB protocol.
 
 @b{Flash Programming:} Flash writing is supported for external
 CFI-compatible NOR flashes (Intel and AMD/Spansion command set) and several
 internal flashes (LPC1700, LPC1800, LPC2000, LPC4300, AT91SAM7, AT91SAM3U,
-STR7x, STR9x, LM3, STM32x and EFM32). Preliminary support for various NAND flash
-controllers (LPC3180, Orion, S3C24xx, more) is included.
+STR7x, STR9x, LM3, STM32x and EFM32/EFR32). Preliminary support for various NAND
+flash controllers (LPC3180, Orion, S3C24xx, more) is included.
 
 @section OpenOCD Web Site
 
@@ -619,6 +619,9 @@ emulation model of target hardware.
 @* Link: @url{https://docs.amd.com/r/en-US/pg437-axi-jtag/Introduction}
 @* Link: @url{https://china.xilinx.com/support/documentation/application_notes/xapp1251-xvc-zynq-petalinux.pdf}
 
+@item @b{xvc}
+@* A JTAG driver using Xilinx Virtual Cable over TCP to OpenOCD as JTAG interface.
+
 @item @b{linuxspidev}
 @* A SPI based SWD driver using Linux SPI devices.
 
@@ -630,7 +633,8 @@ emulation model of target hardware.
 This is deprecated from Linux v5.3; prefer using @b{linuxgpiod}.
 
 @item @b{esp_usb_jtag}
-@* A JTAG driver to communicate with builtin debug modules of Espressif ESP32-C3 and ESP32-S3 chips using OpenOCD.
+@* A JTAG driver to communicate with builtin debug modules of Espressif ESP32-C3, ESP32-C6, ESP32-C5, ESP32-C61,
+ESP32-H2, ESP32-H21, ESP32-H4, ESP32-S3 and ESP32-P4 chips using OpenOCD.
 
 @item @b{ch347}
 @* A JTAG driver that works with the WCH CH347F and CH347T chips.
@@ -2368,6 +2372,11 @@ MMU: disabled, D-Cache: disabled, I-Cache: enabled
 @end example
 @end deffn
 
+@deffn {Command} {poll_interval} [milliseconds]
+Set the polling interval of target's state.
+With no parameter, it prints out the current value of polling interval.
+@end deffn
+
 @node Debug Adapter Configuration
 @chapter Debug Adapter Configuration
 @cindex config file, interface
@@ -2496,6 +2505,14 @@ mapping may not support all of the listed options.
 Returns the name of the debug adapter driver being used.
 @end deffn
 
+@deffn {Config Command} {adapter usb vid_pid} (vid pid)+
+Specifies the USB vendor and product IDs of the adapter to use.
+Currently, up to 16 [@var{vid}, @var{pid}] pairs may be given, e.g.
+@example
+adapter usb vid_pid 0xc251 0xf001 0x0d28 0x0204
+@end example
+@end deffn
+
 @deffn {Config Command} {adapter usb location} [<bus>-<port>[.<port>]...]
 Displays or specifies the physical USB port of the adapter to use. The path
 roots at @var{bus} and walks down the physical ports, with each
@@ -2504,6 +2521,11 @@ roots at @var{bus} and walks down the physical ports, with each
 The USB bus topology can be queried with the command @emph{lsusb -t} or @emph{dmesg}.
 
 This command is only available if your libusb1 is at least version 1.0.16.
+@end deffn
+
+@deffn {Config Command} {adapter usb product_name} name
+Specifies the USB product name (the @emph{iProduct} string) of the adapter to use.
+If this is not set, the product name is not used during device selection.
 @end deffn
 
 @deffn {Config Command} {adapter serial} serial_string
@@ -2593,40 +2615,27 @@ mitigates the problem.
 
 The driver supports activity LED through the generic
 command @ref{adapter gpio, @command{adapter gpio led}}.
-
-This driver has these driver-specific command:
-
-@deffn {Config Command} {ch347 vid_pid} [vid pid]+
-The vendor ID and product ID of the CH347F or CH347T device in mode 3. If not specified
-the driver will use vendor ID 0x1a86 and product ID 0x55dd.
-Currently, up to four [@var{vid}, @var{pid}] pairs may be given, e.g.
-@example
-ch347 vid_pid 0x1a86 0x55dd 0x1a86 0x55de
-@end example
 @end deffn
 
-@deffn {Config Command} {ch347 device_desc} description
-If specified connect to a device which exactly has this product description
-string. If not specified the first found device with the correct vendor
-and product ID will be connected.
-@example
-ch347 device_desc "EasyDevKit"
-@end example
-@end deffn
+@deffn {Interface Driver} {cklink}
+Driver for the T-Head CK-Link Lite V2 JTAG probe and Bouffalo Lab
+BL616/BL702 clones, including the built-in debugger on Bouffalo BL618
+evaluation boards. Communication is over USB bulk endpoints using a
+T-Head DebugServer-compatible framed command protocol.
+
+The driver only supports JTAG transport and a single-TAP chain. The
+probe runs at a fixed clock; @command{adapter speed} requests are
+accepted but ignored (with a one-time warning). @command{JTAG_TMS} and
+@command{JTAG_PATHMOVE} are not supported by this probe's protocol.
+
+By default the driver matches 0x42bf/0xb210 (Bouffalo) and
+0x32bf/0xb210 (T-Head). The built-in list can be overridden via
+@command{adapter usb vid_pid}.
 @end deffn
 
 @deffn {Interface Driver} {cmsis-dap}
 ARM CMSIS-DAP compliant based adapter v1 (USB HID based)
 or v2 (USB bulk or TCP/IP).
-
-@deffn {Config Command} {cmsis-dap vid_pid} [vid pid]+
-The vendor ID and product ID of the CMSIS-DAP device. If not specified
-the driver will attempt to auto detect the CMSIS-DAP device.
-Currently, up to eight [@var{vid}, @var{pid}] pairs may be given, e.g.
-@example
-cmsis-dap vid_pid 0xc251 0xf001 0x0d28 0x0204
-@end example
-@end deffn
 
 @deffn {Config Command} {cmsis-dap backend} [@option{auto}|@option{usb_bulk}|@option{hid}|@option{tcp}]
 Specifies how to communicate with the adapter:
@@ -2752,20 +2761,6 @@ signal. The following output buffer configurations are supported:
 
 These interfaces have several commands, used to configure the driver
 before initializing the JTAG scan chain:
-
-@deffn {Config Command} {ftdi vid_pid} [vid pid]+
-The vendor ID and product ID of the adapter. Up to eight
-[@var{vid}, @var{pid}] pairs may be given, e.g.
-@example
-ftdi vid_pid 0x0403 0xcff8 0x15ba 0x0003
-@end example
-@end deffn
-
-@deffn {Config Command} {ftdi device_desc} description
-Provides the USB device description (the @emph{iProduct string})
-of the adapter. If not specified, the device description is ignored
-during device selection.
-@end deffn
 
 @deffn {Config Command} {ftdi channel} channel
 Selects the channel of the FTDI device to use for MPSSE operations. Most
@@ -2911,11 +2906,6 @@ FT232R
 These interfaces have several commands, used to configure the driver
 before initializing the JTAG scan chain:
 
-@deffn {Config Command} {ft232r vid_pid} @var{vid} @var{pid}
-The vendor ID and product ID of the adapter. If not specified, default
-0x0403:0x6001 is used.
-@end deffn
-
 @deffn {Config Command} {ft232r jtag_nums} @var{tck} @var{tms} @var{tdi} @var{tdo}
 Set four JTAG GPIO numbers at once.
 If not specified, default 0 3 1 2 or TXD CTS RXD RTS is used.
@@ -3016,22 +3006,25 @@ remote_bitbang host mysocket
 
 @deffn {Interface Driver} {usb_blaster}
 USB JTAG/USB-Blaster compatibles over one of the userspace libraries
-for FTDI chips. These interfaces have several commands, used to
-configure the driver before initializing the JTAG scan chain:
+for FTDI chips.
 
-@deffn {Config Command} {usb_blaster vid_pid} vid pid
-The vendor ID and product ID of the FTDI FT245 device. If not specified,
-default values are used.
-Currently, only one @var{vid}, @var{pid} pair may be given, e.g. for
-Altera USB-Blaster (default):
+Use @command{adapter usb vid_pid} to specify the vendor and product ID of the
+FT245 device. If not specified, default values are used.
+
+For example, Altera USB-Blaster (default):
 @example
-usb_blaster vid_pid 0x09FB 0x6001
+adapter usb vid_pid 0x09FB 0x6001
 @end example
 The following VID/PID is for Kolja Waschk's USB JTAG:
 @example
-usb_blaster vid_pid 0x16C0 0x06AD
+adapter usb vid_pid 0x16C0 0x06AD
 @end example
-@end deffn
+
+Note that the second VID/PID pair passed to @command{adapter usb vid_pid} is
+used to detect uninitialized devices.
+
+This driver has several commands, used for configuration before initializing the
+JTAG scan chain:
 
 @deffn {Command} {usb_blaster pin} (@option{pin6}|@option{pin8}) (@option{0}|@option{1}|@option{s}|@option{t})
 Sets the state or function of the unused GPIO pins on USB-Blasters
@@ -3350,10 +3343,6 @@ Currently Not Supported.
 Specifies the adapter layout to use.
 @end deffn
 
-@deffn {Config Command} {hla vid_pid} [vid pid]+
-Pairs of vendor IDs and product IDs of the device.
-@end deffn
-
 @deffn {Config Command} {hla stlink_backend} (usb | tcp [port])
 @emph{ST-Link only:} Choose between 'exclusive' USB communication (the default backend) or
 'shared' mode using ST-Link TCP server (the default port is 7184).
@@ -3400,10 +3389,6 @@ available from @url{https://www.st.com/en/development-tools/st-link-server.html,
 ST-LINK server software module}.
 
 @emph{Note:} ST-Link TCP server does not support the SWIM transport.
-@end deffn
-
-@deffn {Config Command} {st-link vid_pid} [vid pid]+
-Pairs of vendor IDs and product IDs of the device.
 @end deffn
 
 @deffn {Command} {st-link cmd} rx_n (tx_byte)+
@@ -3668,20 +3653,6 @@ Currently valid @var{variant} values include:
 (see @uref{http://www.cypress.com/?rID=82870}).
 @end itemize
 @end deffn
-
-@deffn {Config Command} {openjtag device_desc} string
-The USB device description string of the adapter.
-This value is only used with the standard variant.
-@end deffn
-
-@deffn {Config Command} {openjtag vid_pid} vid pid
-The USB vendor ID and product ID of the adapter. If not specified, default
-0x0403:0x6001 is used.
-This value is only used with the standard variant.
-@example
-openjtag vid_pid 0x403 0x6014
-@end example
-@end deffn
 @end deffn
 
 
@@ -3730,7 +3701,24 @@ Specifies the TCP/IP port number of the SystemVerilog DPI server interface.
 @end deffn
 
 @deffn {Config Command} {jtag_dpi set_address} address
-Specifies the TCP/IP address of the SystemVerilog DPI server interface.
+Specifies the hostname or IP address of the SystemVerilog DPI server interface.
+@end deffn
+@end deffn
+
+@deffn {Interface Driver} {jtag_vpi}
+A JTAG driver acting as a client for the JTAG VPI server interface.
+
+@deffn {Config Command} {jtag_vpi set_address} address
+Specifies the hostname or IP address of the JTAG VPI server.
+@end deffn
+
+@deffn {Config Command} {jtag_vpi set_port} port
+Specifies the TCP/IP port number of the JTAG VPI server.
+@end deffn
+
+@deffn {Config Command} {jtag_vpi stop_sim_on_exit} (@option{on}|@option{off})
+Specifies whether simulation stop command shall be sent before OpenOCD exits.
+The default is @option{off}.
 @end deffn
 @end deffn
 
@@ -3797,7 +3785,8 @@ buspirate led 1
 @end deffn
 
 @deffn {Interface Driver} {esp_usb_jtag}
-Espressif JTAG driver to communicate with ESP32-C3, ESP32-S3 chips and ESP USB Bridge board using OpenOCD.
+Espressif JTAG driver to communicate with ESP32-C3, ESP32-C6, ESP32-C5, ESP32-C61, ESP32-H2, ESP32-H21, ESP32-H4,
+ESP32-S3, ESP32-P4 chips and ESP USB Bridge board using OpenOCD.
 These chips have built-in JTAG circuitry and can be debugged without any additional hardware.
 Only an USB cable connected to the D+/D- pins is necessary.
 
@@ -3809,13 +3798,6 @@ Returns the current state of the TDO line
 Manually set the status of the output lines with the order of (tdi tms tck trst srst)
 @example
 espusbjtag setio 0 1 0 1 0
-@end example
-@end deffn
-
-@deffn {Config Command} {espusbjtag vid_pid} vid_pid
-Set vendor ID and product ID for the ESP usb jtag driver
-@example
-espusbjtag vid_pid 0x303a 0x1001
 @end example
 @end deffn
 
@@ -3904,6 +3886,34 @@ protected using other SoC mechanisms.
 @deffn {Config Command} {dmem emu_base_address_range} base_address address_window_size
 Set the emulated address and address window size. Both of these
 parameters must be aligned to page size.
+@end deffn
+
+@deffn {Interface Driver} {xvc}
+This driver implements bitbang mode of JTAG devices
+using Xilinx Virtual Cable messages over TCP/IP.
+This implementation is XVC protocol 1.0/1.1 compatible. However, 'mrd' and 'mwr'
+extensions introduced in version 1.1 are not supported. Refer to:
+@url{https://github.com/Xilinx/XilinxVirtualCable} for protocol specification.
+
+An implementation of XVC server to gpiod is available in
+@url{https://pypi.org/project/xvc-gpiod}
+and is suitable for testing this driver.
+
+Example configuration:
+
+@example
+xvc host 192.168.3.192
+xvc port 5000
+@end example
+@end deffn
+
+@deffn {Config Command} {xvc host} @var{hostname}
+Specifies the hostname of the remote debugger or UNIX socket to connect to.
+@end deffn
+
+@deffn {Config Command} {xvc port} @var{number}
+Specifies the port of the remote process to connect to.
+'0' is a special case where UNIX sockets are used.
 @end deffn
 
 @end deffn
@@ -5175,6 +5185,15 @@ The current implementation supports eSi-32xx cores.
 @item @code{esp32} -- this is an Espressif SoC with dual Xtensa cores.
 @item @code{esp32s2} -- this is an Espressif SoC with single Xtensa core.
 @item @code{esp32s3} -- this is an Espressif SoC with dual Xtensa cores.
+@item @code{esp32c2} -- this is an Espressif SoC with single RISC-V core.
+@item @code{esp32c3} -- this is an Espressif SoC with single RISC-V core.
+@item @code{esp32c6} -- this is an Espressif SoC with single RISC-V core.
+@item @code{esp32c5} -- this is an Espressif SoC with single RISC-V core.
+@item @code{esp32c61} -- this is an Espressif SoC with single RISC-V core.
+@item @code{esp32h2} -- this is an Espressif SoC with single RISC-V core.
+@item @code{esp32h21} -- this is an Espressif SoC with single RISC-V core.
+@item @code{esp32h4} -- this is an Espressif SoC with dual RISC-V cores.
+@item @code{esp32p4} -- this is an Espressif SoC with dual RISC-V cores.
 @item @code{fa526} -- resembles arm920 (w/o Thumb).
 @item @code{feroceon} -- resembles arm926.
 @item @code{hla_target} -- a Cortex-M alternative to work with HL adapters like ST-Link.
@@ -5640,6 +5659,20 @@ When the current target has an MMU which is present and active,
 Otherwise, or if the optional @var{phys} flag is specified,
 @var{addr} is interpreted as a physical address.
 If @var{count} is specified, fills that many units of consecutive address.
+@end deffn
+
+@deffn {Command} {$target_name disassemble} address [count [instruction_set]]
+@deffnx {Command} {$target_name disassemble} list
+This command requires Capstone library installed.
+
+Disassembles @var{count} instructions starting at @var{address}.
+If @var{count} is not specified, a single instruction is disassembled.
+
+It uses the target @var{$target_name} to read the instructions from memory,
+then disassemble them using either the instruction set detected on the same
+target or the one provided with @var{instruction_set}.
+
+With parameter @var{list} it dumps the list of supported instruction set.
 @end deffn
 
 @anchor{targetevents}
@@ -6777,6 +6810,10 @@ This driver supports Artery Technology devices from the following series:
 @item AT32WB415
 @end itemize
 
+Some Holtek HT32F4 devices (e.g. the HT32F49153 and HT32F49163) use a
+flash memory controller that is register-compatible with the Artery AT32F423
+and are therefore programmed by this driver.
+
 Devices with dual-bank flash memory are currently not supported.
 Also, access to user data in the user system data (USD) area is not supported.
 
@@ -7210,25 +7247,25 @@ flash bank $_FLASHNAME cc3220sf 0 0 0 0 $_TARGETNAME
 @end deffn
 
 @deffn {Flash Driver} {efm32}
-All members of the EFM32/EFR32 microcontroller family from Energy Micro (now Silicon Labs)
-include internal flash and use Arm Cortex-M3 or Cortex-M4 cores. The driver automatically
-recognizes a number of these chips using the chip identification register, and
-autoconfigures itself.
+All members of the EFM32/EFR32 microcontroller family from Silicon Labs (former
+Energy Micro) include internal flash and use Arm Cortex-M3, Cortex-M4 or
+Cortex-M33 cores. The driver automatically recognizes a number of these chips
+using the chip identification register, and autoconfigures itself.
 @example
-flash bank $_FLASHNAME efm32 0 0 0 0 $_TARGETNAME
+flash bank $_FLASHNAME efm32 0x80000000 0 0 0 $_TARGETNAME
 @end example
 It supports writing to the user data page, as well as the portion of the lockbits page
-past 512 bytes on chips with larger page sizes. The latter is used by the SiLabs
-bootloader/AppLoader system for encryption keys. Setting protection on these pages is
-currently not supported.
+past 512 bytes on chips with larger page sizes. The latter is used by the
+Silicon Labs bootloader/AppLoader system for encryption keys. Setting protection
+on these pages is currently not supported.
 @example
 flash bank userdata.flash efm32 0x0FE00000 0 0 0 $_TARGETNAME
 flash bank lockbits.flash efm32 0x0FE04000 0 0 0 $_TARGETNAME
 @end example
 
-A special feature of efm32 controllers is that it is possible to completely disable the
-debug interface by writing the correct values to the 'Debug Lock Word'. OpenOCD supports
-this via the following command:
+A special feature of Silicon Labs Series 0/1 controllers is that it is possible
+to completely disable the debug interface by writing the correct values to the
+'Debug Lock Word'. OpenOCD supports this via the following command:
 @example
 efm32 debuglock num
 @end example
@@ -9525,7 +9562,12 @@ port is 6666.
 @section Server Commands
 
 @deffn {Command} {exit}
-Exits the current telnet session.
+Exits the current telnet or Tcl session but the OpenOCD process remains running.
+This command should only be used in telnet or Tcl sessions (and not directly
+in Tcl scripts).
+
+Note: To terminate the whole OpenOCD process, use the
+@command{shutdown} command instead.
 @end deffn
 
 @deffn {Command} {help} [string]
@@ -9554,16 +9596,28 @@ Useful in connection with script files
 (@command{script} command and @command{target_name} configuration).
 @end deffn
 
-@deffn {Command} {shutdown} [@option{error}]
-Close the OpenOCD server, disconnecting all clients (GDB, telnet,
-other). If option @option{error} is used, OpenOCD will return a
-non-zero exit code to the parent process.
+@deffn {Command} {shutdown} [@option{error} | exit_status_code]
+Close the OpenOCD server, disconnecting all clients (GDB, telnet and
+others). Then the OpenOCD process quits.
+
+The optional argument to @command{shutdown} allows to specify a concrete
+exit status for the OpenOCD process. If omitted, exit status zero
+will be used (denoting successful execution).
+
+Command @command{shutdown error} is a synonym for @command{shutdown 1}
+for backward compatibility with older OpenOCD versions.
+
+"Exit status" (also referred to as "exit code" or "exit value") is an integer
+number in the range 0 - 255 which denotes whether a process exited successfully
+or whether an error occurred. Zero exit status means success whereas non-zero
+value denotes an error. The exit status can be obtained and inspected by
+the parent process (for instance via @command{$?} in a shell command line).
 
 If user types CTRL-C or kills OpenOCD, the command @command{shutdown}
-will be automatically executed to cause OpenOCD to exit.
+will also be automatically executed to cause OpenOCD to exit.
 
-It is possible to specify, in the Tcl list @var{pre_shutdown_commands} , a
-set of commands to be automatically executed before @command{shutdown} , e.g.:
+It is possible to specify, in the Tcl list @var{pre_shutdown_commands}, a
+set of commands to be automatically executed before @command{shutdown}, e.g.:
 @example
 lappend pre_shutdown_commands @{echo "Goodbye, my friend ..."@}
 lappend pre_shutdown_commands @{echo "see you soon !"@}
@@ -10494,24 +10548,6 @@ The target may later be resumed in the currently set core_state.
 that is not currently supported in OpenOCD.)
 @end deffn
 
-@deffn {Command} {arm disassemble} address [count [@option{thumb}]]
-@cindex disassemble
-Disassembles @var{count} instructions starting at @var{address}.
-If @var{count} is not specified, a single instruction is disassembled.
-If @option{thumb} is specified, or the low bit of the address is set,
-Thumb2 (mixed 16/32-bit) instructions are used;
-else ARM (32-bit) instructions are used.
-(Processors may also support the Jazelle state, but
-those instructions are not currently understood by OpenOCD.)
-
-Note that all Thumb instructions are Thumb2 instructions,
-so older processors (without Thumb2 support) will still
-see correct disassembly of Thumb code.
-Also, ThumbEE opcodes are the same as Thumb2,
-with a handful of exceptions.
-ThumbEE disassembly currently has no explicit support.
-@end deffn
-
 @deffn {Command} {arm mcr} pX op1 CRn CRm op2 value
 Write @var{value} to a coprocessor @var{pX} register
 passing parameters @var{CRn},
@@ -11313,12 +11349,6 @@ indications. It also establishes the expected, basic cross-trigger configuration
 target code relies on. In a configuration file, the command would typically be called from a
 @code{reset-end} or @code{reset-deassert-post} handler, to re-enable debugging after a system reset.
 However, normally it is not necessary to use the command at all.
-@end deffn
-
-@deffn {Command} {aarch64 disassemble} address [count]
-@cindex disassemble
-Disassembles @var{count} instructions starting at @var{address}.
-If @var{count} is not specified, a single instruction is disassembled.
 @end deffn
 
 @deffn {Command} {aarch64 smp} [on|off]

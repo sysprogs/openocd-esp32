@@ -22,7 +22,6 @@
 #include "armv4_5.h"
 #include "arm_jtag.h"
 #include "breakpoints.h"
-#include "arm_disassembler.h"
 #include <helper/binarybuffer.h>
 #include "algorithm.h"
 #include "register.h"
@@ -950,61 +949,6 @@ COMMAND_HANDLER(handle_arm_core_state_command)
 	return ret;
 }
 
-COMMAND_HANDLER(handle_arm_disassemble_command)
-{
-#if HAVE_CAPSTONE
-	struct target *target = get_current_target(CMD_CTX);
-
-	if (!target) {
-		command_print(CMD, "No target selected");
-		return ERROR_FAIL;
-	}
-
-	struct arm *arm = target_to_arm(target);
-	target_addr_t address;
-	unsigned int count = 1;
-	bool thumb = false;
-
-	if (!is_arm(arm)) {
-		command_print(CMD, "current target isn't an ARM");
-		return ERROR_FAIL;
-	}
-
-	if (arm->core_type == ARM_CORE_TYPE_M_PROFILE) {
-		/* armv7m is always thumb mode */
-		thumb = true;
-	}
-
-	switch (CMD_ARGC) {
-	case 3:
-		if (strcmp(CMD_ARGV[2], "thumb") != 0)
-			return ERROR_COMMAND_SYNTAX_ERROR;
-		thumb = true;
-	/* FALL THROUGH */
-	case 2:
-		COMMAND_PARSE_NUMBER(uint, CMD_ARGV[1], count);
-	/* FALL THROUGH */
-	case 1:
-		COMMAND_PARSE_ADDRESS(CMD_ARGV[0], address);
-		if (address & 0x01) {
-			if (!thumb) {
-				command_print(CMD, "Disassemble as Thumb");
-				thumb = true;
-			}
-			address &= ~1;
-		}
-		break;
-	default:
-		return ERROR_COMMAND_SYNTAX_ERROR;
-	}
-
-	return arm_disassemble(CMD, target, address, count, thumb);
-#else
-	command_print(CMD, "capstone disassembly framework required");
-	return ERROR_FAIL;
-#endif
-}
-
 COMMAND_HANDLER(handle_armv4_5_mcrmrc)
 {
 	bool is_mcr = false;
@@ -1246,13 +1190,6 @@ const struct command_registration arm_all_profiles_command_handlers[] = {
 		.mode = COMMAND_EXEC,
 		.usage = "['arm'|'thumb']",
 		.help = "display/change ARM core state",
-	},
-	{
-		.name = "disassemble",
-		.handler = handle_arm_disassemble_command,
-		.mode = COMMAND_EXEC,
-		.usage = "address [count ['thumb']]",
-		.help = "disassemble instructions",
 	},
 	{
 		.chain = semihosting_common_handlers,
@@ -1837,6 +1774,38 @@ int arm_init_arch_info(struct target *target, struct arm *arm)
 		arm->mcr = arm_default_mcr;
 	if (!arm->mcrr)
 		arm->mcrr = arm_default_mcrr;
+
+	return ERROR_OK;
+}
+
+int armv4_5_insn_set(struct command_invocation *cmd, struct target *target,
+	const char **insn_set)
+{
+	struct arm *arm = target_to_arm(target);
+
+	if (target->state != TARGET_HALTED) {
+		command_print(cmd, "[%s] not halted", target_name(target));
+		return ERROR_TARGET_NOT_HALTED;
+	}
+
+	switch (arm->core_state) {
+	case ARM_STATE_ARM:
+		if (target->endianness == TARGET_BIG_ENDIAN)
+			*insn_set = "armbe";
+		else
+			*insn_set = "arm";
+		break;
+
+	case ARM_STATE_THUMB:
+	case ARM_STATE_THUMB_EE:
+		*insn_set = "thumb";
+		break;
+
+	default:
+		command_print(cmd, "[%s] unknown core_state %d", target_name(target),
+					  arm->core_state);
+		return ERROR_FAIL;
+	}
 
 	return ERROR_OK;
 }

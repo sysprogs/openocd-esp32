@@ -8,7 +8,6 @@
 #include <assert.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <time.h>
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
@@ -139,11 +138,6 @@ typedef struct {
 	 * re-check the busy state before executing these operations. */
 	bool abstract_cmd_maybe_busy;
 } dm013_info_t;
-
-typedef struct {
-	struct list_head list;
-	struct target *target;
-} target_list_t;
 
 struct ac_cache {
 	uint32_t *commands;
@@ -310,8 +304,8 @@ static dm013_info_t *get_dm(struct target *target)
 	}
 
 	info->dm = dm;
-	target_list_t *target_entry;
-	list_for_each_entry(target_entry, &dm->target_list, list) {
+	struct target_list *target_entry;
+	list_for_each_entry(target_entry, &dm->target_list, lh) {
 		if (target_entry->target == target)
 			return dm;
 	}
@@ -321,7 +315,7 @@ static dm013_info_t *get_dm(struct target *target)
 		return NULL;
 	}
 	target_entry->target = target;
-	list_add(&target_entry->list, &dm->target_list);
+	list_add(&target_entry->lh, &dm->target_list);
 
 	return dm;
 }
@@ -333,10 +327,10 @@ static void riscv013_dm_free(struct target *target)
 	if (!dm)
 		return;
 
-	target_list_t *target_entry;
-	list_for_each_entry(target_entry, &dm->target_list, list) {
+	struct target_list *target_entry;
+	list_for_each_entry(target_entry, &dm->target_list, lh) {
 		if (target_entry->target == target) {
-			list_del(&target_entry->list);
+			list_del(&target_entry->lh);
 			free(target_entry);
 			break;
 		}
@@ -452,9 +446,7 @@ static int increase_dmi_busy_delay(struct target *target)
 	if (res != ERROR_OK)
 		return res;
 
-	res = riscv_scan_increase_delay(&info->learned_delays,
-			RISCV_DELAY_BASE);
-	return res;
+	return riscv_scan_increase_delay(&info->learned_delays, RISCV_DELAY_BASE);
 }
 
 static void reset_learned_delays(struct target *target)
@@ -541,7 +533,32 @@ static int dm_write(struct target *target, uint32_t address, uint32_t value)
 	return dmi_write(target, riscv013_get_dmi_address(target, address), value);
 }
 
-static bool check_dbgbase_exists(struct target *target)
+static int activate_dm(struct target *target, uint32_t dm_base_addr)
+{
+	LOG_TARGET_DEBUG(target, "Activating the DM with DMI base address (dbgbase) = 0x%x", dm_base_addr);
+	if (dmi_write(target, DM_DMCONTROL + dm_base_addr, DM_DMCONTROL_DMACTIVE) != ERROR_OK)
+		return ERROR_FAIL;
+
+	int64_t then = timeval_ms() + 1000 * riscv_get_command_timeout_sec();
+	LOG_TARGET_DEBUG(target, "Waiting for the DM to become active");
+	while (1) {
+		uint32_t dmcontrol;
+		if (dmi_read(target, &dmcontrol, DM_DMCONTROL + dm_base_addr) != ERROR_OK)
+			return ERROR_FAIL;
+		if (get_field32(dmcontrol, DM_DMCONTROL_DMACTIVE))
+			break;
+		if (timeval_ms() > then) {
+			LOG_TARGET_ERROR(target, "Debug Module (at address dbgbase=0x%" PRIx32 ") did not become active in %d s. "
+					"Increase the timeout with 'riscv set_command_timeout_sec'",
+					dm_base_addr, riscv_get_command_timeout_sec());
+			return ERROR_TIMEOUT_REACHED;
+		}
+	}
+	LOG_TARGET_DEBUG(target, "DM has become active");
+	return ERROR_OK;
+}
+
+static int check_dbgbase_exists(struct target *target)
 {
 	uint32_t next_dm = 0;
 	unsigned int count = 1;
@@ -551,7 +568,14 @@ static bool check_dbgbase_exists(struct target *target)
 	while (1) {
 		uint32_t current_dm = next_dm;
 		if (current_dm == target->dbgbase)
-			return true;
+			return ERROR_OK;
+
+		uint32_t dmcontrol;
+		if (dmi_read(target, &dmcontrol, DM_DMCONTROL + current_dm) != ERROR_OK)
+			break;
+		if (!get_field32(dmcontrol, DM_DMCONTROL_DMACTIVE) && activate_dm(target, current_dm) != ERROR_OK)
+			break;
+
 		if (dmi_read(target, &next_dm, DM_NEXTDM + current_dm) != ERROR_OK)
 			break;
 		LOG_TARGET_DEBUG(target, "dm @ 0x%x --> nextdm=0x%x", current_dm, next_dm);
@@ -572,7 +596,7 @@ static bool check_dbgbase_exists(struct target *target)
 			break;
 		}
 	}
-	return false;
+	return ERROR_FAIL;
 }
 
 static int dmstatus_read(struct target *target, uint32_t *dmstatus,
@@ -650,7 +674,7 @@ static int wait_for_idle(struct target *target, uint32_t *abstractcs)
 		return ERROR_FAIL;
 	}
 
-	time_t start = time(NULL);
+	int64_t then = timeval_ms() + 1000 * riscv_get_command_timeout_sec();
 	do {
 		if (dm_read(target, abstractcs, DM_ABSTRACTCS) != ERROR_OK) {
 			/* We couldn't read abstractcs. For safety, overwrite the output value to
@@ -665,7 +689,7 @@ static int wait_for_idle(struct target *target, uint32_t *abstractcs)
 			dm->abstract_cmd_maybe_busy = false;
 			return ERROR_OK;
 		}
-	} while ((time(NULL) - start) < riscv_get_command_timeout_sec());
+	} while (timeval_ms() < then);
 
 	LOG_TARGET_ERROR(target,
 		"Timed out after %ds waiting for busy to go low (abstractcs=0x%" PRIx32 "). "
@@ -736,6 +760,14 @@ clear_cmderr:
 	/* TODO: can we add a more substantial recovery if the clear operation fails? */
 	if (dm_write(target, DM_ABSTRACTCS, DM_ABSTRACTCS_CMDERR) != ERROR_OK)
 		LOG_TARGET_ERROR(target, "could not clear abstractcs error");
+	/* ESPRESSIF */
+	if (dm_read(target, &abstractcs, DM_ABSTRACTCS) == ERROR_OK
+			&& get_field(abstractcs, DM_ABSTRACTCS_BUSY)) {
+		LOG_TARGET_WARNING(target, "Abstractct.busy appears stuck, issue haltreq in attempt to clear it");
+		uint32_t dmcontrol;
+		dm_read(target, &dmcontrol, DM_DMCONTROL);
+		dm_write(target, DM_DMCONTROL, dmcontrol | DM_DMCONTROL_HALTREQ);
+	}
 	return res;
 }
 
@@ -1467,13 +1499,31 @@ static int register_read_progbuf(struct target *target, uint64_t *value,
 {
 	assert(target->state == TARGET_HALTED);
 
-	if (number >= GDB_REGNO_FPR0 && number <= GDB_REGNO_FPR31)
-		return fpr_read_progbuf(target, value, number);
-	else if (number >= GDB_REGNO_CSR0 && number <= GDB_REGNO_CSR4095)
-		return csr_read_progbuf(target, value, number);
+	int res;
+	uint64_t new_value;
+	if (number >= GDB_REGNO_FPR0 && number <= GDB_REGNO_FPR31) {
+		res = fpr_read_progbuf(target, &new_value, number);
+	} else if (number >= GDB_REGNO_CSR0 && number <= GDB_REGNO_CSR4095) {
+		res = csr_read_progbuf(target, &new_value, number);
+	} else {
+		LOG_TARGET_ERROR(target, "Unexpected read of %s via program buffer.",
+				riscv_reg_gdb_regno_name(target, number));
+		return ERROR_FAIL;
+	}
+	if (res != ERROR_OK)
+		return res;
 
-	LOG_TARGET_ERROR(target, "Unexpected read of %s via program buffer.",
-			riscv_reg_gdb_regno_name(target, number));
+	unsigned int size_bits = register_size(target, number);
+	unsigned int value_bits = sizeof(*value) * CHAR_BIT;
+	assert(size_bits <= value_bits);
+	if (size_bits == value_bits || new_value >> size_bits == 0) {
+		*value = new_value;
+		return ERROR_OK;
+	}
+	LOG_TARGET_ERROR(target, "Value 0x%" PRIx64 " read from register %s"
+			" exceeds the size of the register (%u bits). This is a HW bug."
+			" Discarding the value", new_value,
+			riscv_reg_gdb_regno_name(target, number), size_bits);
 	return ERROR_FAIL;
 }
 
@@ -1686,7 +1736,7 @@ static int register_read_direct(struct target *target, riscv_reg_t *value,
 
 static int wait_for_authbusy(struct target *target, uint32_t *dmstatus)
 {
-	time_t start = time(NULL);
+	int64_t then = timeval_ms() + 1000 * riscv_get_command_timeout_sec();
 	while (1) {
 		uint32_t value;
 		if (dmstatus_read(target, &value, false) != ERROR_OK)
@@ -1695,7 +1745,7 @@ static int wait_for_authbusy(struct target *target, uint32_t *dmstatus)
 			*dmstatus = value;
 		if (!get_field(value, DM_DMSTATUS_AUTHBUSY))
 			break;
-		if (time(NULL) - start > riscv_get_command_timeout_sec()) {
+		if (timeval_ms() > then) {
 			LOG_TARGET_ERROR(target, "Timed out after %ds waiting for authbusy to go low (dmstatus=0x%x). "
 					"Increase the timeout with riscv set_command_timeout_sec.",
 					riscv_get_command_timeout_sec(),
@@ -1889,14 +1939,14 @@ static int reset_dm(struct target *target)
 			if (result != ERROR_OK)
 				return result;
 
-			const time_t start = time(NULL);
+			int64_t then = timeval_ms() + 1000 * riscv_get_command_timeout_sec();
 			LOG_TARGET_DEBUG(target, "Waiting for the DM to acknowledge reset.");
 			do {
 				result = dm_read(target, &dmcontrol, DM_DMCONTROL);
 				if (result != ERROR_OK)
 					return result;
 
-				if (time(NULL) - start > riscv_get_command_timeout_sec()) {
+				if (timeval_ms() > then) {
 					LOG_TARGET_ERROR(target, "DM didn't acknowledge reset in %d s. "
 							"Increase the timeout with 'riscv set_command_timeout_sec'.",
 							riscv_get_command_timeout_sec());
@@ -1906,26 +1956,12 @@ static int reset_dm(struct target *target)
 			LOG_TARGET_DEBUG(target, "DM reset initiated.");
 		}
 	}
+	/* TODO: Move the code above into `deactivate_dm()` function
+	 * (a logical counterpart to activate_dm()). */
 
-	LOG_TARGET_DEBUG(target, "Activating the DM.");
-	result = dm_write(target, DM_DMCONTROL, DM_DMCONTROL_DMACTIVE);
+	result = activate_dm(target, dm->base);
 	if (result != ERROR_OK)
 		return result;
-
-	const time_t start = time(NULL);
-	LOG_TARGET_DEBUG(target, "Waiting for the DM to come out of reset.");
-	do {
-		result = dm_read(target, &dmcontrol, DM_DMCONTROL);
-		if (result != ERROR_OK)
-			return result;
-
-		if (time(NULL) - start > riscv_get_command_timeout_sec()) {
-			LOG_TARGET_ERROR(target, "Debug Module did not become active in %d s. "
-					"Increase the timeout with 'riscv set_command_timeout_sec'.",
-					riscv_get_command_timeout_sec());
-			return ERROR_TIMEOUT_REACHED;
-		}
-	} while (!get_field32(dmcontrol, DM_DMCONTROL_DMACTIVE));
 
 	LOG_TARGET_DEBUG(target, "DM successfully reset.");
 	dm->was_reset = true;
@@ -1975,9 +2011,8 @@ static int examine_dm(struct target *target)
 		get_field(dmcontrol, DM_DMCONTROL_HARTSELLO);
 
 	/* Before doing anything else we must first enumerate the harts. */
-	const int max_hart_count = MIN(RISCV_MAX_HARTS, hartsel + 1);
 	if (dm->hart_count < 0) {
-		for (int i = 0; i < max_hart_count; ++i) {
+		for (uint32_t i = 0; i <= hartsel; ++i) {
 			/* TODO: This is extremely similar to
 			 * riscv013_get_hart_state().
 			 * It would be best to reuse the code.
@@ -2084,7 +2119,7 @@ static int examine(struct target *target)
 			info->abits, RISCV013_DTMCS_ABITS_MIN);
 	}
 
-	if (!check_dbgbase_exists(target)) {
+	if (check_dbgbase_exists(target) != ERROR_OK) {
 		LOG_TARGET_ERROR(target, "Could not find debug module with DMI base address (dbgbase) = 0x%x", target->dbgbase);
 		return ERROR_FAIL;
 	}
@@ -2092,6 +2127,14 @@ static int examine(struct target *target)
 	int result = examine_dm(target);
 	if (result != ERROR_OK)
 		return result;
+
+	dm013_info_t *dm = get_dm(target);
+	if (target->coreid >= dm->hart_count) {
+		LOG_TARGET_ERROR(target, "Hart index %d is too large. The maximum"
+			" index for this Debug Module is %d",
+			target->coreid, dm->hart_count - 1);
+		return ERROR_FAIL;
+	}
 
 	result = dm013_select_target(target);
 	if (result != ERROR_OK)
@@ -2154,6 +2197,12 @@ static int examine(struct target *target)
 	enum riscv_hart_state state_at_examine_start;
 	if (riscv_get_hart_state(target, &state_at_examine_start) != ERROR_OK)
 		return ERROR_FAIL;
+
+	if (state_at_examine_start == RISCV_STATE_UNAVAILABLE) {
+		target->state = TARGET_UNAVAILABLE;
+		LOG_TARGET_INFO(target, "unavailable.");
+		return ERROR_FAIL;
+	}
 
 	RISCV_INFO(r);
 	const bool hart_halted_at_examine_start = state_at_examine_start == RISCV_STATE_HALTED;
@@ -2240,8 +2289,8 @@ static int riscv013_authdata_write(struct target *target, uint32_t value, unsign
 		dm013_info_t *dm = get_dm(target);
 		if (!dm)
 			return ERROR_FAIL;
-		target_list_t *entry;
-		list_for_each_entry(entry, &dm->target_list, list) {
+		struct target_list *entry;
+		list_for_each_entry(entry, &dm->target_list, lh) {
 			if (target_examine_one(entry->target) != ERROR_OK)
 				result = ERROR_FAIL;
 		}
@@ -2352,7 +2401,7 @@ static int try_set_vsew(struct target *target, unsigned int *debug_vsew)
 
 static int prep_for_vector_access(struct target *target,
 		riscv_reg_t *orig_mstatus, riscv_reg_t *orig_vtype, riscv_reg_t *orig_vl,
-		unsigned int *debug_vl, unsigned int *debug_vsew)
+		riscv_reg_t *orig_vstart, unsigned int *debug_vl, unsigned int *debug_vsew)
 {
 	assert(orig_mstatus);
 	assert(orig_vtype);
@@ -2369,12 +2418,15 @@ static int prep_for_vector_access(struct target *target,
 	if (prep_for_register_access(target, orig_mstatus, GDB_REGNO_VL) != ERROR_OK)
 		return ERROR_FAIL;
 
-	/* Save vtype and vl. */
+	/* Save original vstart, vtype and vl values for later restoration */
+	if (riscv_reg_get(target, orig_vstart, GDB_REGNO_VSTART) != ERROR_OK)
+		return ERROR_FAIL;
 	if (riscv_reg_get(target, orig_vtype, GDB_REGNO_VTYPE) != ERROR_OK)
 		return ERROR_FAIL;
 	if (riscv_reg_get(target, orig_vl, GDB_REGNO_VL) != ERROR_OK)
 		return ERROR_FAIL;
-
+	/* Note: vstart may be non-zero at this point. Updating vsew (via VTYPE)
+	 * reset vstart to 0. */
 	if (try_set_vsew(target, debug_vsew) != ERROR_OK)
 		return ERROR_FAIL;
 	/* Set the number of elements to be updated with results from a vector
@@ -2385,12 +2437,14 @@ static int prep_for_vector_access(struct target *target,
 }
 
 static int cleanup_after_vector_access(struct target *target,
-		riscv_reg_t mstatus, riscv_reg_t vtype, riscv_reg_t vl)
+		riscv_reg_t mstatus, riscv_reg_t vtype, riscv_reg_t vl, riscv_reg_t vstart)
 {
-	/* Restore vtype and vl. */
+	/* Restore vtype, vl and vstart. */
 	if (riscv_reg_write(target, GDB_REGNO_VTYPE, vtype) != ERROR_OK)
 		return ERROR_FAIL;
 	if (riscv_reg_write(target, GDB_REGNO_VL, vl) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_reg_write(target, GDB_REGNO_VSTART, vstart) != ERROR_OK)
 		return ERROR_FAIL;
 	return cleanup_after_register_access(target, mstatus, GDB_REGNO_VL);
 }
@@ -2403,10 +2457,10 @@ int riscv013_get_register_buf(struct target *target, uint8_t *value,
 	if (dm013_select_target(target) != ERROR_OK)
 		return ERROR_FAIL;
 
-	riscv_reg_t mstatus, vtype, vl;
+	riscv_reg_t mstatus, vtype, vl, vstart;
 	unsigned int debug_vl, debug_vsew;
 
-	if (prep_for_vector_access(target, &mstatus, &vtype, &vl,
+	if (prep_for_vector_access(target, &mstatus, &vtype, &vl, &vstart,
 				&debug_vl, &debug_vsew) != ERROR_OK)
 		return ERROR_FAIL;
 
@@ -2444,7 +2498,7 @@ int riscv013_get_register_buf(struct target *target, uint8_t *value,
 		}
 	}
 
-	if (cleanup_after_vector_access(target, mstatus, vtype, vl) != ERROR_OK)
+	if (cleanup_after_vector_access(target, mstatus, vtype, vl, vstart) != ERROR_OK)
 		return ERROR_FAIL;
 
 	return result;
@@ -2458,10 +2512,10 @@ int riscv013_set_register_buf(struct target *target, enum gdb_regno regno,
 	if (dm013_select_target(target) != ERROR_OK)
 		return ERROR_FAIL;
 
-	riscv_reg_t mstatus, vtype, vl;
+	riscv_reg_t mstatus, vtype, vl, vstart;
 	unsigned int debug_vl, debug_vsew;
 
-	if (prep_for_vector_access(target, &mstatus, &vtype, &vl,
+	if (prep_for_vector_access(target, &mstatus, &vtype, &vl, &vstart,
 				&debug_vl, &debug_vsew) != ERROR_OK)
 		return ERROR_FAIL;
 
@@ -2483,7 +2537,7 @@ int riscv013_set_register_buf(struct target *target, enum gdb_regno regno,
 			break;
 	}
 
-	if (cleanup_after_vector_access(target, mstatus, vtype, vl) != ERROR_OK)
+	if (cleanup_after_vector_access(target, mstatus, vtype, vl, vstart) != ERROR_OK)
 		return ERROR_FAIL;
 
 	return result;
@@ -2576,7 +2630,7 @@ static int batch_run_timeout(struct target *target, struct riscv_batch *batch)
 	riscv_batch_add_nop(batch);
 
 	size_t finished_scans = 0;
-	const time_t start = time(NULL);
+	int64_t then = timeval_ms() + 1000 * riscv_get_command_timeout_sec();
 	const unsigned int old_base_delay = riscv_scan_get_delay(&info->learned_delays,
 			RISCV_DELAY_BASE);
 	int result;
@@ -2599,7 +2653,7 @@ static int batch_run_timeout(struct target *target, struct riscv_batch *batch)
 		result = increase_dmi_busy_delay(target);
 		if (result != ERROR_OK)
 			return result;
-	} while (time(NULL) - start < riscv_get_command_timeout_sec());
+	} while (timeval_ms() < then);
 
 	assert(result == ERROR_OK);
 	assert(riscv_batch_was_batch_busy(batch));
@@ -2835,7 +2889,9 @@ static int riscv013_get_hart_state(struct target *target, enum riscv_hart_state 
 		 * message that a reset happened, that the target is running, and then
 		 * that it is halted again once the request goes through.
 		 */
-		if (target->state == TARGET_HALTED) {
+		/* Espressif - keep running after external reset */
+		RISCV_INFO(r);
+		if (!r->on_reset && target->state == TARGET_HALTED) {
 			dmcontrol |= DM_DMCONTROL_HALTREQ;
 			/* `haltreq` should not be issued if `abstractcs.busy`
 			 * is set. */
@@ -2846,9 +2902,13 @@ static int riscv013_get_hart_state(struct target *target, enum riscv_hart_state 
 		dm_write(target, DM_DMCONTROL, dmcontrol);
 
 		/* ESPRESSIF OCD-1018 */
-		RISCV_INFO(r);
 		if (r->on_reset)
 			r->on_reset(target);
+		if (strcmp(target->cmd_name, "esp32p4.lp.cpu") && strcmp(target->cmd_name, "esp32s31.lp.cpu")) {
+			/* assume target running after reset, causes issue for p4 lpcore */
+			*state = RISCV_STATE_RUNNING;
+			return ERROR_OK;
+		}
 		/*************/
 	}
 	if (get_field(dmstatus, DM_DMSTATUS_ALLNONEXISTENT)) {
@@ -3030,14 +3090,14 @@ static int deassert_reset(struct target *target)
 	uint32_t dmstatus;
 	const unsigned int orig_base_delay = riscv_scan_get_delay(&info->learned_delays,
 			RISCV_DELAY_BASE);
-	time_t start = time(NULL);
+	int64_t then = timeval_ms() + 1000 * riscv_get_command_timeout_sec();
 	LOG_TARGET_DEBUG(target, "Waiting for hart to come out of reset.");
 	do {
 		result = dmstatus_read(target, &dmstatus, true);
 		if (result != ERROR_OK)
 			return result;
 
-		if (time(NULL) - start > riscv_get_command_timeout_sec()) {
+		if (timeval_ms() > then) {
 			LOG_TARGET_ERROR(target, "Hart didn't leave reset in %ds; "
 					"dmstatus=0x%x (allunavail=%s, allhavereset=%s); "
 					"Increase the timeout with riscv set_command_timeout_sec.",
@@ -3224,13 +3284,13 @@ static target_addr_t sb_read_address(struct target *target)
 
 static int read_sbcs_nonbusy(struct target *target, uint32_t *sbcs)
 {
-	time_t start = time(NULL);
+	int64_t then = timeval_ms() + 1000 * riscv_get_command_timeout_sec();
 	while (1) {
 		if (dm_read(target, sbcs, DM_SBCS) != ERROR_OK)
 			return ERROR_FAIL;
 		if (!get_field(*sbcs, DM_SBCS_SBBUSY))
 			return ERROR_OK;
-		if (time(NULL) - start > riscv_get_command_timeout_sec()) {
+		if (timeval_ms() > then) {
 			LOG_TARGET_ERROR(target, "Timed out after %ds waiting for sbbusy to go low (sbcs=0x%x). "
 					"Increase the timeout with riscv set_command_timeout_sec.",
 					riscv_get_command_timeout_sec(), *sbcs);
@@ -3421,9 +3481,6 @@ static int read_memory_bus_v1(struct target *target, const struct riscv_mem_acce
 	target_addr_t next_address = address;
 	target_addr_t end_address = address + (increment ? count : 1) * size;
 
-	/* TODO: Reading all the elements in a single batch will boost the
-	 * performance.
-	 */
 	while (next_address < end_address) {
 		uint32_t sbcs_write = set_field(0, DM_SBCS_SBREADONADDR, 1);
 		sbcs_write |= sb_sbaccess(size);
@@ -3448,17 +3505,20 @@ static int read_memory_bus_v1(struct target *target, const struct riscv_mem_acce
 		 * be unnecessary.
 		 */
 		uint32_t sbvalue[4] = {0};
-		for (uint32_t i = (next_address - address) / size; i < count - 1; i++) {
+		for (uint32_t i = (next_address - address) / size; i < count - 1;) {
 			const uint32_t size_in_words = DIV_ROUND_UP(size, 4);
-			struct riscv_batch *batch = riscv_batch_alloc(target, size_in_words);
+			const uint32_t chunk = MIN(256 / size_in_words, (count - 1 - i));
+			struct riscv_batch *batch = riscv_batch_alloc(target, chunk * size_in_words);
 			/* Read of sbdata0 must be performed as last because it
 			 * starts the new bus data transfer
 			 * (in case "sbcs.sbreadondata" was set above).
 			 * We don't want to start the next bus read before we
 			 * fetch all the data from the last bus read. */
-			for (uint32_t j = size_in_words - 1; j > 0; --j)
-				riscv_batch_add_dm_read(batch, sbdata[j], RISCV_DELAY_BASE);
-			riscv_batch_add_dm_read(batch, sbdata[0], RISCV_DELAY_SYSBUS_READ);
+			for (uint32_t m = 0; m < chunk; m++) {
+				for (uint32_t j = size_in_words - 1; j > 0; --j)
+					riscv_batch_add_dm_read(batch, sbdata[j], RISCV_DELAY_BASE);
+				riscv_batch_add_dm_read(batch, sbdata[0], RISCV_DELAY_SYSBUS_READ);
+			}
 
 			int res = batch_run_timeout(target, batch);
 			if (res != ERROR_OK) {
@@ -3467,14 +3527,40 @@ static int read_memory_bus_v1(struct target *target, const struct riscv_mem_acce
 			}
 
 			const size_t last_key = batch->read_keys_used - 1;
-			for (size_t k = 0; k <= last_key; ++k) {
-				sbvalue[k] = riscv_batch_get_dmi_read_data(batch, last_key - k);
-				buf_set_u32(buffer + i * size + k * 4, 0, MIN(32, 8 * size), sbvalue[k]);
+			size_t k = 0;
+			for (uint32_t m = 0; k <= last_key && m < chunk; m++) {
+				for (int j = size_in_words - 1; j >= 0; j--) {
+					uint32_t d = riscv_batch_get_dmi_read_data(batch, k);
+					buf_set_u32(buffer + (i + m) * size + j * 4, 0, MIN(32, 8 * size), d);
+					sbvalue[j] = d;
+					k++;
+				}
+				const target_addr_t read_addr = address + (i + m) * increment;
+				log_memory_access(read_addr, sbvalue, size, true);
 			}
-
 			riscv_batch_free(batch);
-			const target_addr_t read_addr = address + i * increment;
-			log_memory_access(read_addr, sbvalue, size, true);
+			if (increment) {
+				uint32_t sbcs_read = 0;
+				if (read_sbcs_nonbusy(target, &sbcs_read) != ERROR_OK)
+					return ERROR_FAIL;
+				if (get_field(sbcs_read, DM_SBCS_SBBUSYERROR)) {
+					/* We read while the target was busy. */
+					LOG_TARGET_DEBUG(target, "Sbbusyerror encountered during system bus read.");
+					if (dm_write(target, DM_SBCS, sbcs_read | DM_SBCS_SBBUSYERROR | DM_SBCS_SBERROR) != ERROR_OK)
+						return ERROR_FAIL;
+					if (target->state == TARGET_HALTED
+							&& riscv_scan_increase_delay(&info->learned_delays, RISCV_DELAY_SYSBUS_READ) != ERROR_OK)
+						return ERROR_FAIL;
+					if (sb_write_address(target, address + i * size, RISCV_DELAY_SYSBUS_READ) != ERROR_OK)
+						return ERROR_FAIL;
+					continue;
+				}
+				if (get_field(sbcs_read, DM_SBCS_SBERROR)) {
+					dm_write(target, DM_SBCS, DM_SBCS_SBERROR);
+					return ERROR_FAIL;
+				}
+			}
+			i += chunk;
 		}
 
 		uint32_t sbcs_read = 0;
@@ -3518,11 +3604,14 @@ static int read_memory_bus_v1(struct target *target, const struct riscv_mem_acce
 							buffer + current_address - address) != ERROR_OK)
 					return ERROR_FAIL;
 			}
-
-			int res = riscv_scan_increase_delay(&info->learned_delays,
-					RISCV_DELAY_SYSBUS_READ);
-			if (res != ERROR_OK)
-				return res;
+			/* Espressif - dont increase delay when we retry if the target is running.
+			   The delay can reach high values and slow down later operations. */
+			if (target->state == TARGET_HALTED) {
+				int res = riscv_scan_increase_delay(&info->learned_delays,
+						RISCV_DELAY_SYSBUS_READ);
+				if (res != ERROR_OK)
+					return res;
+			}
 			continue;
 		}
 
@@ -5129,10 +5218,6 @@ static unsigned int riscv013_get_progbufsize(const struct target *target)
 	return r->progbufsize;
 }
 
-static int arch_state(struct target *target)
-{
-	return ERROR_OK;
-}
 
 struct target_type riscv013_target = {
 	.name = "riscv",
@@ -5147,8 +5232,6 @@ struct target_type riscv013_target = {
 
 	.assert_reset = assert_reset,
 	.deassert_reset = deassert_reset,
-
-	.arch_state = arch_state
 };
 
 /*** 0.13-specific implementations of various RISC-V helper functions. ***/
@@ -5236,10 +5319,10 @@ static int select_prepped_harts(struct target *target)
 	if (!hawindow)
 		return ERROR_FAIL;
 
-	target_list_t *entry;
+	struct target_list *entry;
 	unsigned int total_selected = 0;
 	unsigned int selected_index = 0;
-	list_for_each_entry(entry, &dm->target_list, list) {
+	list_for_each_entry(entry, &dm->target_list, lh) {
 		struct target *t = entry->target;
 		struct riscv_info *info = riscv_info(t);
 		riscv013_info_t *info_013 = get_info(t);
@@ -5336,8 +5419,8 @@ static int riscv013_halt_go(struct target *target)
 	dm_write(target, DM_DMCONTROL, dmcontrol);
 
 	if (dm->current_hartid == HART_INDEX_MULTIPLE) {
-		target_list_t *entry;
-		list_for_each_entry(entry, &dm->target_list, list) {
+		struct target_list *entry;
+		list_for_each_entry(entry, &dm->target_list, lh) {
 			struct target *t = entry->target;
 			uint32_t t_dmstatus;
 			if (get_field(dmstatus, DM_DMSTATUS_ALLHALTED) ||

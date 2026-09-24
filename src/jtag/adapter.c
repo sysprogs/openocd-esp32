@@ -34,12 +34,18 @@ enum adapter_clk_mode {
 
 #define DEFAULT_CLOCK_SPEED_KHZ		100U
 
+#define MAX_USB_IDS 16
+
 /**
  * Adapter configuration
  */
 static struct {
 	bool adapter_initialized;
 	char *usb_location;
+	// vid = pid = 0 marks the end of the list.
+	uint16_t usb_vids[MAX_USB_IDS + 1];
+	uint16_t usb_pids[MAX_USB_IDS + 1];
+	char *product_name;
 	char *serial;
 	enum adapter_clk_mode clock_mode;
 	int speed_khz;
@@ -68,9 +74,6 @@ static const struct gpio_map {
 	[ADAPTER_GPIO_IDX_USER0] = { "user0", ADAPTER_GPIO_DIRECTION_BIDIRECTIONAL, true, true, true },
 };
 
-#ifdef HAVE_LIBUSB_GET_PORT_NUMBERS
-static void adapter_usb_set_location(const char *location);
-#endif
 static int adapter_config_khz(unsigned int khz);
 
 bool is_adapter_initialized(void)
@@ -153,14 +156,6 @@ int adapter_init(struct command_context *cmd_ctx)
 			return ERROR_JTAG_INIT_FAILED;
 	}
 
-#ifdef HAVE_LIBUSB_GET_PORT_NUMBERS
-	char *loc = getenv("OPENOCD_USB_ADAPTER_LOCATION");
-	if (loc) {
-		LOG_INFO("use USB location specified via env var '%s'", loc);
-		adapter_usb_set_location(loc);
-	}
-#endif
-
 	retval = adapter_driver->init();
 	if (retval != ERROR_OK)
 		return retval;
@@ -207,6 +202,7 @@ int adapter_quit(void)
 
 	free(adapter_config.serial);
 	free(adapter_config.usb_location);
+	free(adapter_config.product_name);
 
 	struct jtag_tap *t = jtag_all_taps();
 	while (t) {
@@ -336,9 +332,24 @@ static void adapter_usb_set_location(const char *location)
 }
 #endif /* HAVE_LIBUSB_GET_PORT_NUMBERS */
 
+const uint16_t *adapter_usb_get_vids(void)
+{
+	return adapter_config.usb_vids;
+}
+
+const uint16_t *adapter_usb_get_pids(void)
+{
+	return adapter_config.usb_pids;
+}
+
 const char *adapter_usb_get_location(void)
 {
 	return adapter_config.usb_location;
+}
+
+const char *adapter_usb_get_product_name(void)
+{
+	return adapter_config.product_name;
 }
 
 bool adapter_usb_location_equal(uint8_t dev_bus, uint8_t *port_path, size_t path_len)
@@ -981,7 +992,7 @@ COMMAND_HANDLER(adapter_gpio_config_handler)
 	while (i < CMD_ARGC) {
 		LOG_DEBUG("Processing %s", CMD_ARGV[i]);
 
-		if (isdigit(*CMD_ARGV[i])) {
+		if (isdigit((unsigned char)*CMD_ARGV[i])) {
 			COMMAND_PARSE_NUMBER(uint, CMD_ARGV[i], gpio_config->gpio_num);
 			++i;
 			continue;
@@ -1115,7 +1126,61 @@ COMMAND_HANDLER(handle_usb_location_command)
 }
 #endif /* HAVE_LIBUSB_GET_PORT_NUMBERS */
 
+COMMAND_HANDLER(handle_usb_vid_pid_command)
+{
+	if (MAX_USB_IDS * 2 < CMD_ARGC) {
+		LOG_WARNING("ignoring extra IDs in vid_pid "
+			"(maximum is %d pairs)", MAX_USB_IDS);
+		CMD_ARGC = MAX_USB_IDS * 2;
+	}
+
+	if (CMD_ARGC < 2 || (CMD_ARGC & 1)) {
+		LOG_WARNING("incomplete vid_pid configuration directive");
+		return ERROR_COMMAND_SYNTAX_ERROR;
+	}
+
+	unsigned int i;
+	for (i = 0; i < CMD_ARGC; i += 2) {
+		COMMAND_PARSE_NUMBER(u16, CMD_ARGV[i], adapter_config.usb_vids[i / 2]);
+		COMMAND_PARSE_NUMBER(u16, CMD_ARGV[i + 1], adapter_config.usb_pids[i / 2]);
+	}
+
+	/* null termination */
+	adapter_config.usb_vids[i / 2] = 0;
+	adapter_config.usb_pids[i / 2] = 0;
+
+	return ERROR_OK;
+}
+
+COMMAND_HANDLER(handle_usb_product_name_command)
+{
+	if (CMD_ARGC != 1)
+		return ERROR_COMMAND_SYNTAX_ERROR;
+
+	free(adapter_config.product_name);
+	adapter_config.product_name = NULL;
+
+	if (*CMD_ARGV[0])
+		adapter_config.product_name = strdup(CMD_ARGV[0]);
+
+	return ERROR_OK;
+}
+
 static const struct command_registration adapter_usb_command_handlers[] = {
+	{
+		.name = "vid_pid",
+		.handler = &handle_usb_vid_pid_command,
+		.mode = COMMAND_CONFIG,
+		.help = "set the USB VID and PID of the USB device",
+		.usage = "(vid pid)*",
+	},
+	{
+		.name = "product_name",
+		.handler = &handle_usb_product_name_command,
+		.mode = COMMAND_CONFIG,
+		.help = "set the USB product name of the USB device",
+		.usage = "name",
+	},
 #ifdef HAVE_LIBUSB_GET_PORT_NUMBERS
 	{
 		.name = "location",

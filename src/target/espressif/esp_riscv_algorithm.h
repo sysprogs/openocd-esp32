@@ -25,9 +25,10 @@ struct esp_riscv_algorithm {
 	 * Set to GDB_REGNO_COUNT-1 to save all existing registers. @see enum gdb_regno. */
 	size_t max_saved_reg;
 	uint64_t saved_registers[ESP_RISCV_MAX_REGISTERS];
-	bool valid_saved_registers[ESP_RISCV_MAX_REGISTERS];
 	uint32_t saved_assist_debug_monitor_register;
 	uint64_t masked_mstatus;
+	/** Stub trap entry address for mtvec */
+	target_addr_t trap_entry_addr;
 };
 
 extern const struct esp_algorithm_hw riscv_algo_hw;

@@ -24,15 +24,57 @@ dist_esptools_DATA = \
 
 esp32c6stubsdir = $(pkgdatadir)/espressif/stub_bins/esp32c6
 dist_esp32c6stubs_DATA = \
-	contrib/loaders/flash/espressif/esp32c6/inc/stub_flash_idf_binary_code.inc \
-	contrib/loaders/flash/espressif/esp32c6/inc/stub_flash_idf_binary_data.inc \
-	contrib/loaders/flash/espressif/esp32c6/stub_flash_idf_image.h
+	contrib/loaders/flash/espressif/images/esp32c6/stub_flash_idf_binary_code.inc \
+	contrib/loaders/flash/espressif/images/esp32c6/stub_flash_idf_binary_data.inc \
+	contrib/loaders/flash/espressif/images/esp32c6/stub_flash_idf_image.h
 
 esp32h2stubsdir = $(pkgdatadir)/espressif/stub_bins/esp32h2
 dist_esp32h2stubs_DATA = \
-	contrib/loaders/flash/espressif/esp32h2/inc/stub_flash_idf_binary_code.inc \
-	contrib/loaders/flash/espressif/esp32h2/inc/stub_flash_idf_binary_data.inc \
-	contrib/loaders/flash/espressif/esp32h2/stub_flash_idf_image.h
+	contrib/loaders/flash/espressif/images/esp32h2/stub_flash_idf_binary_code.inc \
+	contrib/loaders/flash/espressif/images/esp32h2/stub_flash_idf_binary_data.inc \
+	contrib/loaders/flash/espressif/images/esp32h2/stub_flash_idf_image.h
+
+esp32c5stubsdir = $(pkgdatadir)/espressif/stub_bins/esp32c5
+dist_esp32c5stubs_DATA = \
+	contrib/loaders/flash/espressif/images/esp32c5/stub_flash_idf_binary_code.inc \
+	contrib/loaders/flash/espressif/images/esp32c5/stub_flash_idf_binary_data.inc \
+	contrib/loaders/flash/espressif/images/esp32c5/stub_flash_idf_image.h
+
+esp32c61stubsdir = $(pkgdatadir)/espressif/stub_bins/esp32c61
+dist_esp32c61stubs_DATA = \
+	contrib/loaders/flash/espressif/images/esp32c61/stub_flash_idf_binary_code.inc \
+	contrib/loaders/flash/espressif/images/esp32c61/stub_flash_idf_binary_data.inc \
+	contrib/loaders/flash/espressif/images/esp32c61/stub_flash_idf_image.h
+
+esp32h4stubsdir = $(pkgdatadir)/espressif/stub_bins/esp32h4
+dist_esp32h4stubs_DATA = \
+	contrib/loaders/flash/espressif/images/esp32h4/stub_flash_idf_binary_code.inc \
+	contrib/loaders/flash/espressif/images/esp32h4/stub_flash_idf_binary_data.inc \
+	contrib/loaders/flash/espressif/images/esp32h4/stub_flash_idf_image.h
+
+esp32h21stubsdir = $(pkgdatadir)/espressif/stub_bins/esp32h21
+dist_esp32h21stubs_DATA = \
+	contrib/loaders/flash/espressif/images/esp32h21/stub_flash_idf_binary_code.inc \
+	contrib/loaders/flash/espressif/images/esp32h21/stub_flash_idf_binary_data.inc \
+	contrib/loaders/flash/espressif/images/esp32h21/stub_flash_idf_image.h
+
+esp32p4stubsdir = $(pkgdatadir)/espressif/stub_bins/esp32p4
+dist_esp32p4stubs_DATA = \
+	contrib/loaders/flash/espressif/images/esp32p4/stub_flash_idf_binary_code.inc \
+	contrib/loaders/flash/espressif/images/esp32p4/stub_flash_idf_binary_data.inc \
+	contrib/loaders/flash/espressif/images/esp32p4/stub_flash_idf_image.h
+
+esp32p4rev1stubsdir = $(pkgdatadir)/espressif/stub_bins/esp32p4-rev1
+dist_esp32p4rev1stubs_DATA = \
+	contrib/loaders/flash/espressif/images/esp32p4-rev1/stub_flash_idf_binary_code.inc \
+	contrib/loaders/flash/espressif/images/esp32p4-rev1/stub_flash_idf_binary_data.inc \
+	contrib/loaders/flash/espressif/images/esp32p4-rev1/stub_flash_idf_image.h
+
+esp32s31stubsdir = $(pkgdatadir)/espressif/stub_bins/esp32s31
+dist_esp32s31stubs_DATA = \
+	contrib/loaders/flash/espressif/images/esp32s31/stub_flash_idf_binary_code.inc \
+	contrib/loaders/flash/espressif/images/esp32s31/stub_flash_idf_binary_data.inc \
+	contrib/loaders/flash/espressif/images/esp32s31/stub_flash_idf_image.h
 
 SUBDIRS =
 DIST_SUBDIRS =

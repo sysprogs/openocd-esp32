@@ -69,6 +69,9 @@
 
 #define ESP32_S2_TRACEMEM_BLOCK_SZ      0x4000
 
+#define ESP32_S2_EFUSE_BLOCK1_WORD3     0x3F41A050
+#define ESP32_S2_EFUSE_BLOCK1_WORD4     0x3F41A054
+
 #define ESP32_S2_DR_REG_UART_BASE       0x3f400000
 #define ESP32_S2_REG_UART_BASE(i)       (ESP32_S2_DR_REG_UART_BASE + (i) * 0x10000)
 #define ESP32_S2_UART_DATE_REG(i)       (ESP32_S2_REG_UART_BASE(i) + 0x74)
@@ -404,11 +407,46 @@ static int esp32s2_arch_state(struct target *target)
 	return ERROR_OK;
 }
 
+static int esp32s2_read_hw_rev(struct target *target)
+{
+	static uint32_t hw_rev;
+	static bool hw_rev_read;
+
+	if (hw_rev_read) {
+		target->hw_rev = hw_rev;
+		return ERROR_OK;
+	}
+
+	uint32_t word3;
+	uint32_t word4;
+
+	int ret = target_read_u32(target, ESP32_S2_EFUSE_BLOCK1_WORD3, &word3);
+	if (ret == ERROR_OK)
+		ret = target_read_u32(target, ESP32_S2_EFUSE_BLOCK1_WORD4, &word4);
+
+	if (ret != ERROR_OK) {
+		LOG_TARGET_ERROR(target, "Failed to read HW rev (%d)", ret);
+		return ret;
+	}
+
+	unsigned int major_rev = (word3 >> 18) & 0x03;
+	unsigned int minor_rev = (((word3 >> 20) & 0x01) << 3) | ((word4 >> 4) & 0x07);
+
+	hw_rev = 100 * major_rev + minor_rev;
+	target->hw_rev = hw_rev;
+	hw_rev_read = true;
+	LOG_TARGET_INFO(target, "Chip revision v%u.%u", major_rev, minor_rev);
+
+	return ERROR_OK;
+}
+
 static int esp32s2_on_halt(struct target *target)
 {
 	int ret = esp32s2_disable_wdts(target);
 	if (ret == ERROR_OK)
 		ret = esp_xtensa_on_halt(target);
+	if (ret == ERROR_OK)
+		ret = esp32s2_read_hw_rev(target);
 	return ret;
 }
 
@@ -641,6 +679,13 @@ static const struct command_registration esp32s2_command_handlers[] = {
 	COMMAND_REGISTRATION_DONE
 };
 
+static int esp32s2_insn_set(struct command_invocation *cmd,
+	struct target *target, const char **insn_set)
+{
+	*insn_set = "xtensa_s2";
+	return ERROR_OK;
+}
+
 /* Holds methods for Xtensa targets. */
 struct target_type esp32s2_target = {
 	.name = "esp32s2",
@@ -688,4 +733,5 @@ struct target_type esp32s2_target = {
 
 	.commands = esp32s2_command_handlers,
 	.profiling = esp_xtensa_profiling,
+	.insn_set = esp32s2_insn_set,
 };

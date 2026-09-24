@@ -2303,16 +2303,13 @@ static int stlink_usb_reset(void *handle)
 /** */
 static int stlink_usb_run(void *handle)
 {
-	int res;
 	struct stlink_usb_handle *h = handle;
 
 	assert(handle);
 
-	if (h->version.jtag_api != STLINK_JTAG_API_V1) {
-		res = stlink_usb_write_debug_reg(handle, DCB_DHCSR, DBGKEY|C_DEBUGEN);
-
-		return res;
-	}
+	if (h->version.jtag_api != STLINK_JTAG_API_V1)
+		return stlink_usb_write_debug_reg(handle, DCB_DHCSR,
+					DBGKEY | C_DEBUGEN);
 
 	stlink_usb_init_buffer(handle, h->rx_ep, 2);
 
@@ -2325,16 +2322,13 @@ static int stlink_usb_run(void *handle)
 /** */
 static int stlink_usb_halt(void *handle)
 {
-	int res;
 	struct stlink_usb_handle *h = handle;
 
 	assert(handle);
 
-	if (h->version.jtag_api != STLINK_JTAG_API_V1) {
-		res = stlink_usb_write_debug_reg(handle, DCB_DHCSR, DBGKEY|C_HALT|C_DEBUGEN);
-
-		return res;
-	}
+	if (h->version.jtag_api != STLINK_JTAG_API_V1)
+		return stlink_usb_write_debug_reg(handle, DCB_DHCSR,
+					DBGKEY | C_HALT | C_DEBUGEN);
 
 	stlink_usb_init_buffer(handle, h->rx_ep, 2);
 
@@ -3406,7 +3400,7 @@ static int stlink_usb_usb_open(void *handle, struct hl_interface_param *param)
 	  in order to become operational.
 	 */
 	do {
-		if (jtag_libusb_open(param->vid, param->pid, NULL,
+		if (jtag_libusb_open(adapter_usb_get_vids(), adapter_usb_get_pids(), NULL,
 				&h->usb_backend_priv.fd, stlink_usb_get_alternate_serial) != ERROR_OK) {
 			LOG_ERROR("open failed");
 			return ERROR_FAIL;
@@ -3642,8 +3636,9 @@ static int stlink_tcp_open(void *handle, struct hl_interface_param *param)
 		stlink_used = h->tcp_backend_priv.recv_buf[44];
 
 		/* check the vid:pid */
-		for (int i = 0; param->vid[i]; i++) {
-			if (param->vid[i] == h->vid && param->pid[i] == h->pid) {
+		for (unsigned int i = 0; adapter_usb_get_vids()[i]; i++) {
+			if (h->vid == adapter_usb_get_vids()[i] &&
+					h->pid == adapter_usb_get_pids()[i]) {
 				stlink_id_matched = true;
 				break;
 			}
@@ -3740,9 +3735,9 @@ static int stlink_open(struct hl_interface_param *param, enum stlink_mode mode, 
 
 	h->st_mode = mode;
 
-	for (unsigned int i = 0; param->vid[i]; i++) {
+	for (unsigned int i = 0; adapter_usb_get_vids()[i]; i++) {
 		LOG_DEBUG("transport: %d vid: 0x%04x pid: 0x%04x serial: %s",
-			  h->st_mode, param->vid[i], param->pid[i],
+			  h->st_mode, adapter_usb_get_vids()[i], adapter_usb_get_pids()[i],
 			  adapter_get_required_serial() ? adapter_get_required_serial() : "");
 	}
 
@@ -4284,8 +4279,6 @@ static int stlink_dap_dp_read(struct adiv5_dap *dap, unsigned int reg, uint32_t 
 /** */
 static int stlink_dap_dp_write(struct adiv5_dap *dap, unsigned int reg, uint32_t data)
 {
-	int retval;
-
 	if (!(stlink_dap_handle->version.flags & STLINK_F_HAS_DPBANKSEL))
 		if (reg & 0x000000F0) {
 			LOG_ERROR("Banked DP registers not supported in current STLink FW");
@@ -4302,9 +4295,8 @@ static int stlink_dap_dp_write(struct adiv5_dap *dap, unsigned int reg, uint32_t
 	if (reg == DP_CTRL_STAT)
 		data &= ~CORUNDETECT;
 
-	retval = stlink_write_dap_register(stlink_dap_handle,
+	return stlink_write_dap_register(stlink_dap_handle,
 				STLINK_DEBUG_PORT_ACCESS, reg, data);
-	return retval;
 }
 
 /** */
@@ -4985,31 +4977,6 @@ static int stlink_dap_trace_read(uint8_t *buf, size_t *size)
 }
 
 /** */
-COMMAND_HANDLER(stlink_dap_vid_pid)
-{
-	unsigned int i, max_usb_ids = HLA_MAX_USB_IDS;
-
-	if (CMD_ARGC > max_usb_ids * 2) {
-		LOG_WARNING("ignoring extra IDs in vid_pid "
-			"(maximum is %d pairs)", max_usb_ids);
-		CMD_ARGC = max_usb_ids * 2;
-	}
-	if (CMD_ARGC < 2 || (CMD_ARGC & 1)) {
-		LOG_WARNING("incomplete vid_pid configuration directive");
-		return ERROR_COMMAND_SYNTAX_ERROR;
-	}
-	for (i = 0; i < CMD_ARGC; i += 2) {
-		COMMAND_PARSE_NUMBER(u16, CMD_ARGV[i], stlink_dap_param.vid[i / 2]);
-		COMMAND_PARSE_NUMBER(u16, CMD_ARGV[i + 1], stlink_dap_param.pid[i / 2]);
-	}
-
-	/* null termination */
-	stlink_dap_param.vid[i / 2] = stlink_dap_param.pid[i / 2] = 0;
-
-	return ERROR_OK;
-}
-
-/** */
 COMMAND_HANDLER(stlink_dap_backend_command)
 {
 	/* default values */
@@ -5074,13 +5041,6 @@ COMMAND_HANDLER(stlink_dap_cmd_command)
 
 /** */
 static const struct command_registration stlink_dap_subcommand_handlers[] = {
-	{
-		.name = "vid_pid",
-		.handler = stlink_dap_vid_pid,
-		.mode = COMMAND_CONFIG,
-		.help = "USB VID and PID of the adapter",
-		.usage = "(vid pid)+",
-	},
 	{
 		.name = "backend",
 		.handler = &stlink_dap_backend_command,

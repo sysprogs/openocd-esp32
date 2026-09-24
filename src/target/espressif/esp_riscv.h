@@ -19,17 +19,50 @@
 #define get_field(reg, mask) (((reg) & (mask)) / ((mask) & ~((mask) << 1)))
 #define set_field(reg, mask, val) (((reg) & ~(mask)) | (((val) * ((mask) & ~((mask) << 1))) & (mask)))
 
+#define ESP_RISCV_EXCEPTION_CAUSE(reg_val)  ((reg_val) & 0x1F)
+
+/* Espressif PMA CSRs - shared across all Espressif RISC-V chips
+ * with SUPPORT_CPU_PMA. pma_cfg<n> is at 0xBC0+n, pma_addr<n> is at 0xBD0+n.
+ */
+#define ESP_RISCV_CSR_PMACFG0       0xBC0
+#define ESP_RISCV_CSR_PMAADDR0      0xBD0
+#define ESP_RISCV_PMA_CFG_X         BIT(2)
+
+const char *esp_riscv_get_exception_reason(uint32_t exception_code);
+
+/* Description of a single PMA entry to install before launching an algorithm/stub.
+ *
+ * Some Espressif RISC-V ROMs (esp_rom rom/arch/riscv/pma.c) program the HP RAM
+ * PMA entry as NAPOT R+W (no X) in riscv_pma_init_cfg() and only add the X bit
+ * later in riscv_pma_flash_boot_cfg()/riscv_pma_ram_boot_cfg(). If the debugger
+ * halts the CPU between these two phases, the flasher stub loaded into the
+ * work area cannot be fetched, producing mcause=1 (PMP/PMA Instruction access
+ * fault). Targets that need this override set esp_riscv_common::stub_pma_entry
+ * to point at the entry index/address/cfg they want; esp_riscv_start_algorithm()
+ * then writes those values before resuming, restoring the original CSRs via the
+ * normal save/restore path once the algorithm finishes.
+ *
+ * NAPOT encoding (must match the ROM's cpu_ll_config_pma):
+ *   napot_addr = (base | (size/2 - 1)) >> 2
+ *   napot_cfg  = PMA_NAPOT | PMA_EN | PMA_R | PMA_W | PMA_X  (0xC000001D)
+ */
+struct esp_riscv_pma_entry {
+	unsigned int index;
+	uint64_t napot_addr;
+	uint64_t napot_cfg;
+};
+
 struct esp_riscv_reg_class {
 	const char **reg_array;
 	size_t reg_array_size;
-	bool save_restore;
 	unsigned int reg_width;
 	struct reg_arch_type *reg_arch_type;
 	struct reg_data_type *reg_data_type;
 };
 
-extern struct reg_arch_type esp_riscv_fpu_csr_type;
 extern struct reg_arch_type esp_riscv_user_counter_type;
+
+enum pie_version {PIE_V2P1, PIE_V2P2};
 
 struct esp_riscv_common {
 	/* should be first, will be accessed by riscv generic code */
@@ -51,8 +84,12 @@ struct esp_riscv_common {
 	size_t chip_specific_registers_size;
 	bool (*is_iram_address)(target_addr_t addr);
 	bool (*is_dram_address)(target_addr_t addr);
-	bool minimal_save_restore;
 	int (*examine_end)(struct target *target);
+	/* Optional PMA entry forced before each algorithm/stub run; NULL when not needed.
+	 * See esp_riscv_pma_force_napot_rwx(). */
+	const struct esp_riscv_pma_entry *stub_pma_entry;
+	enum pie_version pie_version;
+	target_addr_t pie_temp_mem;
 };
 
 static inline struct esp_riscv_common *target_to_esp_riscv(const struct target *target)
@@ -114,6 +151,7 @@ int esp_riscv_run_algorithm(struct target *target, int num_mem_params,
 	struct reg_param *reg_params, target_addr_t entry_point,
 	target_addr_t exit_point, unsigned int timeout_ms, void *arch_info);
 int esp_riscv_smp_run_func_image(struct target *target, struct esp_algorithm_run_data *run, uint32_t num_args, ...);
+bool esp_riscv_memory_ready(struct target *target);
 int esp_riscv_read_memory(struct target *target, target_addr_t address,
 	uint32_t size, uint32_t count, uint8_t *buffer);
 int esp_riscv_write_memory(struct target *target, target_addr_t address,
@@ -122,6 +160,10 @@ int esp_riscv_csr_access_enable(struct reg *reg, uint8_t *buf, enum gdb_regno en
 	riscv_reg_t enable_field_mask, riscv_reg_t enable_field_off, riscv_reg_t enable_field_on);
 
 int esp_riscv_core_ebreaks_enable(struct target *target);
+int esp_riscv_pma_force_napot_rwx(struct target *target,
+		unsigned int entry,
+		uint64_t napot_addr,
+		uint64_t napot_cfg);
 void esp_riscv_deinit_target(struct target *target);
 int esp_riscv_assert_reset(struct target *target);
 int esp_riscv_get_gdb_reg_list(struct target *target,

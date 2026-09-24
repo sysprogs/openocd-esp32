@@ -93,6 +93,12 @@ my $git_command ='export LANGUAGE=en_US.UTF-8; git';
 my $tabsize = 8;
 my ${CONFIG_} = "CONFIG_";
 
+# OpenOCD specific: Begin: check markdown with pymarkdownlnt
+# Remember which Markdown (*.md) files were already linted.
+my %md_checked;
+my $md_linter_not_found;
+# OpenOCD specific: End
+
 sub help {
 	my ($exitcode) = @_;
 
@@ -509,9 +515,14 @@ our $InitAttributeConst = qr{$InitAttributePrefix(?:initconst\b)};
 our $InitAttributeInit = qr{$InitAttributePrefix(?:init\b)};
 our $InitAttribute = qr{$InitAttributeData|$InitAttributeConst|$InitAttributeInit};
 
+# OpenOCD specific: Begin: list of attributes
+our $OpenOCD_Attribute = qr{__interrupt};
+# OpenOCD specific: End
+
 # Notes to $Attribute:
 # We need \b after 'init' otherwise 'initconst' will cause a false positive in a check
 our $Attribute	= qr{
+			$OpenOCD_Attribute|
 			const|
 			volatile|
 			__percpu|
@@ -2438,6 +2449,44 @@ sub report_dump {
 	our @report;
 }
 
+# OpenOCD specific: Begin: check markdown with pymarkdownlnt
+sub run_md_linter {
+	my ($file) = @_;
+	my $md_linter = "pymarkdownlnt";
+
+	return if !$file || !-f $file;
+
+	if (!defined($md_linter_not_found)) {
+		$md_linter_not_found = (which($md_linter) eq "");
+	}
+
+	if ($md_linter_not_found) {
+		return;
+	}
+
+	my @cmd  = ($md_linter, "scan", $file);
+
+	my @out = qx{@cmd 2>&1};
+	my $rc  = $? >> 8;
+
+	foreach my $line (@out) {
+		chomp $line;
+		next if $line eq "";
+
+		if ($line =~ m/^(.*?):(\d+):(\d+):\s*([A-Z0-9]+):\s*(.*)$/) {
+			my ($path, $ln, $col, $code, $msg) = ($1, $2, $3, $4, $5);
+			WARN("MARKDOWN_LINT", "$file:$ln:$col: $code: $msg\n");
+		} else {
+			WARN("MARKDOWN_LINT: Failed to parse output: $line\n");
+		}
+	}
+
+	if ($rc != 0 && !@out) {
+		WARN("MARKDOWN_LINT", "Markdown linter exited with status $rc for $file\n");
+	}
+}
+# OpenOCD specific: End
+
 sub fixup_current_range {
 	my ($lineRef, $offset, $length) = @_;
 
@@ -2977,6 +3026,15 @@ sub process {
 					     "DT binding docs and includes should be a separate patch. See: Documentation/devicetree/bindings/submitting-patches.rst\n");
 				}
 			}
+
+			# OpenOCD specific: Begin: check markdown with pymarkdownlnt
+			# Lint Markdown files.
+			if ($realfile =~ /\.md$/ && !$md_checked{$realfile}) {
+				my $fullpath = $root ? "$root/$realfile" : $realfile;
+				run_md_linter($fullpath);
+				$md_checked{$realfile} = 1;
+			}
+			# OpenOCD specific: End
 
 			next;
 		}
@@ -3892,6 +3950,12 @@ sub process {
 # more than $tabsize must use tabs.
 		if ($rawline =~ /^\+\s* \t\s*\S/ ||
 		    $rawline =~ /^\+\s*        \s*/) {
+			# OpenOCD specific: Begin: fix check on $tabsize
+			# Do nothing in this default upstream case
+		}
+		if ($rawline =~ /^\+\s* \t\s*\S/ ||
+		    $rawline =~ /^\+\s* {$tabsize}\s*/) {
+			# OpenOCD specific: End
 			my $herevet = "$here\n" . cat_vet($rawline) . "\n";
 			$rpt_cleaners = 1;
 			if (ERROR("CODE_INDENT",
@@ -4053,6 +4117,7 @@ sub process {
 			}
 		}
 
+if (!$OpenOCD) {
 # check for missing blank lines after struct/union declarations
 # with exceptions for various attributes and macros
 		if ($prevline =~ /^[\+ ]};?\s*$/ &&
@@ -4072,6 +4137,7 @@ sub process {
 				fix_insert_line($fixlinenr, "\+");
 			}
 		}
+} # !$OpenOCD
 
 # check for multiple consecutive blank lines
 		if ($prevline =~ /^[\+ ]\s*$/ &&
@@ -4086,6 +4152,7 @@ sub process {
 			$last_blank_line = $linenr;
 		}
 
+if (!$OpenOCD) {
 # check for missing blank lines after declarations
 # (declarations must have the same indentation and not be at the start of line)
 		if (($prevline =~ /\+(\s+)\S/) && $sline =~ /^\+$1\S/) {
@@ -4131,6 +4198,7 @@ sub process {
 				}
 			}
 		}
+} # !$OpenOCD
 
 # check for spaces at the beginning of a line.
 # Exceptions:

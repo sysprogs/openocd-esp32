@@ -94,9 +94,8 @@ static int presto_read(uint8_t *buf, uint32_t size)
 {
 	uint32_t ftbytes = 0;
 
-	struct timeval timeout, now;
-	gettimeofday(&timeout, NULL);
-	timeval_add_time(&timeout, 1, 0);	/* one second timeout */
+	// 1 second timeout
+	int64_t then = timeval_ms() + 1000;
 
 	while (ftbytes < size) {
 		presto->retval = ftdi_read_data(&presto->ftdic, buf + ftbytes, size - ftbytes);
@@ -106,8 +105,7 @@ static int presto_read(uint8_t *buf, uint32_t size)
 		}
 		ftbytes += presto->retval;
 
-		gettimeofday(&now, NULL);
-		if (timeval_compare(&now, &timeout) > 0)
+		if (timeval_ms() > then)
 			break;
 	}
 
@@ -451,7 +449,7 @@ static struct bitq_interface presto_bitq = {
 
 static int presto_adapter_khz(int khz, int *jtag_speed)
 {
-	if (khz < 0) {
+	if (khz <= 0) {
 		*jtag_speed = 0;
 		return ERROR_COMMAND_SYNTAX_ERROR;
 	}

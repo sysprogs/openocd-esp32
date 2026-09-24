@@ -8,6 +8,7 @@ import importlib
 import sys
 import re
 import subprocess
+import tempfile
 import debug_backend as dbg
 
 # TODO: fixed???
@@ -359,7 +360,7 @@ class DebuggerTestsBunch(unittest.BaseTestSuite):
             self.modules[test.__module__] = importlib.import_module(test.__module__)
             # get_logger().debug('Modules: %s', self.modules)
 
-    def config_tests(self, oocd, gdb, toolchain, uart_reader, port_name, arg_list):
+    def config_tests(self, oocd, gdb, toolchain, uart_reader, port_names, arg_list):
         self.oocd = oocd
         self.gdb = gdb
         for test in self:
@@ -369,7 +370,7 @@ class DebuggerTestsBunch(unittest.BaseTestSuite):
             test.gdb = gdb
             test.toolchain = toolchain
             test.uart_reader = uart_reader
-            test.port_name = port_name
+            test.port_names = port_names
             test.args = arg_list
 
     def change_gdb_in_tests(self, gdb):
@@ -400,7 +401,8 @@ class DebuggerTestsBunch(unittest.BaseTestSuite):
                         for test in self._groupped_suites[app_cfg_id][1]:
                             result.addError(test, sys.exc_info())
                         continue
-                self.gdb.exec_file_set(self._groupped_suites[app_cfg_id][0].build_app_elf_path())
+                if self.gdb:
+                    self.gdb.exec_file_set(self._groupped_suites[app_cfg_id][0].build_app_elf_path())
 
                 if self._groupped_suites[app_cfg_id][0].startup_script != '':
                     self.gdb.set_prog_startup_script(self._groupped_suites[app_cfg_id][0].startup_script_path())
@@ -540,6 +542,7 @@ class DebuggerTestsBase(unittest.TestCase, GDBUtils):
         self.assertEqual(rsn, dbg.TARGET_STOP_REASON_FN_FINISHED)
 
 
+main_reached = False
 
 class DebuggerTestAppTests(DebuggerTestsBase):
     """ Base class for tests which need special app running on target
@@ -550,7 +553,6 @@ class DebuggerTestAppTests(DebuggerTestsBase):
         self.test_app_cfg = DebuggerTestAppConfig()
         self.bpns = []
         self.wps = {}
-        self.main_reached = False
 
     def setUp(self):
         """ Setup test.
@@ -563,6 +565,7 @@ class DebuggerTestAppTests(DebuggerTestsBase):
         self.select_sub_test(self.id())
 
     def tearDown(self):
+        self.stop_exec()
         self.clear_bps()
         self.clear_wps()
         self.oocd.process_lazy_bps()
@@ -580,26 +583,21 @@ class DebuggerTestAppTests(DebuggerTestsBase):
         rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 10)
         bp = self.gdb.add_bp(self.test_app_cfg.entry_point, hw=True)
         self.resume_exec()
+        global main_reached
         try:
             rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 10)
+            self.assertEqual(rsn, dbg.TARGET_STOP_REASON_BP)
         except:
-            if not self.main_reached:
+            if not main_reached:
                 self.gdb.disconnect()
                 self.oocd.stop()
                 if self.uart_reader:
                     self.uart_reader.stop()
-                cmd = ['esptool.py', '-p', self.port_name, '--no-stub', 'chip_id']
+                cmd = ['esptool.py', '-p', self.port_names[0], '--no-stub', 'chip_id']
                 subprocess.run(cmd)
                 os._exit(os.EX_TEMPFAIL)
             raise
-        self.main_reached = True
-        # workarounds for strange debugger's behaviour
-        if rsn == dbg.TARGET_STOP_REASON_SIGINT:
-            get_logger().warning('Unexpected SIGINT during setup! Apply workaround...')
-            cur_frame = self.gdb.get_current_frame()
-            self.resume_exec()
-            rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 10)
-        self.assertEqual(rsn, dbg.TARGET_STOP_REASON_BP)
+        main_reached = True
         frame = self.gdb.get_current_frame()
         self.assertEqual(frame['func'], self.test_app_cfg.entry_point)
         self.gdb.delete_bp(bp)
@@ -653,6 +651,54 @@ class DebuggerTestAppTests(DebuggerTestsBase):
         if self.test_app_cfg.active_core is not None:
             self.gdb.data_eval_expr('%s=%d' % (self.test_app_cfg.core_select_var, self.test_app_cfg.active_core))
 
+    def get_flash_banks(self):
+        flash_banks = {}
+        _, target_output = self.gdb.monitor_run('flash banks', tmo=10, output_type='stdout')
+        for bank_desc in target_output.split('\\n'):
+            # #0 : esp32.cpu0.flash (esp32) at 0x00000000, size 0x00400000, buswidth 0, chipwidth 0
+            mo = re.match(r'#(?P<bank_num>\d)+\s*:\s*(?P<tgt_name>\S+).(?:flash|drom|irom)\s+\(\w+\)\s+at\s+(?P<address>0x[0-9A-Fa-f]+),\s*size\s+(?P<flash_sz>0x[0-9A-Fa-f]+)', bank_desc)
+            if not mo or len(mo.groups()) != 4:
+                continue
+            bank_num = int(mo.group("bank_num"))
+            bank_start = int(mo.group("address"), 16)
+            bank_size = int(mo.group("flash_sz"), 16)
+            flash_banks[bank_num] = (bank_start, bank_size)
+        return flash_banks
+
+    def update_in_flash(self, address, size, values):
+        found = False
+        for bank_num, (bank_start, bank_size) in self.get_flash_banks().items():
+            bank_end = bank_start + bank_size
+            if bank_start <= address < bank_end:
+                found = True
+                break
+        self.assertTrue(found)
+
+        sec_size = 0x1000
+        flash_offset = address - bank_start
+        read_offset = flash_offset % sec_size
+        sec_offset = flash_offset - read_offset
+        sec_num = sec_offset // sec_size
+        fhnd, read_fname = tempfile.mkstemp(suffix='.bin')
+        os.close(fhnd)
+        self.gdb.monitor_run(f'flash read_bank {bank_num} {dbg.fixup_path(read_fname)} 0x{sec_offset:08x} {sec_size}', tmo=60)
+
+        with open(read_fname, 'rb') as f:
+            data = bytearray(f.read())
+            self.assertTrue(len(data) == sec_size)
+            data[read_offset:read_offset + size] = values
+        with open(read_fname, 'wb') as f:
+            f.write(data)
+
+        self.gdb.monitor_run(f'flash erase_sector {bank_num} {sec_num} {sec_num}', tmo=60)
+        self.gdb.monitor_run(f'flash write_bank {bank_num} {dbg.fixup_path(read_fname)} 0x{sec_offset:08x}', tmo=60)
+
+    def pre_select_sub_test(self, sub_test_id):
+        s_next_test_addr = int(self.gdb.data_eval_expr('&s_next_test').split()[0], 16)
+        s_next_test_str_addr = int(self.gdb.data_eval_expr('&s_next_test_str').split()[0], 16)
+        self.assertTrue(type(sub_test_id) is str)
+        self.update_in_flash(s_next_test_addr, 4, b'\xff\xff\xff\xff')
+        self.update_in_flash(s_next_test_str_addr, len(sub_test_id) + 1, sub_test_id.encode('ascii') + b'\x00')
 
     def run_to_bp(self, exp_rsn, func_name, tmo=20):
         self.resume_exec()
@@ -721,6 +767,29 @@ class DebuggerTestAppTests(DebuggerTestsBase):
         pc = self.gdb.get_reg('pc')
         faddr = self.gdb.extract_exec_addr(self.gdb.data_eval_expr('&%s' % label))
         self.assertEqual(pc, faddr)
+
+    def esptool_reset(self, port=None):
+        if not port:
+            port = self.port_names[0]
+        # avoid simultaneous access to UART with SerialReader
+        if self.uart_reader:
+            self.uart_reader.pause()
+        cmd = ['esptool.py', '-p', port, 'chip_id']
+        proc = subprocess.run(cmd)
+        proc.check_returncode()
+        if self.uart_reader:
+            self.uart_reader.resume()
+
+    def alive_sleep(self, seconds, step=0.1):
+        start = time.time()
+        while time.time() < start + seconds:
+            # poll GDB
+            resp = self.gdb._gdbmi.get_gdb_response(0, raise_error_on_timeout=False)
+            self.gdb._parse_mi_resp(resp, new_tgt_state=None)
+            # Consume OpenOCD's telnet output to avoid stalling its main loop.
+            if self.oocd is not None:
+                self.oocd.consume_output()
+            time.sleep(step)
 
 class DebuggerGenericTestAppTests(DebuggerTestAppTests):
     """ Base class to run tests which use generic test app

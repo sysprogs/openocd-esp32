@@ -21,16 +21,12 @@
 #include <sys/time.h>
 #endif
 
-int timeval_subtract(struct timeval *result, struct timeval *x, struct timeval *y);
-int timeval_add_time(struct timeval *result, long sec, long usec);
-int timeval_compare(const struct timeval *x, const struct timeval *y);
-
 /** @returns gettimeofday() timeval as 64-bit in ms */
 int64_t timeval_ms(void);
 
 struct duration {
-	struct timeval start;
-	struct timeval elapsed;
+	int64_t start_ms;
+	int64_t elapsed_ms;
 };
 
 /** Update the duration->start field to start the @a duration measurement. */

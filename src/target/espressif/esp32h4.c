@@ -17,6 +17,7 @@
 #include <target/register.h>
 #include <target/semihosting_common.h>
 #include <target/riscv/debug_defines.h>
+#include <target/riscv/riscv.h>
 
 #include "esp_semihosting.h"
 #include "esp_riscv_apptrace.h"
@@ -39,12 +40,30 @@
 
 #define ESP32H4_ADDR_IS_DRAM(addr)	((addr) >= ESP32H4_DRAM_LOW && (addr) <  ESP32H4_DRAM_HIGH)
 
+/* PMA entry 14 covers the HP RAM region (0x40800000..0x40880000, 512 KB).
+ * See esp_riscv_pma_force_napot_rwx() in esp_riscv.c for the rationale.
+ *   pmaaddr14 = (0x40800000 | 0x3FFFF) >> 2 = 0x1020FFFF
+ *   pmacfg14  = PMA_NAPOT | PMA_EN | PMA_R | PMA_W | PMA_X = 0xC000001D
+ */
+#define ESP32H4_PMA_ENTRY_NUM                   16
+#define ESP32H4_PMA_ENTRY_RAM                   (ESP32H4_PMA_ENTRY_NUM - 2)
+#define ESP32H4_PMA_RAM_NAPOT_ADDR              0x1020FFFFUL
+#define ESP32H4_PMA_RAM_NAPOT_CFG_RWX           0xC000001DUL
+
+static const struct esp_riscv_pma_entry esp32h4_stub_pma_entry = {
+	.index      = ESP32H4_PMA_ENTRY_RAM,
+	.napot_addr = ESP32H4_PMA_RAM_NAPOT_ADDR,
+	.napot_cfg  = ESP32H4_PMA_RAM_NAPOT_CFG_RWX,
+};
+
 /* max supported hw breakpoint and watchpoint count */
 #define ESP32H4_BP_NUM                          3
 #define ESP32H4_WP_NUM                          3
 
 #define ESP32H4_ASSIST_DEBUG_CPU0_MON_REG       0x60002000
 #define ESP32H4_ASSIST_DEBUG_CPU_OFFSET         0x88
+
+#define ESP32H4_EFUSE_HW_REV_ADDR               0x600B1850
 
 /* components/soc/esp32H4/include/soc/reset_reasons.h */
 enum esp32h4_reset_reason {
@@ -112,7 +131,6 @@ static const char *esp32h4_get_reset_reason(uint32_t reset_reason_reg_val, int s
 	return "Unknown reset cause";
 }
 
-// TODO: Test and close OCD-1140
 static void esp32h4_print_reset_reason(struct target *target, uint32_t reset_reason_reg_val)
 {
 	if (target->coreid == 0) {
@@ -130,7 +148,38 @@ static void esp32h4_print_reset_reason(struct target *target, uint32_t reset_rea
 				esp32h4_get_reset_reason(reset_reason_core1, ESP32H4_HP_CORE1_RESET_CAUSE_SHIFT));
 	}
 }
+static int esp32h4_read_hw_rev(struct target *target)
+{
+	static uint32_t hw_rev;
+	static bool hw_rev_read;
 
+	if (hw_rev_read) {
+		target->hw_rev = hw_rev;
+		return ERROR_OK;
+	}
+
+	int ret = target_read_u32(target, ESP32H4_EFUSE_HW_REV_ADDR, &hw_rev);
+	if (ret != ERROR_OK) {
+		LOG_TARGET_ERROR(target, "Failed to read HW rev (%d)", ret);
+		return ret;
+	}
+
+	unsigned int major = (hw_rev >> 22) & 0x03;
+	unsigned int minor = (hw_rev >> 18) & 0x0F;
+
+	hw_rev = 100 * major + minor;
+	target->hw_rev = hw_rev;
+	hw_rev_read = true;
+	LOG_TARGET_INFO(target, "Chip revision v%u.%u", major, minor);
+
+	return ERROR_OK;
+}
+
+static int esp32h4_examine_end(struct target *target)
+{
+	esp32h4_read_hw_rev(target);
+	return ERROR_OK;
+}
 static bool esp32h4_is_idram_address(target_addr_t addr)
 {
 	return ESP32H4_ADDR_IS_DRAM(addr);
@@ -147,30 +196,22 @@ static const struct esp_flash_breakpoint_ops esp32h4_flash_brp_ops = {
 	.breakpoint_remove = esp_algo_flash_breakpoint_remove,
 };
 
-// TODO: check if the CSRs are correct OCD-1143
 static const char *esp32h4_csrs[] = {
-	"mie", "mcause", "mip", "mtvt", "mnxti",
-	"mscratchcsw", "mscratchcswl",
-	"mcycle", "minstret", "mcounteren", "mcountinhibit",
-	"mhpmcounter8", "mhpmcounter9", "mhpmcounter13", "mhpmevent8", "mhpmevent9", "mhpmevent13",
-	"mcycleh", "minstreth", "mhpmcounter8h", "mhpmcounter9h", "mhpmcounter13h",
-	"tdata3", "tinfo", "mcontext",// "mintstatus",
-	"mclicbase", "mxstatus", "mhcr", "mhint", "mraddr", "mexstatus",
-	"mnmicause", "mnmipc", "mcpuid", "cpu_testbus_ctrl", "pm_user",
-	"gpio_oen_user", "gpio_in_user", "gpio_out_user",
-	"pma_cfg0", "pma_cfg1", "pma_cfg2", "pma_cfg3", "pma_cfg4", "pma_cfg5",
-	"pma_cfg6", "pma_cfg7", "pma_cfg8", "pma_cfg9", "pma_cfg10", "pma_cfg11",
-	"pma_cfg12", "pma_cfg13", "pma_cfg14", "pma_cfg15", "pma_addr0", "pma_addr1",
-	"pma_addr2", "pma_addr3", "pma_addr4", "pma_addr5", "pma_addr6", "pma_addr7",
-	"pma_addr8", "pma_addr9", "pma_addr10", "pma_addr11", "pma_addr12", "pma_addr13",
-	"pma_addr14", "pma_addr15",
+	"mie", "mip", "jvt", "mtvt", "mcontext", "tdata3", "tinfo",
+	"fflags", "frm", "fcsr",
+	"mnxti", "mscratchcsw", "mscratchcswl", "utvt", "unxti",
+	"mcycle", "mcycleh", "minstret", "minstreth",
+	"mhpmevent8", "mhpmevent9", "mhpmevent13",
+	"mhpmcounter8", "mhpmcounter9", "mhpmcounter13", "mhpmcounter8h", "mhpmcounter9h", "mhpmcounter13h",
+	"mcounteren", "mcountinhibit",
+	"cycle", "time", "instreth", "cycleh", "instret", "timeh",
+	"hpmcounter8", "hpmcounter9", "hpmcounter13", "hpmcounter8h", "hpmcounter9h", "hpmcounter13h",
 };
 
 static struct esp_riscv_reg_class esp32h4_registers[] = {
 	{
 		.reg_array = esp32h4_csrs,
 		.reg_array_size = ARRAY_SIZE(esp32h4_csrs),
-		.save_restore = true
 	},
 };
 
@@ -195,6 +236,8 @@ static int esp32h4_target_create(struct target *target)
 	esp_riscv->chip_specific_registers_size = ARRAY_SIZE(esp32h4_registers);
 	esp_riscv->is_dram_address = esp32h4_is_idram_address;
 	esp_riscv->is_iram_address = esp32h4_is_idram_address;
+	esp_riscv->examine_end = esp32h4_examine_end;
+	esp_riscv->stub_pma_entry = &esp32h4_stub_pma_entry;
 
 	if (esp_riscv_alloc_trigger_addr(target) != ERROR_OK)
 		return ERROR_FAIL;
@@ -264,6 +307,7 @@ struct target_type esp32h4_target = {
 	.name = "esp32h4",
 
 	.target_create = esp32h4_target_create,
+	.target_jim_configure = riscv_jim_configure,
 	.init_target = esp32h4_init_target,
 	.deinit_target = esp_riscv_deinit_target,
 	.examine = esp_riscv_examine,
@@ -278,6 +322,7 @@ struct target_type esp32h4_target = {
 	.assert_reset = esp_riscv_assert_reset,
 	.deassert_reset = riscv_deassert_reset,
 
+	.memory_ready = esp_riscv_memory_ready,
 	.read_memory = esp_riscv_read_memory,
 	.write_memory = esp_riscv_write_memory,
 

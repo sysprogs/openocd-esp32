@@ -126,16 +126,13 @@ static int avr32_write_core_reg(struct target *target, int num)
 
 static int avr32_get_core_reg(struct reg *reg)
 {
-	int retval;
 	struct avr32_core_reg *avr32_reg = reg->arch_info;
 	struct target *target = avr32_reg->target;
 
 	if (target->state != TARGET_HALTED)
 		return ERROR_TARGET_NOT_HALTED;
 
-	retval = avr32_read_core_reg(target, avr32_reg->num);
-
-	return retval;
+	return avr32_read_core_reg(target, avr32_reg->num);
 }
 
 static int avr32_set_core_reg(struct reg *reg, uint8_t *buf)
@@ -527,7 +524,6 @@ static int avr32_ap7k_examine(struct target *target)
 	struct avr32_ap7k_common *ap7k = target_to_ap7k(target);
 
 	if (!target_was_examined(target)) {
-		target_set_examined(target);
 		avr32_jtag_nexus_read(&ap7k->jtag, AVR32_OCDREG_DID, &devid);
 		LOG_INFO("device id: %08" PRIx32, devid);
 		avr32_ocd_setbits(&ap7k->jtag, AVR32_OCDREG_DC, OCDREG_DC_DBE);

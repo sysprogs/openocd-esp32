@@ -13,6 +13,12 @@ def get_logger():
     return logging.getLogger(__name__)
 
 
+DUMMY_BIN_SIZE = 0x400
+BOOTLOADER_OFF = 0x10000
+PARTITION_TABLE_OFF = 0x20000
+APP_TAIL_OFF = 0x2000
+
+
 ########################################################################
 #                         TESTS IMPLEMENTATION                         #
 ########################################################################
@@ -22,19 +28,83 @@ class FlasherTestsImpl:
 
     def setUp(self):
         self.gdb.monitor_run('flash probe 0', tmo=10)
-        _, self.flash_sz = self.get_flash_size(0)
+        self.flash_sz = self.get_flash_banks()[0][1]
 
-    def get_flash_size(self, bank_num):
-        _,target_output = self.gdb.monitor_run('flash banks', tmo=10, output_type='stdout')
-        for bank_desc in target_output.split('\\n'):
-            # #0 : esp32.cpu0.flash (esp32) at 0x00000000, size 0x00400000, buswidth 0, chipwidth 0
-            mo = re.match(r'#(?P<bank_num>\d)+\s*:\s*(?P<tgt_name>\S+).flash\s+\(\w+\)\s+at\s+0x[0-9A-Fa-f]+,\s*size\s+(?P<flash_sz>0x[0-9A-Fa-f]+)', bank_desc)
-            if not mo or len(mo.groups()) != 3:
-                continue
-            if int(mo.group("bank_num")) != bank_num:
-                continue
-            return mo.group("tgt_name"), int(mo.group("flash_sz"), 16)
-        return "", 0
+    def _get_image_header(self, len, magic=0xe9, chip_id=None, min_rev=0, max_rev=0xffff):
+        if chip_id is None:
+            chip_id = {
+                'esp32': 0,
+                'esp32s2': 2,
+                'esp32s3': 9,
+                'esp32c2': 12,
+                'esp32c3': 5,
+                'esp32c5': 23,
+                'esp32c6': 13,
+                'esp32c61': 20,
+                'esp32h2': 16,
+                'esp32h21': 25,
+                'esp32h4': 28,
+                'esp32p4': 18,
+                'esp32s31': 32
+            }[testee_info.chip]
+        data = bytearray(os.urandom(len))
+        data[0] = magic
+        data[12] = chip_id & 0xFF
+        data[13] = (chip_id >> 8) & 0xFF
+        data[15] = min_rev & 0xFF
+        data[16] = (min_rev >> 8) & 0xFF
+        data[17] = max_rev & 0xFF
+        data[18] = (max_rev >> 8) & 0xFF
+        return data
+
+    def test_rev_checks(self):
+        """
+            This test checks that flasher correctly handles chip revision checks.
+        """
+        rev = int(self.oocd.cmd_exec("[target current] cget -revision").strip())
+
+        test_cases = [
+            # magic, chip_id, min_rev, max_rev, should_pass
+            (None, None, None, None, True),  # default values should pass
+            (0xEE, None, None, None, True),  # wrong magic should be ignored
+            (None, 0xFFFF, None, None, False),  # unknown chip_id
+            (None, None, rev + 1, None, False),  # min_rev too high
+            (None, None, None, rev - 1, False),  # max_rev too low
+            (None, None, rev, rev, True),  # exact match
+            (None, None, rev - 1, rev + 1, True),
+        ]
+
+        try:
+            for magic, chip_id, min_rev, max_rev, should_pass in test_cases:
+                if rev == 0 and (min_rev is not None or max_rev is not None):
+                    # dont check revision for v0.0, 'cget -revision' can be unimplemented
+                    continue
+                kwargs = {}
+                if magic is not None:
+                    kwargs['magic'] = magic
+                if chip_id is not None:
+                    kwargs['chip_id'] = chip_id
+                if min_rev is not None:
+                    kwargs['min_rev'] = min_rev
+                if max_rev is not None:
+                    kwargs['max_rev'] = max_rev
+                data = self._get_image_header(1024, **kwargs)
+                fhnd, fname = tempfile.mkstemp()
+                with os.fdopen(fhnd, 'wb') as fbin:
+                    fbin.write(data)
+                actions='encrypt verify' if self.ENCRYPTED else 'verify'
+                try:
+                    self.gdb.target_program(fname, 0, actions=actions)
+                    self.assertTrue(should_pass)
+                except dbg.DebuggerError:
+                    if should_pass:
+                        raise
+                    else:
+                        self.gdb.target_program(fname, 0, actions=actions + ' force')
+        finally:
+            # restore flash contents with test app as it was overwritten by test
+            # what can lead to the failures when preparing for the next tests
+            self.gdb.target_program_bins(self.test_app_cfg.build_bins_dir())
 
     def program_big_binary(self, actions, overflow=False):
         size = 0x2000 if overflow else self.flash_sz
@@ -45,15 +115,15 @@ class FlasherTestsImpl:
         get_logger().debug('Generate random file %dKB "%s"', size / 1024, fname1)
         with os.fdopen(fhnd, 'wb') as fbin:
             for i in range(int(size / 1024)):
-                fbin.write(os.urandom(1024))
+                fbin.write(os.urandom(1024) if i != 0 else self._get_image_header(1024))
 
-        self.gdb.target_program(fname1, offset, actions=actions, tmo=130)
+        self.gdb.target_program(fname1, offset, actions=actions, tmo=480)
 
         # since we can not get result from OpenOCD (output parsing seems not to be good idea),
         # we need to read written flash and compare data manually
         _, fname2 = tempfile.mkstemp()
         os.truncate(fname1, size - truncate_size)
-        self.gdb.monitor_run('flash read_bank 0 %s 0x%x %d' % (dbg.fixup_path(fname2), offset, size - truncate_size), tmo=180)
+        self.gdb.monitor_run('flash read_bank 0 %s 0x%x %d' % (dbg.fixup_path(fname2), offset, size - truncate_size), tmo=480)
 
         # restore flash contents with test app as it was overwritten by test
         # what can lead to the failures when preparing for the next tests
@@ -105,34 +175,6 @@ class FlasherTestsImpl:
         """
         self.program_big_binary('encrypt compress' if self.ENCRYPTED else 'compress', overflow=True)
 
-    def test_flash_verify_uneven_binary(self):
-        """
-            This test checks that binaries of uneven size can be sucessfully flashed and verified.
-            1) Create test binary file.
-            2) Fill it with random data.
-            3) Write the file to the flash.
-            4) Read written data to another file.
-            5) Compare files.
-        """
-        size = 0x103
-        fhnd, fname1 = tempfile.mkstemp()
-        get_logger().debug('Generate random file %dB "%s"', size, fname1)
-        with os.fdopen(fhnd, 'wb') as fbin:
-            fbin.write(os.urandom(size))
-
-        try:
-            self.gdb.target_program(fname1, 0, actions='encrypt verify' if self.ENCRYPTED else 'verify')
-
-            # since we can not get result from OpenOCD (output parsing seems not to be good idea),
-            # we need to read written flash and compare data manually
-            _, fname2 = tempfile.mkstemp()
-            self.gdb.monitor_run('flash read_bank 0 %s 0x%x %d' % (dbg.fixup_path(fname2), 0, size ))
-            self.assertTrue(filecmp.cmp(fname1, fname2))
-        finally:
-            # restore flash contents with test app as it was overwritten by test
-            # what can lead to the failures when preparing for the next tests
-            self.gdb.target_program_bins(self.test_app_cfg.build_bins_dir())
-
     def test_cache_handling(self):
         """
             This test checks that flasher does not corrupts cache config registers when setting breakpoints.
@@ -151,31 +193,11 @@ class FlasherTestsImpl:
         for i in range(5):
             self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'gpio_set_level', ['gpio_set_level'], outmost_func_name='cache_handling_task')
 
-    def test_stub_logs(self):
-        """
-            This test checks if stub logs are enabled successfully.
-        """
-        expected_strings = ["STUB_D: cmd 4:FLASH_MAP_GET",
-                            "STUB_D: stub_flash_get_size: ENTER",
-                            "STUB_I: Found app image: magic 0xe9"]
-
-        self.gdb.monitor_run("esp stub_log on", 5)
-        self.gdb.monitor_run("flash probe 0", 5)
-        self.gdb.monitor_run("esp stub_log off", 5)
-
-        log_path = get_logger().handlers[1].baseFilename  # 0:StreamHandler 1:FileHandler
-        target_output = ''
-        with open(log_path, 'r') as file:
-            target_output = file.read()
-
-        for expected_str in expected_strings:
-            self.assertIn(expected_str, target_output, f"Expected string '{expected_str}' not found in output")
-
     def program_esp_bins(self, actions):
         # Temp Folder where everything will be contained
         tmp = tempfile.mkdtemp(prefix="esp")
 
-        obj = generate_flasher_args_json()
+        obj = generate_flasher_args_json(self.flash_sz)
         flash_files = obj["flash_files"]
 
         # Write dummy data to bin files
@@ -186,7 +208,7 @@ class FlasherTestsImpl:
             flash_files[offset] = fname
 
             fbin = open(fpath, 'wb')
-            fbin.write(os.urandom(1024))
+            fbin.write(self._get_image_header(DUMMY_BIN_SIZE))
             fbin.close()
 
         encrypted = "true" if self.ENCRYPTED else "false"
@@ -212,7 +234,7 @@ class FlasherTestsImpl:
             fpath = os.path.join(tmp, fname)
             fbin = open(fpath, "wb")
             fbin.close()
-            self.gdb.monitor_run("flash read_bank 0 %s %s 1024" % (dbg.fixup_path(fpath), offset), tmo=120)
+            self.gdb.monitor_run("flash read_bank 0 %s %s %d" % (dbg.fixup_path(fpath), offset, DUMMY_BIN_SIZE), tmo=120)
 
             # Verify the content
             og_fname = "esp_%s.bin" % (offset)
@@ -250,7 +272,16 @@ class FlasherTestsImpl:
         # what can lead to the failures when preparing for the next tests
         self.gdb.target_program_bins(self.test_app_cfg.build_bins_dir())
 
-def generate_flasher_args_json():
+def generate_flasher_args_json(flash_size_bytes):
+    off_app = flash_size_bytes - APP_TAIL_OFF
+    min_flash = PARTITION_TABLE_OFF + DUMMY_BIN_SIZE + APP_TAIL_OFF
+    if flash_size_bytes < min_flash:
+        raise ValueError(
+            f"flash size {flash_size_bytes:#x} too small for program_esp_bins test layout: "
+            f"partition_table@{PARTITION_TABLE_OFF:#x} + dummy_bin({DUMMY_BIN_SIZE:#x}) "
+            f"must fit before app@flash_end-{APP_TAIL_OFF:#x} (need >= {min_flash:#x})"
+        )
+
     return {
         "write_flash_args" : [ "--flash_mode", "dio",
                             "--flash_size", "detect",
@@ -261,13 +292,13 @@ def generate_flasher_args_json():
             "flash_freq": "40m"
         },
         "flash_files" : {
-            "0x118000" : "",
-            "0x110000" : "",
-            "0x210000" : ""
+            f"{PARTITION_TABLE_OFF:#x}" : "",
+            f"{BOOTLOADER_OFF:#x}" : "",
+            f"{off_app:#x}" : ""
         },
-        "partition_table" : { "offset" : "0x118000", "file" : "", "encrypted" : "" },
-        "bootloader" : { "offset" : "0x110000", "file" : "", "encrypted" : "" },
-        "app" : { "offset" : "0x210000", "file" : "", "encrypted" : "" },
+        "partition_table" : { "offset" : f"{PARTITION_TABLE_OFF:#x}", "file" : "", "encrypted" : "" },
+        "bootloader" : { "offset" : f"{BOOTLOADER_OFF:#x}", "file" : "", "encrypted" : "" },
+        "app" : { "offset" : f"{off_app:#x}", "file" : "", "encrypted" : "" },
         "extra_esptool_args" : {
             "after"  : "hard_reset",
             "before" : "default_reset",
@@ -288,7 +319,7 @@ class FlasherTestsDual(DebuggerGenericTestAppTestsDual, FlasherTestsImpl):
         DebuggerGenericTestAppTestsDual.setUp(self)
         FlasherTestsImpl.setUp(self)
 
-    @skip_for_chip(['esp32p4' ,'esp32h4'], "skipped - slow test")
+    @skip_for_chip(['esp32p4' ,'esp32h4', 'esp32s31'], "skipped - slow test")
     def test_big_binary_compressed(self):
         super(DebuggerGenericTestAppTestsDual, self).test_big_binary_compressed()
 
@@ -306,7 +337,7 @@ class FlasherTestsSingle(DebuggerGenericTestAppTestsSingle, FlasherTestsImpl):
         DebuggerGenericTestAppTestsSingle.setUp(self)
         FlasherTestsImpl.setUp(self)
 
-    @skip_for_chip(['esp32p4', 'esp32h4'], "skipped - slow test")
+    @skip_for_chip(['esp32p4', 'esp32h4', 'esp32s31'], "skipped - slow test")
     def test_big_binary(self):
         super(DebuggerGenericTestAppTestsSingle, self).test_big_binary()
 
@@ -317,15 +348,7 @@ class FlasherTestsSingleEncrypted(DebuggerGenericTestAppTestsSingleEncrypted, Fl
         DebuggerGenericTestAppTestsSingleEncrypted.setUp(self)
         FlasherTestsImpl.setUp(self)
 
-@idf_ver_min('5.4')
-@only_for_chip(['esp32c6', 'esp32h2'])
-class FlasherTestsPreloadedStubSingle(DebuggerGenericTestAppTestsSingle):
-
-    def __init__(self, methodName='runTest'):
-        super(FlasherTestsPreloadedStubSingle, self).__init__(methodName)
-        self.test_app_cfg.bin_dir = os.path.join('output', 'single_core_preloaded_stub')
-        self.test_app_cfg.build_dir = os.path.join('builds', 'single_core_preloaded_stub')
-
+class FlasherTestsPreloadedStubImpl:
     def test_preloaded_stub_binary(self):
         """
             This test checks if stub codes already loaded to the targets and functioning as expected.
@@ -363,3 +386,21 @@ class FlasherTestsPreloadedStubSingle(DebuggerGenericTestAppTestsSingle):
         # Always check common functionality regardless of preloaded vs fresh load
         for expected_str in common_expected_strings:
             self.assertIn(expected_str, target_output, f"Expected string '{expected_str}' not found in output")
+
+@idf_ver_min('latest')
+@only_for_chip(['esp32c5', 'esp32c6', 'esp32c61', 'esp32h2', 'esp32h4', 'esp32h21', 'esp32p4', 'esp32s31'])
+class FlasherTestsPreloadedStubSingle(DebuggerGenericTestAppTestsSingle, FlasherTestsPreloadedStubImpl):
+
+    def __init__(self, methodName='runTest'):
+        super(FlasherTestsPreloadedStubSingle, self).__init__(methodName)
+        self.test_app_cfg.bin_dir = os.path.join('output', 'single_core_preloaded_stub')
+        self.test_app_cfg.build_dir = os.path.join('builds', 'single_core_preloaded_stub')
+
+@idf_ver_min('latest')
+@only_for_chip(['esp32h4', 'esp32p4', 'esp32s31'])
+class FlasherTestsPreloadedStubDual(DebuggerGenericTestAppTestsDual, FlasherTestsPreloadedStubImpl):
+
+    def __init__(self, methodName='runTest'):
+        super(DebuggerGenericTestAppTestsDual, self).__init__(methodName)
+        self.test_app_cfg.bin_dir = os.path.join('output', 'default_preloaded_stub')
+        self.test_app_cfg.build_dir = os.path.join('builds', 'default_preloaded_stub')

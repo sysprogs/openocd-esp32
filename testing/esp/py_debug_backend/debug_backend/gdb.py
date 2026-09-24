@@ -166,9 +166,9 @@ class Gdb(object):
         def _mi_cmd_isdone(response, response_on_success):
             if not len(response_on_success):
                 return True
-            if len(response) < len(response_on_success):
-                return False
             r_list = [str(i.get('message')) for i in response]
+            if ("error" in r_list):
+                return True
             return is_sublist(response_on_success, r_list)
 
         with self._gdbmi_lock:
@@ -371,7 +371,7 @@ class Gdb(object):
 
     @staticmethod
     def extract_exec_addr(addr_val):
-        sval_re = re.search('(.*)[<](.*)[>]', addr_val)
+        sval_re = re.search('([x0-9A-Fa-f]+) <.*>', addr_val)
         if sval_re:
             return int(sval_re.group(1), 0)
         return int(addr_val, 0)
@@ -443,7 +443,7 @@ class Gdb(object):
             # this is a workaround until get a proper fix in the gdb
 
             # we do not check the response, In some cases we may get an error RESULT: error {'msg': 'PC not saved'}
-            self._mi_cmd_run('bt',tmo=0.1)
+            self._mi_cmd_run('bt',tmo=0.5)
         res, res_body = self._mi_cmd_run('-stack-list-frames')
         if res != 'done' or not res_body or 'stack' not in res_body:
             raise DebuggerError('Failed to get backtrace! (%s / %s)' % (res, res_body))

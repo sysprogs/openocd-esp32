@@ -255,9 +255,6 @@ static bool swd_mode;
 static uint16_t default_ch347_vids[] = {DEFAULT_VENDOR_ID, DEFAULT_VENDOR_ID, DEFAULT_VENDOR_ID, 0};
 static uint16_t default_ch347_pids[] = {DEFAULT_CH347T_PRODUCT_ID,
 	DEFAULT_CH347F_PRODUCT_ID, DEFAULT_OTHER_PRODUCT_ID, 0};
-static uint16_t custom_ch347_vids[] = {0, 0, 0, 0};
-static uint16_t custom_ch347_pids[] = {0, 0, 0, 0};
-static char *ch347_device_desc;
 static uint8_t ch347_activity_led_gpio_pin = 0xFF;
 static bool ch347_activity_led_active_high;
 static struct ch347_info ch347;
@@ -1420,10 +1417,16 @@ static int ch347_execute_queue(struct jtag_command *cmd_queue)
  */
 static int ch347_open_device(void)
 {
-	const uint16_t *ch347_vids = custom_ch347_vids[0] != 0 ? custom_ch347_vids : default_ch347_vids;
-	const uint16_t *ch347_pids = custom_ch347_pids[0] != 0 ? custom_ch347_pids : default_ch347_pids;
+	const uint16_t *ch347_vids = default_ch347_vids;
+	const uint16_t *ch347_pids = default_ch347_pids;
 
-	int retval = jtag_libusb_open(ch347_vids, ch347_pids, ch347_device_desc, &ch347_handle, NULL);
+	if (adapter_usb_get_vids()[0] != 0) {
+		ch347_vids = adapter_usb_get_vids();
+		ch347_pids = adapter_usb_get_pids();
+	}
+
+	int retval = jtag_libusb_open(ch347_vids, ch347_pids,
+		adapter_usb_get_product_name(), &ch347_handle, NULL);
 	if (retval != ERROR_OK)	{
 		char error_message[256];
 		snprintf(error_message, sizeof(error_message), "CH347 not found. Tried VID/PID pairs: ");
@@ -1449,6 +1452,12 @@ static int ch347_open_device(void)
 		jtag_libusb_close(ch347_handle);
 		return retval;
 	}
+
+	// Fix for CH347F on ARM64
+	// Force set configuration 1 (required on some ARM64 platforms)
+	retval = libusb_set_configuration(ch347_handle, 1);
+	if (retval != LIBUSB_SUCCESS && retval != LIBUSB_ERROR_BUSY)
+		LOG_WARNING("CH347 set_configuration failed: %s", libusb_error_name(retval));
 
 	// CH347T / CH347F detection
 	// if we can claim interface 4 we found a CH347F chip; if we can claim interface 2 we found CH347T chip
@@ -1773,63 +1782,11 @@ static int ch347_speed_get_index(int khz, int *speed_idx)
 	return ERROR_OK;
 }
 
-/**
- * @brief The command handler for setting the device usb vid/pid
- *
- * @return ERROR_OK at success; ERROR_COMMAND_SYNTAX_ERROR otherwise
- */
-COMMAND_HANDLER(ch347_handle_vid_pid_command)
-{
-	if (CMD_ARGC < 2)
-		return ERROR_COMMAND_SYNTAX_ERROR;
-
-	for (int i = 0; i < (int)(MIN(CMD_ARGC, ARRAY_SIZE(custom_ch347_pids))); i += 2) {
-		COMMAND_PARSE_NUMBER(u16, CMD_ARGV[i], custom_ch347_vids[i / 2]);
-		COMMAND_PARSE_NUMBER(u16, CMD_ARGV[i + 1], custom_ch347_pids[i / 2]);
-	}
-
-	return ERROR_OK;
-}
-
-/**
- * @brief The command handler for setting the device description that should be found
- *
- * @return ERROR_OK at success; ERROR_COMMAND_SYNTAX_ERROR otherwise
- */
-COMMAND_HANDLER(ch347_handle_device_desc_command)
-{
-	if (CMD_ARGC != 1)
-		return ERROR_COMMAND_SYNTAX_ERROR;
-
-	free(ch347_device_desc);
-	ch347_device_desc = strdup(CMD_ARGV[0]);
-	return ERROR_OK;
-}
-
-static const struct command_registration ch347_subcommand_handlers[] = {
-	{
-		.name = "vid_pid",
-		.handler = &ch347_handle_vid_pid_command,
-		.mode = COMMAND_CONFIG,
-		.help = "the vendor ID and product ID of the CH347 device",
-		.usage = "(vid pid)*",
-	},
-	{
-		.name = "device_desc",
-		.handler = &ch347_handle_device_desc_command,
-		.mode = COMMAND_CONFIG,
-		.help = "set the USB device description of the CH347 device",
-		.usage = "description_string",
-	},
-	COMMAND_REGISTRATION_DONE
-};
-
 static const struct command_registration ch347_command_handlers[] = {
 	{
 		.name = "ch347",
 		.mode = COMMAND_ANY,
 		.help = "perform ch347 management",
-		.chain = ch347_subcommand_handlers,
 		.usage = "",
 	},
 	COMMAND_REGISTRATION_DONE

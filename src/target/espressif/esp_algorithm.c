@@ -12,8 +12,11 @@
 #include <helper/align.h>
 #include <target/algorithm.h>
 #include <target/target.h>
+#include <rtos/rtos.h>
 #include "esp_algorithm.h"
-#include "../../../contrib/loaders/flash/espressif/stub_flasher.h"
+#include "esp_riscv.h"
+#include "esp_xtensa.h"
+#include "../../../contrib/loaders/flash/espressif/include/esp_stub.h"
 
 /* 3 sec will be enough for the regular commands. Flash erase will take time but it has another timer value */
 #define DEFAULT_ALGORITHM_TIMEOUT_MS    3000	/* ms */
@@ -44,6 +47,47 @@ static int esp_algorithm_read_stub_logs(struct target *target, struct esp_algori
 	return retval;
 }
 
+static bool esp_algorithm_read_stub_trap(struct target *target, struct esp_algorithm_run_data *run)
+{
+	if (!run || !run->stub.trap_record_addr)
+		return false;
+
+	uint32_t trap_addr = run->stub.trap_record_addr;
+	union esp_stub_trap_record rec = { ._pad = { 0 } };
+
+	int retval = target_read_memory(target, trap_addr, 4, ESP_STUB_TRAP_RECORD_SIZE / 4, rec._pad);
+	if (retval != ERROR_OK) {
+		LOG_WARNING("Failed to read stub trap record @ 0x%" PRIx32, trap_addr);
+		return false;
+	}
+
+	if (rec.magic != ESP_STUB_TRAP_RECORD_MAGIC)
+		return false;
+
+	if (rec.flags == ESP_STUB_TRAP_RECORD_XTENSA) {
+		LOG_ERROR("Stub exception on hart %" PRIu32 " @ 0x%08" PRIx32 ": %s",
+			rec.hartid, rec.mepc, esp_xtensa_get_exception_reason(rec.mcause));
+		LOG_ERROR("  exccause  : 0x%08" PRIx32, rec.mcause);
+		LOG_ERROR("  excvaddr  : 0x%08" PRIx32, rec.mtval);
+		LOG_ERROR("  epc1      : 0x%08" PRIx32, rec.mepc);
+		LOG_ERROR("  ps        : 0x%08" PRIx32, rec.mstatus);
+		LOG_ERROR("  a0 (ra)   : 0x%08" PRIx32, rec.ra);
+		LOG_ERROR("  a1 (sp)   : 0x%08" PRIx32, rec.sp);
+	} else {
+		/* RISC-V */
+		LOG_ERROR("Stub exception on hart %" PRIu32 " @ 0x%08" PRIx32 ": %s",
+			rec.hartid, rec.mepc, esp_riscv_get_exception_reason(rec.mcause));
+		LOG_ERROR("  mcause    : 0x%08" PRIx32, rec.mcause);
+		LOG_ERROR("  mepc      : 0x%08" PRIx32, rec.mepc);
+		LOG_ERROR("  mtval     : 0x%08" PRIx32, rec.mtval);
+		LOG_ERROR("  mstatus   : 0x%08" PRIx32, rec.mstatus);
+		LOG_ERROR("  ra        : 0x%08" PRIx32, rec.ra);
+		LOG_ERROR("  sp        : 0x%08" PRIx32, rec.sp);
+	}
+
+	return true;
+}
+
 #ifdef ESP_STACK_HIGH_WATER_MARK
 char *hexdump(uint8_t *buf, int size)
 {
@@ -71,7 +115,9 @@ char *hexdump(uint8_t *buf, int size)
 
 static int esp_algorithm_calculate_stack_usage(struct target *target, struct esp_algorithm_stub *stub)
 {
-	if (!stub || stub->stack->address == 0)
+	/* stub->stack (working area) is only allocated on the normal load path; the
+	 * preloaded/on-board paths set stack_addr directly and leave stack == NULL. */
+	if (!stub || !stub->stack || stub->stack->address == 0)
 		return ERROR_FAIL;
 
 	uint8_t *stack_content = calloc(1, stub->stack->size);
@@ -81,13 +127,14 @@ static int esp_algorithm_calculate_stack_usage(struct target *target, struct esp
 	}
 	int retval = target_read_memory(target, stub->stack->address, 1, stub->stack->size, stack_content);
 	if (retval == ERROR_OK) {
-		LOG_OUTPUT("=================================================\n");
+		LOG_OUTPUT("=======================================================================\n");
 		//LOG_OUTPUT("%s", hexdump(stack_content, stub->stack->size));
 		/* find first non 0xA5 address */
 		for (size_t i = 0; i < stub->stack->size; ++i) {
 			if (stack_content[i] != 0xA5) {
-				LOG_OUTPUT("(%zu) bytes used in (%d) bytes stack\n", stub->stack->size - i, stub->stack->size);
-				LOG_OUTPUT("=================================================\n");
+				LOG_OUTPUT("(%zu) bytes used in (%d) bytes stack for %s\n",
+					stub->stack->size - i, stub->stack->size, stub->name);
+				LOG_OUTPUT("=======================================================================\n");
 				break;
 			}
 		}
@@ -207,6 +254,7 @@ static int esp_algorithm_run_image(struct target *target,
 		/* target has been forced to stop in target_wait_algorithm() */
 	}
 	esp_algorithm_read_stub_logs(target, &run->stub);
+	esp_algorithm_read_stub_trap(target, run);
 
 #ifdef ESP_STACK_HIGH_WATER_MARK
 	esp_algorithm_calculate_stack_usage(target, &run->stub);
@@ -287,6 +335,14 @@ _cleanup:
 	run->hw->algo_cleanup(target, run);
 
 	return retval;
+}
+
+static bool esp_algorithm_reversed_mem_access(struct target *target)
+{
+	struct xtensa *xtensa = target->arch_info;
+	if (xtensa->common_magic == XTENSA_COMMON_MAGIC)
+		return xtensa->core_config->trace.reversed_mem_access;
+	return false;
 }
 
 static void reverse_binary(const uint8_t *src, uint8_t *dest, size_t length)
@@ -385,6 +441,15 @@ int esp_algorithm_check_preloaded_image(struct target *target, struct esp_algori
 
 	run->run_preloaded_binary = false;
 
+	/* The preloaded stub image is an ESP-IDF (FreeRTOS) feature. For other RTOSes
+	 * there is no preloaded image, so load the stub from jtag directly. */
+	if (target->rtos && target->rtos->type && strcmp(target->rtos->type->name, "FreeRTOS")) {
+		LOG_TARGET_DEBUG(target, "Not an ESP-IDF app, stub flasher will be loaded from jtag.");
+		return ERROR_FAIL;
+	}
+
+	LOG_DEBUG("Checking preloaded image at 0x%" PRIX32, run->image.iram_org);
+
 	int retval = target_read_buffer(target, run->image.iram_org, ESP_STUB_FLASHER_DESC_SIZE, buffer);
 	if (retval != ERROR_OK) {
 		LOG_ERROR("Failed to read stub description!");
@@ -395,12 +460,18 @@ int esp_algorithm_check_preloaded_image(struct target *target, struct esp_algori
 	uint32_t stub_version = target_buffer_get_u32(target, buffer + ESP_STUB_FLASHER_DESC_MAGIC_VERSION);
 	uint32_t idf_key = target_buffer_get_u32(target, buffer + ESP_STUB_FLASHER_DESC_IDF_KEY);
 
+	static bool logged_warning;
 	if (magic_num != ESP_STUB_FLASHER_MAGIC_NUM || stub_version != ESP_STUB_FLASHER_VERSION
 		|| idf_key != ESP_STUB_FLASHER_IDF_KEY) {
+		if (logged_warning)
+			return ERROR_FAIL;
+		logged_warning = true;
 		LOG_WARNING("Installed stub code magic_num(0x%" PRIX32 ") stub_version(%" PRIX32 ") idf_key(%" PRIX32 ")",
 			magic_num, stub_version, idf_key);
 		LOG_WARNING("Expected stub code magic_num(0x%" PRIX32 ") stub_version(%" PRIX32 ") idf_key(%" PRIX32 ")",
 			ESP_STUB_FLASHER_MAGIC_NUM, ESP_STUB_FLASHER_VERSION, ESP_STUB_FLASHER_IDF_KEY);
+		LOG_INFO("Stub flasher will be loaded to the target's memory.\n"
+			"Enable CONFIG_ESP_DEBUG_INCLUDE_OCD_STUB_BINS to run preloaded stub code and speed up debugging.");
 		return ERROR_FAIL;
 	}
 
@@ -453,7 +524,7 @@ int esp_algorithm_load_func_image(struct target *target, struct esp_algorithm_ru
 	if (!run || !run->hw)
 		return ERROR_FAIL;
 
-	if (duration_start(&algo_time) != 0) {
+	if (duration_start(&algo_time) != ERROR_OK) {
 		LOG_ERROR("Failed to start algo time measurement!");
 		return ERROR_FAIL;
 	}
@@ -477,7 +548,8 @@ int esp_algorithm_load_func_image(struct target *target, struct esp_algorithm_ru
 	 * To avoid complexity for the backup/restore process, we will allocate a workarea for all IRAM region from
 	 * the beginning. In that case no need to have a padding area.
 	 */
-	if (run->image.reverse) {
+	bool reverse = esp_algorithm_reversed_mem_access(target);
+	if (reverse) {
 		if (target_alloc_working_area(target, run->image.iram_len, &run->stub.code) != ERROR_OK) {
 			LOG_ERROR("no working area available, can't alloc space for stub code!");
 			retval = ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
@@ -520,7 +592,7 @@ int esp_algorithm_load_func_image(struct target *target, struct esp_algorithm_ru
 				goto _on_error;
 			}
 
-			retval = load_section_from_image(target, run, i, run->image.reverse);
+			retval = load_section_from_image(target, run, i, reverse);
 			if (retval != ERROR_OK)
 				goto _on_error;
 
@@ -545,7 +617,7 @@ int esp_algorithm_load_func_image(struct target *target, struct esp_algorithm_ru
 
 		size_t al_tramp_size = ALIGN_UP(tramp_sz, 4);
 
-		if (run->image.reverse) {
+		if (reverse) {
 			target_addr_t reversed_tramp_addr = run->image.dram_org - code_size;
 			uint8_t reversed_tramp[al_tramp_size];
 
@@ -642,7 +714,7 @@ int esp_algorithm_load_func_image(struct target *target, struct esp_algorithm_ru
 #endif
 	}
 
-	if (duration_measure(&algo_time) != 0) {
+	if (duration_measure(&algo_time) != ERROR_OK) {
 		LOG_ERROR("Failed to stop algo run measurement!");
 		retval = ERROR_FAIL;
 		goto _on_error;
@@ -692,7 +764,7 @@ int esp_algorithm_load_onboard_func(struct target *target, target_addr_t func_ad
 	if (!run || !run->hw)
 		return ERROR_FAIL;
 
-	if (duration_start(&algo_time) != 0) {
+	if (duration_start(&algo_time) != ERROR_OK) {
 		LOG_ERROR("Failed to start algo time measurement!");
 		return ERROR_FAIL;
 	}
@@ -728,7 +800,7 @@ int esp_algorithm_load_onboard_func(struct target *target, target_addr_t func_ad
 		}
 	}
 
-	if (duration_measure(&algo_time) != 0) {
+	if (duration_measure(&algo_time) != ERROR_OK) {
 		LOG_ERROR("Failed to stop algo run measurement!");
 		return ERROR_FAIL;
 	}

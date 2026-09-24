@@ -195,15 +195,9 @@ static inline bool riscv_reg_impl_gdb_regno_cacheable(enum gdb_regno regno,
 	 * CSRs. */
 	switch (regno) {
 	case GDB_REGNO_DPC:
-	case GDB_REGNO_VSTART:
-	case GDB_REGNO_VXSAT:
-	case GDB_REGNO_VXRM:
 	case GDB_REGNO_VLENB:
-	case GDB_REGNO_VL:
-	case GDB_REGNO_VTYPE:
 	case GDB_REGNO_MISA:
 	case GDB_REGNO_DCSR:
-	case GDB_REGNO_DSCRATCH0:
 	case GDB_REGNO_MEPC:
 	case GDB_REGNO_SATP:
 		/*
@@ -215,6 +209,14 @@ static inline bool riscv_reg_impl_gdb_regno_cacheable(enum gdb_regno regno,
 	case GDB_REGNO_TSELECT:	/* I think this should be above, but then it doesn't work. */
 	case GDB_REGNO_TDATA1:	/* Changes value when tselect is changed. */
 	case GDB_REGNO_TDATA2:  /* Changes value when tselect is changed. */
+	case GDB_REGNO_DSCRATCH0: /* Dscratch* need not retain value between abstract commands. */
+	case GDB_REGNO_DSCRATCH1:
+	case GDB_REGNO_VSTART: /* Changes value when vtype is changed. */
+	case GDB_REGNO_VL: /* Changes value when vtype is changed. */
+	case GDB_REGNO_VTYPE: /* Writes to vtype have side effects, so we don't cache it. */
+	case GDB_REGNO_VXSAT: /* Changes value when vcsr is changed. */
+	case GDB_REGNO_VXRM: /* Changes value when vcsr is changed. */
+	case GDB_REGNO_VCSR: /* Changes when vxrm or vxsat are changed. */
 	default:
 		return false;
 	}

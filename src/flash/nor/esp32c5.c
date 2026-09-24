@@ -40,15 +40,19 @@ static bool esp32c5_is_drom_address(target_addr_t addr)
 	return addr >= ESP32C5_DROM_LOW && addr < ESP32C5_DROM_HIGH;
 }
 
-static const struct command_map s_cmd_map[ESP_STUB_CMD_FLASH_MAX_ID + 1] = {
-	MAKE_CMD_MAP_ENTRIES
-};
-
 static const struct esp_flasher_stub_config *esp32c5_get_stub(struct flash_bank *bank, int cmd)
 {
 	struct esp_flash_bank *esp_info = bank->driver_priv;
 	if (esp_info->stub_log_enabled)
-		return s_cmd_map[ESP_STUB_CMD_FLASH_WITH_LOG].config;
+		return s_cmd_map[ESP_STUB_CMD_TEST_ALL].config;
+	switch (cmd) {
+	case ESP_STUB_CMD_FLASH_MAP_GET:
+	case ESP_STUB_CMD_FLASH_BP_SET:
+	case ESP_STUB_CMD_FLASH_BP_CLEAR:
+		return s_cmd_map[ESP_STUB_CMD_FLASH_IDF_BINARY].config;
+	default:
+		break;
+	}
 	return s_cmd_map[cmd].config;
 }
 
@@ -71,7 +75,7 @@ FLASH_BANK_COMMAND_HANDLER(esp32c5_flash_bank_command)
 		esp32c5_is_irom_address,
 		esp32c5_is_drom_address,
 		esp32c5_get_stub,
-		false);
+		true);
 	if (ret != ERROR_OK) {
 		free(esp32c5_info);
 		return ret;

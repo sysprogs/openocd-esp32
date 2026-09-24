@@ -17,6 +17,7 @@ target_sources(helper PRIVATE
 	jep106.c
 	jim-nvp.c
 	nvp.c
+	tcl-libjim.c
 	align.h
 	binarybuffer.h
 	bits.h

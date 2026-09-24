@@ -32,6 +32,7 @@
  *   Cortex-A9(tm) TRM, ARM DDI 0407F                                      *
  *   Cortex-A4(tm) TRM, ARM DDI 0363E                                      *
  *   Cortex-A15(tm)TRM, ARM DDI 0438C                                      *
+ *   Architecture Reference Manual, ARMv7-A and ARMv7-R, ARM DDI 0406C.d   *
  *                                                                         *
  ***************************************************************************/
 
@@ -215,7 +216,7 @@ static int cortex_a_init_debug_access(struct target *target)
 	/* lock memory-mapped access to debug registers to prevent
 	 * software interference */
 	retval = mem_ap_write_u32(armv7a->debug_ap,
-			armv7a->debug_base + CPUDBG_LOCKACCESS, 0);
+			armv7a->debug_base + ARM_CS_LAR, 0);
 	if (retval != ERROR_OK)
 		return retval;
 
@@ -451,12 +452,8 @@ static int cortex_a_instr_write_data_r0(struct arm_dpm *dpm,
 		return retval;
 
 	/* then the opcode, taking data from R0 */
-	retval = cortex_a_exec_opcode(
-			a->armv7a_common.arm.target,
-			opcode,
-			&dscr);
-
-	return retval;
+	return cortex_a_exec_opcode(a->armv7a_common.arm.target, opcode,
+				&dscr);
 }
 
 static int cortex_a_instr_write_data_r0_r1(struct arm_dpm *dpm,
@@ -475,10 +472,8 @@ static int cortex_a_instr_write_data_r0_r1(struct arm_dpm *dpm,
 		return retval;
 
 	/* then the opcode, taking data from R0, R1 */
-	retval = cortex_a_exec_opcode(a->armv7a_common.arm.target,
-			opcode,
-			&dscr);
-	return retval;
+	return cortex_a_exec_opcode(a->armv7a_common.arm.target, opcode,
+				&dscr);
 }
 
 static int cortex_a_instr_cpsr_sync(struct arm_dpm *dpm)
@@ -602,9 +597,7 @@ static int cortex_a_bpwp_enable(struct arm_dpm *dpm, unsigned int index_t,
 			vr, addr);
 	if (retval != ERROR_OK)
 		return retval;
-	retval = mem_ap_write_atomic_u32(a->armv7a_common.debug_ap,
-			cr, control);
-	return retval;
+	return mem_ap_write_atomic_u32(a->armv7a_common.debug_ap, cr, control);
 }
 
 static int cortex_a_bpwp_disable(struct arm_dpm *dpm, unsigned int index_t)
@@ -1060,18 +1053,6 @@ static int cortex_a_debug_entry(struct target *target)
 	/* Examine debug reason */
 	arm_dpm_report_dscr(&armv7a->dpm, cortex_a->cpudbg_dscr);
 
-	/* save address of instruction that triggered the watchpoint? */
-	if (target->debug_reason == DBG_REASON_WATCHPOINT) {
-		uint32_t wfar;
-
-		retval = mem_ap_read_atomic_u32(armv7a->debug_ap,
-				armv7a->debug_base + CPUDBG_WFAR,
-				&wfar);
-		if (retval != ERROR_OK)
-			return retval;
-		arm_dpm_report_wfar(&armv7a->dpm, wfar);
-	}
-
 	/* First load register accessible through core debug port */
 	retval = arm_dpm_read_current_registers(&armv7a->dpm);
 	if (retval != ERROR_OK)
@@ -1082,6 +1063,29 @@ static int cortex_a_debug_entry(struct target *target)
 		retval = arm_dpm_read_reg(&armv7a->dpm, arm->spsr, 17);
 		if (retval != ERROR_OK)
 			return retval;
+	}
+
+	/* save address of instruction that triggered the watchpoint? */
+	if (target->debug_reason == DBG_REASON_WATCHPOINT) {
+		/*
+		 * On v7.1 Debug architecture or on synchronous (precise) watchpoints,
+		 * WFAR is not used. Take the instruction address from halted PC.
+		 * See ARM DDI 0406C.d chapter C5.2.2 "Effect of entering Debug state
+		 * on CP15 registers and the DBGWFAR".
+		 */
+		if (((armv7a->dpm.didr >> 16) & 0xf) > 4 ||
+				DSCR_ENTRY(cortex_a->cpudbg_dscr) == DSCR_ENTRY_PRECISE_WATCHPT) {
+			armv7a->dpm.wp_addr = buf_get_u32(arm->pc->value, 0, 32);
+		} else {
+			uint32_t wfar;
+
+			retval = mem_ap_read_atomic_u32(armv7a->debug_ap,
+					armv7a->debug_base + CPUDBG_WFAR,
+					&wfar);
+			if (retval != ERROR_OK)
+				return retval;
+			arm_dpm_report_wfar(&armv7a->dpm, wfar);
+		}
 	}
 
 #if 0
@@ -1173,9 +1177,8 @@ static int cortex_a_set_dscr_bits(struct target *target,
 	dscr |= value & bit_mask;
 
 	/* write new DSCR */
-	retval = mem_ap_write_atomic_u32(armv7a->debug_ap,
-			armv7a->debug_base + CPUDBG_DSCR, dscr);
-	return retval;
+	return mem_ap_write_atomic_u32(armv7a->debug_ap,
+				armv7a->debug_base + CPUDBG_DSCR, dscr);
 }
 
 /*
@@ -3503,6 +3506,8 @@ struct target_type cortexa_target = {
 	.write_phys_memory = cortex_a_write_phys_memory,
 	.mmu = cortex_a_mmu,
 	.virt2phys = cortex_a_virt2phys,
+
+	.insn_set = armv4_5_insn_set,
 };
 
 static const struct command_registration cortex_r4_exec_command_handlers[] = {
@@ -3575,4 +3580,6 @@ struct target_type cortexr4_target = {
 	.init_target = cortex_a_init_target,
 	.examine = cortex_a_examine,
 	.deinit_target = cortex_a_deinit_target,
+
+	.insn_set = armv4_5_insn_set,
 };

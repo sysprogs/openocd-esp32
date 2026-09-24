@@ -25,7 +25,6 @@
 #include "target_request.h"
 #include "target_type.h"
 #include "arm_adi_v5.h"
-#include "arm_disassembler.h"
 #include "register.h"
 #include "arm_opcodes.h"
 #include "arm_semihosting.h"
@@ -2371,7 +2370,6 @@ void cortex_m_deinit_target(struct target *target)
 int cortex_m_profiling(struct target *target, uint32_t *samples,
 			      uint32_t max_num_samples, uint32_t *num_samples, uint32_t seconds)
 {
-	struct timeval timeout, now;
 	struct armv7m_common *armv7m = target_to_armv7m(target);
 	uint32_t reg_value;
 	int retval;
@@ -2386,8 +2384,7 @@ int cortex_m_profiling(struct target *target, uint32_t *samples,
 		return target_profiling_default(target, samples, max_num_samples, num_samples, seconds);
 	}
 
-	gettimeofday(&timeout, NULL);
-	timeval_add_time(&timeout, seconds, 0);
+	int64_t then = timeval_ms() + seconds * 1000LL;
 
 	LOG_TARGET_INFO(target, "Starting Cortex-M profiling. Sampling DWT_PCSR as fast as we can...");
 
@@ -2423,8 +2420,7 @@ int cortex_m_profiling(struct target *target, uint32_t *samples,
 		}
 
 
-		gettimeofday(&now, NULL);
-		if (sample_count >= max_num_samples || timeval_compare(&now, &timeout) > 0) {
+		if (sample_count >= max_num_samples || timeval_ms() > then) {
 			LOG_TARGET_INFO(target, "Profiling completed. %" PRIu32 " samples.", sample_count);
 			break;
 		}
@@ -2775,10 +2771,12 @@ int cortex_m_security_restore(struct target *target, struct cortex_m_saved_secur
 static int cortex_m_find_mem_ap(struct adiv5_dap *swjdp,
 		struct adiv5_ap **debug_ap)
 {
-	if (dap_find_get_ap(swjdp, AP_TYPE_AHB3_AP, debug_ap) == ERROR_OK)
-		return ERROR_OK;
+	const enum ap_type types[] = {
+		AP_TYPE_AHB3_AP,
+		AP_TYPE_AHB5_AP
+	};
 
-	return dap_find_get_ap(swjdp, AP_TYPE_AHB5_AP, debug_ap);
+	return dap_find_by_types_get_ap(swjdp, types, ARRAY_SIZE(types), debug_ap);
 }
 
 int cortex_m_examine(struct target *target)
@@ -3196,6 +3194,15 @@ static int cortex_m_target_create(struct target *target)
 	return ERROR_OK;
 }
 
+int cortex_m_insn_set(struct command_invocation *cmd, struct target *target,
+	const char **insn_set)
+{
+	// string match in target/oocd_capstone.c
+	*insn_set = "cortexm";
+
+	return ERROR_OK;
+}
+
 /*--------------------------------------------------------------------------*/
 
 static int cortex_m_verify_pointer(struct command_invocation *cmd,
@@ -3501,4 +3508,6 @@ struct target_type cortexm_target = {
 	.deinit_target = cortex_m_deinit_target,
 
 	.profiling = cortex_m_profiling,
+
+	.insn_set = cortex_m_insn_set,
 };

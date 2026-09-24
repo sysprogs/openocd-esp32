@@ -75,7 +75,6 @@ struct adapter_gpio_config {
 	enum adapter_gpio_pull pull;
 };
 
-extern struct adapter_driver *adapter_driver;
 struct command_context;
 
 /** Register the adapter's commands */
@@ -93,8 +92,16 @@ bool is_adapter_initialized(void);
 /** @returns USB location string set with command 'adapter usb location' */
 const char *adapter_usb_get_location(void);
 
+/** @returns USB product name set with command 'adapter usb product_name' */
+const char *adapter_usb_get_product_name(void);
+
 /** @returns true if USB location string is "<dev_bus>-<port_path[0]>[.<port_path[1]>[...]]" */
 bool adapter_usb_location_equal(uint8_t dev_bus, uint8_t *port_path, size_t path_len);
+
+/** @returns USB VIDs set with command 'adapter usb vid_pid' */
+const uint16_t *adapter_usb_get_vids(void);
+/** @returns USB PIDs set with command 'adapter usb vid_pid' */
+const uint16_t *adapter_usb_get_pids(void);
 
 /** @returns The current adapter speed setting. */
 int adapter_get_speed(int *speed);
@@ -129,6 +136,8 @@ const char *adapter_gpio_get_name(enum adapter_gpio_config_index idx);
  * Retrieves gpio configuration set with command "adapter gpio <signal_name>"
  */
 const struct adapter_gpio_config *adapter_gpio_get_config(void);
+
+extern struct adapter_driver *adapter_driver;
 
 #define ADAPTER_GPIO_NOT_SET UINT_MAX
 

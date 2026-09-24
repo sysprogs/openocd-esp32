@@ -16,6 +16,7 @@
 #endif
 
 #include "server.h"
+#include <helper/tcl-common.h>
 #include <helper/time_support.h>
 #include <target/target.h>
 #include <target/target_request.h>
@@ -35,8 +36,6 @@
 #include <netinet/tcp.h>
 #endif
 
-static struct service *services;
-
 enum shutdown_reason {
 	CONTINUE_MAIN_LOOP,			/* stay in main event loop */
 	SHUTDOWN_REQUESTED,			/* set by shutdown command; exit the event loop and quit the debugger */
@@ -44,9 +43,15 @@ enum shutdown_reason {
 	SHUTDOWN_WITH_SIGNAL_CODE	/* set by sig_handler; exec shutdown then exit with signal as return code */
 };
 
+static struct service *services;
+
 static volatile sig_atomic_t shutdown_openocd = CONTINUE_MAIN_LOOP;
-/* store received signal to exit application by killing ourselves */
+/* Received signal number, later used to kill ourselves.
+ * Only relevant for SHUTDOWN_WITH_SIGNAL_CODE. */
 static volatile sig_atomic_t last_signal;
+/* Exit status to use. Only relevant for SHUTDOWN_REQUESTED
+ * or SHUTDOWN_WITH_ERROR_CODE. */
+static uint8_t openocd_exit_status_code;
 
 /* set the polling period to 100ms */
 static int polling_period = 100;
@@ -227,6 +232,7 @@ int add_service(const struct service_driver *driver, const char *port,
 	c->connection_closed = driver->connection_closed_handler;
 	c->keep_client_alive = driver->keep_client_alive_handler;
 	c->service_dtor = driver->service_dtor_handler;
+	c->service_info = driver->service_info_handler;
 	c->priv = priv;
 	c->next = NULL;
 
@@ -428,7 +434,7 @@ void server_keep_clients_alive(void)
 				s->keep_client_alive(c);
 }
 
-int server_loop(struct command_context *command_context)
+void server_loop(struct command_context *command_context)
 {
 	struct service *service;
 
@@ -457,7 +463,7 @@ int server_loop(struct command_context *command_context)
 		for (service = services; service; service = service->next) {
 			if (service->fd != -1) {
 				/* listen for new connections */
-				PORTABLE_FD_SET(service->fd, &read_fds);
+				OCD_FD_SET(service->fd, &read_fds);
 
 				if (service->fd > fd_max)
 					fd_max = service->fd;
@@ -468,7 +474,7 @@ int server_loop(struct command_context *command_context)
 
 				for (c = service->connections; c; c = c->next) {
 					/* check for activity on the connection */
-					PORTABLE_FD_SET(c->fd, &read_fds);
+					OCD_FD_SET(c->fd, &read_fds);
 					if (c->fd > fd_max)
 						fd_max = c->fd;
 				}
@@ -503,7 +509,9 @@ int server_loop(struct command_context *command_context)
 				FD_ZERO(&read_fds);
 			else {
 				LOG_ERROR("error during select: %s", strerror(errno));
-				return ERROR_FAIL;
+				shutdown_openocd = SHUTDOWN_WITH_ERROR_CODE;
+				openocd_exit_status_code = EXIT_FAILURE;
+				return;
 			}
 #else
 
@@ -511,7 +519,9 @@ int server_loop(struct command_context *command_context)
 				FD_ZERO(&read_fds);
 			else {
 				LOG_ERROR("error during select: %s", strerror(errno));
-				return ERROR_FAIL;
+				shutdown_openocd = SHUTDOWN_WITH_ERROR_CODE;
+				openocd_exit_status_code = EXIT_FAILURE;
+				return;
 			}
 #endif
 		}
@@ -546,7 +556,7 @@ int server_loop(struct command_context *command_context)
 		for (service = services; service; service = service->next) {
 			/* handle new connections on listeners */
 			if ((service->fd != -1)
-				&& (FD_ISSET(service->fd, &read_fds))) {
+				&& (OCD_FD_ISSET(service->fd, &read_fds))) {
 				if (service->max_connections != 0)
 					add_connection(service, command_context);
 				else {
@@ -570,7 +580,7 @@ int server_loop(struct command_context *command_context)
 				struct connection *c;
 
 				for (c = service->connections; c; ) {
-					if ((c->fd >= 0 && FD_ISSET(c->fd, &read_fds)) || c->input_pending) {
+					if ((c->fd >= 0 && OCD_FD_ISSET(c->fd, &read_fds)) || c->input_pending) {
 						retval = service->input(c);
 						if (retval != ERROR_OK) {
 							struct connection *next = c->next;
@@ -601,11 +611,33 @@ int server_loop(struct command_context *command_context)
 #endif
 	}
 
+	assert(shutdown_openocd == SHUTDOWN_REQUESTED ||
+		shutdown_openocd == SHUTDOWN_WITH_ERROR_CODE ||
+		shutdown_openocd == SHUTDOWN_WITH_SIGNAL_CODE);
+
 	/* when quit for signal or CTRL-C, run (eventually user implemented) "shutdown" */
 	if (shutdown_openocd == SHUTDOWN_WITH_SIGNAL_CODE)
 		command_run_line(command_context, "shutdown");
+}
 
-	return shutdown_openocd == SHUTDOWN_WITH_ERROR_CODE ? ERROR_FAIL : ERROR_OK;
+bool server_terminated_by_signal(void)
+{
+	return shutdown_openocd == SHUTDOWN_WITH_SIGNAL_CODE;
+}
+
+int server_get_last_signal_number(void)
+{
+	/* This value is only meaningful if the shutdown reason is signal.
+	 * The caller should check the shutdown reason first. */
+	assert(server_terminated_by_signal());
+
+	return last_signal;
+}
+
+uint8_t server_get_exit_status_code(void)
+{
+	assert(!server_terminated_by_signal());
+	return openocd_exit_status_code;
 }
 
 static void sig_handler(int sig)
@@ -613,7 +645,6 @@ static void sig_handler(int sig)
 	/* store only first signal that hits us */
 	if (shutdown_openocd == CONTINUE_MAIN_LOOP) {
 		shutdown_openocd = SHUTDOWN_WITH_SIGNAL_CODE;
-		assert(sig >= SIG_ATOMIC_MIN && sig <= SIG_ATOMIC_MAX);
 		last_signal = sig;
 		LOG_DEBUG("Terminating on Signal %d", sig);
 	} else
@@ -705,19 +736,14 @@ int server_init(struct command_context *cmd_ctx)
 	return ERROR_OK;
 }
 
-int server_quit(void)
+void server_quit(void)
 {
 	remove_services();
 	target_quit();
 
 #ifdef _WIN32
 	SetConsoleCtrlHandler(control_handler, FALSE);
-
-	return ERROR_OK;
 #endif
-
-	/* return signal number so we can kill ourselves */
-	return last_signal;
 }
 
 void server_free(void)
@@ -730,12 +756,16 @@ void server_free(void)
 	free(bindto_name);
 }
 
-void exit_on_signal(int sig)
+int exit_on_signal(int sig)
 {
 #ifndef _WIN32
-	/* bring back default system handler and kill yourself */
+	// *nix: Bring back the default system handler and kill self
 	signal(sig, SIG_DFL);
-	kill(getpid(), sig);
+	kill(getpid(), sig); /* does not return */
+	__builtin_unreachable();
+#else
+	// On Windows, simply use the signal number as the exit code
+	return sig;
 #endif
 }
 
@@ -767,19 +797,53 @@ bool openocd_is_shutdown_pending(void)
 /* tell the server we want to shut down */
 COMMAND_HANDLER(handle_shutdown_command)
 {
+	if (CMD_ARGC > 1)
+		return ERROR_COMMAND_SYNTAX_ERROR;
+
 	LOG_USER("shutdown command invoked");
 
-	shutdown_openocd = SHUTDOWN_REQUESTED;
+	if (CMD_ARGC == 0) {
+		/* When "shutdown" (without parameters) is auto-executed
+		 * as a result of a signal, keep the alredy-set shutdown reason
+		 * unchanged. */
+		if (shutdown_openocd != SHUTDOWN_WITH_SIGNAL_CODE) {
+			// Default exit code is zero (success)
+			shutdown_openocd = SHUTDOWN_REQUESTED;
+			openocd_exit_status_code = 0;
+		}
+	} else {
+		uint8_t code;
+		if (strcmp(CMD_ARGV[0], "error") == 0) {
+			/* "shutdown error" is a synonym of "shutdown 1"
+			 * for backward compatibility. */
+			code = 1;
+		} else {
+			COMMAND_PARSE_NUMBER(u8, CMD_ARGV[0], code);
+		}
+
+		shutdown_openocd = (code == 0) ? SHUTDOWN_REQUESTED : SHUTDOWN_WITH_ERROR_CODE;
+		openocd_exit_status_code = code;
+	}
 
 	command_run_line(CMD_CTX, "_run_pre_shutdown_commands");
 
-	if (CMD_ARGC == 1) {
-		if (!strcmp(CMD_ARGV[0], "error")) {
-			shutdown_openocd = SHUTDOWN_WITH_ERROR_CODE;
-			return ERROR_FAIL;
-		}
+	return ERROR_COMMAND_CLOSE_CONNECTION;
+}
+
+COMMAND_HANDLER(handle_exit_command)
+{
+	if (!tcl_is_from_tcl_session(CMD_CTX)
+			&& !telnet_is_from_telnet_session(CMD_CTX)) {
+		LOG_WARNING("DEPRECATED: 'exit' should only be used in telnet or Tcl "
+			"sessions to close the session");
+		LOG_WARNING("Did you mean 'shutdown'?");
+		return command_run_line(CMD_CTX, "shutdown");
 	}
 
+	if (CMD_ARGC != 0)
+		return ERROR_COMMAND_SYNTAX_ERROR;
+
+	/* Disconnect telnet / Tcl session */
 	return ERROR_COMMAND_CLOSE_CONNECTION;
 }
 
@@ -811,13 +875,65 @@ COMMAND_HANDLER(handle_bindto_command)
 	return ERROR_OK;
 }
 
+COMMAND_HANDLER(handle_services_command)
+{
+	if (CMD_ARGC != 0)
+		return ERROR_COMMAND_SYNTAX_ERROR;
+
+	for (const struct service *s = services; s; s = s->next) {
+		command_print(CMD, "{");
+
+		/* Escape the name in case it contains special characters. */
+		char *escaped_name = tcl_escape_alloc(CMD_CTX->interp, s->name);
+		if (!escaped_name) {
+			command_print(CMD, "Unable to escape Tcl string");
+			return ERROR_FAIL;
+		}
+		command_print(CMD, "    name %s", escaped_name);
+		free(escaped_name);
+
+		struct sockaddr_in addr_in;
+		addr_in.sin_port = 0;
+		socklen_t addr_in_size = sizeof(addr_in);
+		/* If it's a TCP connection and they specified port 0 try to get the real port. */
+		if (s->type == CONNECTION_TCP &&
+			s->portnumber == 0 &&
+			getsockname(s->fd, (struct sockaddr *)&addr_in, &addr_in_size) == 0) {
+			command_print(CMD, "    port %hu", ntohs(addr_in.sin_port));
+		} else {
+			/* Need to escape port because it could be a FIFO path which is
+			 * allowed to contain basically any character. */
+			char *escaped_port = tcl_escape_alloc(CMD_CTX->interp, s->port);
+			if (!escaped_port) {
+				command_print(CMD, "Unable to escape Tcl string");
+				return ERROR_FAIL;
+			}
+			command_print(CMD, "    port %s", escaped_port);
+			free(escaped_port);
+		}
+
+		if (s->service_info)
+			CALL_COMMAND_HANDLER(s->service_info, s);
+
+		command_print(CMD, "}");
+	}
+	return ERROR_OK;
+}
+
 static const struct command_registration server_command_handlers[] = {
 	{
 		.name = "shutdown",
 		.handler = &handle_shutdown_command,
 		.mode = COMMAND_ANY,
+		.usage = "['error'|exit_code]",
+		.help = "shut down OpenOCD process",
+	},
+	{
+		.name = "exit",
+		.handler = &handle_exit_command,
+		.mode = COMMAND_ANY,
 		.usage = "",
-		.help = "shut the server down",
+		.help = "exit (disconnect) telnet or Tcl session",
 	},
 	{
 		.name = "poll_period",
@@ -833,6 +949,13 @@ static const struct command_registration server_command_handlers[] = {
 		.usage = "[name]",
 		.help = "Specify address by name on which to listen for "
 			"incoming TCP/IP connections",
+	},
+	{
+		.name = "services",
+		.handler = &handle_services_command,
+		.mode = COMMAND_ANY,
+		.usage = "",
+		.help = "return information about running services"
 	},
 	COMMAND_REGISTRATION_DONE
 };

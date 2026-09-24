@@ -62,6 +62,9 @@ struct adapter_driver *adapter_drivers[] = {
 #if BUILD_CH347 == 1
 		&ch347_adapter_driver,
 #endif
+#if BUILD_CKLINK == 1
+		&cklink_adapter_driver,
+#endif
 #if BUILD_CMSIS_DAP_USB == 1 || BUILD_CMSIS_DAP_HID == 1 || BUILD_CMSIS_DAP_TCP == 1
 		&cmsis_dap_adapter_driver,
 #endif
@@ -169,5 +172,8 @@ struct adapter_driver *adapter_drivers[] = {
 	&xlnx_axi_xvc_adapter_driver,
 #endif
 
+#if BUILD_XVC == 1
+		&xvc_adapter_driver,
+#endif
 		NULL,
 };

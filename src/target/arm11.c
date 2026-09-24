@@ -1220,8 +1220,6 @@ static int arm11_examine(struct target *target)
 		CHECK_RETVAL(etm_setup(target));
 	}
 
-	target_set_examined(target);
-
 	return ERROR_OK;
 }
 
@@ -1370,4 +1368,6 @@ struct target_type arm11_target = {
 	.init_target = arm11_init_target,
 	.deinit_target = arm11_deinit_target,
 	.examine = arm11_examine,
+
+	.insn_set = armv4_5_insn_set,
 };

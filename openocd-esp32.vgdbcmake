@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
-<VisualGDBProjectSettings2 xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-  <Project xsi:type="com.visualgdb.project.windows">
+<VisualGDBProjectSettings2 xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <Project xsi:type="com.visualgdb.project.portable">
     <CustomSourceDirectories>
       <Directories />
       <PathStyle>Unknown</PathStyle>
@@ -11,7 +11,7 @@
   <Build xsi:type="com.visualgdb.build.cmake">
     <BuildLogMode xsi:nil="true" />
     <ToolchainID>
-      <ID>com.visualgdb.mingw32</ID>
+      <ID>com.visualgdb.mingw64</ID>
       <Version>
         <GCC>15.2.0</GCC>
         <GDB>16.3</GDB>
@@ -20,19 +20,23 @@
     </ToolchainID>
     <RelativeSourceDirectory />
     <ConfigurationType>DEBUG</ConfigurationType>
-    <BinaryDirectory>VisualGDB/$(ConfigurationName)</BinaryDirectory>
-    <MainCMakeTarget>openocd</MainCMakeTarget>
+    <BinaryDirectory>build/$(ConfigurationName)</BinaryDirectory>
     <MakeCommandTemplate>
       <SkipWhenRunningCommandList>false</SkipWhenRunningCommandList>
       <RemoteHost>
         <HostName>BuildMachine</HostName>
         <Transport>BuiltinShortcut</Transport>
       </RemoteHost>
-      <Command>$(VISUALGDB_DIR)\ninja.exe</Command>
+      <Command>$(ToolchainNinja)</Command>
       <Arguments />
       <WorkingDirectory>$(BuildDir)</WorkingDirectory>
       <Environment>
-        <Records />
+        <Records>
+          <Record>
+            <VariableName>X</VariableName>
+            <Value>Y;Y=Z</Value>
+          </Record>
+        </Records>
         <EnvironmentSetupFiles />
       </Environment>
       <BackgroundMode xsi:nil="true" />
@@ -43,17 +47,22 @@
         <HostName>BuildMachine</HostName>
         <Transport>BuiltinShortcut</Transport>
       </RemoteHost>
-      <Command>$(SYSPROGS_CMAKE_PATH)</Command>
+      <Command>$(ToolchainCMake)</Command>
+      <Arguments>-DXYZ</Arguments>
       <Environment>
-        <Records />
+        <Records>
+          <Record>
+            <VariableName>X</VariableName>
+            <Value>Y;Y=Z</Value>
+          </Record>
+        </Records>
         <EnvironmentSetupFiles />
       </Environment>
       <BackgroundMode xsi:nil="true" />
     </CMakeCommand>
     <UpdateSourcesInCMakeFile>false</UpdateSourcesInCMakeFile>
-    <ExportCompileCommands>true</ExportCompileCommands>
+    <ExportCompileCommands>false</ExportCompileCommands>
     <DisableToolchainFile>false</DisableToolchainFile>
-    <ExtraModuleDirectories />
     <CMakeMakefileType>Ninja</CMakeMakefileType>
     <DeployAsRoot>false</DeployAsRoot>
     <CMakeCleanMode>RemoveBuildDirectory</CMakeCleanMode>
@@ -68,33 +77,16 @@
         <AlwaysConsiderOutdated>false</AlwaysConsiderOutdated>
         <SortTargetsByName>true</SortTargetsByName>
         <RedundantTargetMode>HideOuterProjectTargets</RedundantTargetMode>
-        <SortSourcesByName>false</SortSourcesByName>
+        <SortSourcesByName>true</SortSourcesByName>
         <BuildAllTargetsInSubdir>false</BuildAllTargetsInSubdir>
-        <FoldSingleItemPathLevels>false</FoldSingleItemPathLevels>
+        <FoldSingleItemPathLevels>true</FoldSingleItemPathLevels>
       </ProjectItemSettings>
-      <TargetSpecificSettings>
-        <CMakeTargetSpecificSettings>
-          <TargetID>openocd</TargetID>
-          <Debug>
-            <Arguments>-f interface/esp_usb_jtag.cfg -c "adapter_khz 3000" -f target/esp32c3.cfg </Arguments>
-            <WorkingDirectory>E:\projects\sysprogs-github\openocd-esp32\tcl</WorkingDirectory>
-          </Debug>
-          <Deployment>
-            <Mode>Auto</Mode>
-            <DeployIfNotSpecificallyReferenced>false</DeployIfNotSpecificallyReferenced>
-            <DoNotDeployVersionedBinaries>false</DoNotDeployVersionedBinaries>
-          </Deployment>
-          <HeaderDiscoveryMode>Default</HeaderDiscoveryMode>
-          <ResourceDirectories />
-        </CMakeTargetSpecificSettings>
-      </TargetSpecificSettings>
       <SetLDLibraryPathFromDependentArtifacts>true</SetLDLibraryPathFromDependentArtifacts>
-      <ProjectGUID>fa2455f7-c96c-4cb1-8a04-11891a85074f</ProjectGUID>
+      <ProjectGUID>4149fa4b-b3e3-493e-9c94-cef870181d20</ProjectGUID>
       <VirtualFolders />
       <ConfigurationNameCase>Upper</ConfigurationNameCase>
       <DefaultHeaderDiscoveryMode>None</DefaultHeaderDiscoveryMode>
       <EnableFastUpToDateCheck>true</EnableFastUpToDateCheck>
-      <StartupTarget>openocd</StartupTarget>
       <DetectMissingSolutionConfigurations>false</DetectMissingSolutionConfigurations>
     </ProjectModeSettings>
     <LoadCMakePresets>false</LoadCMakePresets>
@@ -122,8 +114,8 @@
     <Enabled>Unknown</Enabled>
     <ExtraSettings>
       <HideErrorsInSystemHeaders>true</HideErrorsInSystemHeaders>
-      <SupportLightweightReferenceAnalysis>false</SupportLightweightReferenceAnalysis>
-      <CheckForClangFormatFiles xsi:nil="true" />
+      <SupportLightweightReferenceAnalysis>true</SupportLightweightReferenceAnalysis>
+      <CheckForClangFormatFiles>true</CheckForClangFormatFiles>
       <FormattingEngine xsi:nil="true" />
     </ExtraSettings>
     <CodeAnalyzerSettings>

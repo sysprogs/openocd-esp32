@@ -293,6 +293,23 @@ static const struct freertos_params freertos_params_list[] = {
 		NULL,
 		rtos_freertos_riscv_pick_stacking_info,	/* fn to pick stacking_info */
 	},
+	{
+		"esp32s31",				/* target_name */
+		4,						/* thread_count_width; */
+		4,						/* pointer_width; */
+		12,						/* list_next_offset; */
+		8,						/* list_end_offset; */
+		20,						/* list_width; */
+		4,						/* list_elem_next_offset; */
+		12,						/* list_elem_content_offset */
+		0,						/* thread_stack_offset; */
+		52,						/* thread_name_offset; */
+		4,						/* thread_counter_width */
+		NULL,					/* stacking_info */
+		NULL,
+		NULL,
+		rtos_freertos_riscv_pick_stacking_info,	/* fn to pick stacking_info */
+	},
 };
 
 #define FREERTOS_NUM_PARAMS ARRAY_SIZE(freertos_params_list)
@@ -849,9 +866,8 @@ static int freertos_get_tasks_details(struct target *target,
 				(uint64_t *)&rtos->thread_details[index].threadid);
 
 			if (retval != ERROR_OK) {
-				LOG_WARNING(
-					"Error reading thread list item object in FreeRTOS thread list!");
-				break;	/* stop list processing */
+				LOG_WARNING("Error reading thread list item object in FreeRTOS thread list!");
+				return retval;	/* Stop the walk instead of moving to the next list */
 			}
 
 			LOG_DEBUG(
@@ -951,9 +967,8 @@ static int freertos_get_tasks_details(struct target *target,
 				&list_elem_ptr);
 
 			if (retval != ERROR_OK) {
-				LOG_WARNING(
-					"Error reading next thread item location in FreeRTOS thread list!");
-				break;	/* stop list processing */
+				LOG_WARNING("Error reading next thread item location in FreeRTOS thread list!");
+				return retval;	/* Stop the walk instead of moving to the next list */
 			}
 
 			LOG_DEBUG(
@@ -1395,7 +1410,7 @@ static int freertos_get_thread_reg(struct rtos *rtos, int64_t thread_id,
 
 		struct reg *reg = register_get_by_number(curr->reg_cache, reg_num, true);
 		if (!reg) {
-			LOG_TARGET_ERROR(curr, "Couldn't find register %" PRIu32 " in thread %" PRId64, reg_num, thread_id);
+			LOG_TARGET_DEBUG(curr, "Couldn't find register %" PRIu32 " in thread %" PRId64, reg_num, thread_id);
 			return ERROR_FAIL;
 		}
 

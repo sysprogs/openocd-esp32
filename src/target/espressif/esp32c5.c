@@ -16,6 +16,7 @@
 #include <target/register.h>
 #include <target/semihosting_common.h>
 #include <target/riscv/debug_defines.h>
+#include <target/riscv/riscv.h>
 
 #include "esp_semihosting.h"
 #include "esp_riscv_apptrace.h"
@@ -39,6 +40,24 @@
 #define ESP32C5_IROM_MASK_HIGH                  0x40050000
 #define ESP32C5_DRAM_LOW                        0x40800000
 #define ESP32C5_DRAM_HIGH                       0x40860000
+
+#define ESP32C5_EFUSE_HW_REV_ADDR               0x600B484c
+
+/* PMA entry 14 covers the HP RAM region (0x40800000..0x40880000, 512 KB).
+ * See esp_riscv_pma_force_napot_rwx() in esp_riscv.c for the rationale.
+ *   pmaaddr14 = (0x40800000 | 0x3FFFF) >> 2 = 0x1020FFFF
+ *   pmacfg14  = PMA_NAPOT | PMA_EN | PMA_R | PMA_W | PMA_X = 0xC000001D
+ */
+#define ESP32C5_PMA_ENTRY_NUM                   16
+#define ESP32C5_PMA_ENTRY_RAM                   (ESP32C5_PMA_ENTRY_NUM - 2)
+#define ESP32C5_PMA_RAM_NAPOT_ADDR              0x1020FFFFUL
+#define ESP32C5_PMA_RAM_NAPOT_CFG_RWX           0xC000001DUL
+
+static const struct esp_riscv_pma_entry esp32c5_stub_pma_entry = {
+	.index      = ESP32C5_PMA_ENTRY_RAM,
+	.napot_addr = ESP32C5_PMA_RAM_NAPOT_ADDR,
+	.napot_cfg  = ESP32C5_PMA_RAM_NAPOT_CFG_RWX,
+};
 
 enum esp32c5_reset_reason {
 	ESP32C5_CHIP_POWER_ON_RESET   = 0x01, /* Power on reset */
@@ -117,6 +136,39 @@ static void esp32c5_print_reset_reason(struct target *target, uint32_t reset_rea
 		esp32c5_get_reset_reason(reset_reason_reg_val));
 }
 
+static int esp32c5_read_hw_rev(struct target *target)
+{
+	static uint32_t hw_rev;
+	static bool hw_rev_read;
+
+	if (hw_rev_read) {
+		target->hw_rev = hw_rev;
+		return ERROR_OK;
+	}
+
+	int ret = target_read_u32(target, ESP32C5_EFUSE_HW_REV_ADDR, &hw_rev);
+	if (ret != ERROR_OK) {
+		LOG_TARGET_ERROR(target, "Failed to read HW rev (%d)", ret);
+		return ret;
+	}
+
+	unsigned int major = (hw_rev >> 4) & 0x03;
+	unsigned int minor = hw_rev & 0x0F;
+
+	hw_rev = 100 * major + minor;
+	target->hw_rev = hw_rev;
+	hw_rev_read = true;
+	LOG_TARGET_INFO(target, "Chip revision v%u.%u", major, minor);
+
+	return ERROR_OK;
+}
+
+static int esp32c5_examine_end(struct target *target)
+{
+	esp32c5_read_hw_rev(target);
+	return ERROR_OK;
+}
+
 static bool esp32c5_is_idram_address(target_addr_t addr)
 {
 	return addr >= ESP32C5_DRAM_LOW && addr < ESP32C5_DRAM_HIGH;
@@ -140,20 +192,6 @@ static const char *esp32c5_csrs[] = {
 	"mhpmevent8", "mhpmevent9", "mhpmevent13",
 	"mhpmcounter8", "mhpmcounter9", "mhpmcounter13", "mhpmcounter8h", "mhpmcounter9h", "mhpmcounter13h",
 	"mcounteren", "mcountinhibit",
-	"ustatus", "utvec", "uepc", "ucause",
-	"gpio_oen_user", "gpio_in_user", "gpio_out_user",
-	"pma_cfg0", "pma_cfg1", "pma_cfg2", "pma_cfg3", "pma_cfg4", "pma_cfg5",
-	"pma_cfg6", "pma_cfg7", "pma_cfg8", "pma_cfg9", "pma_cfg10", "pma_cfg11",
-	"pma_cfg12", "pma_cfg13", "pma_cfg14", "pma_cfg15", "pma_addr0", "pma_addr1",
-	"pma_addr2", "pma_addr3", "pma_addr4", "pma_addr5", "pma_addr6", "pma_addr7",
-	"pma_addr8", "pma_addr9", "pma_addr10", "pma_addr11", "pma_addr12", "pma_addr13",
-	"pma_addr14", "pma_addr15", "mxstatus", "mhcr", "mhint", "mexstatus",
-	"mclicbase", "mraddr", "mintthresh", "uscratch",  "uintthresh", "uclicbase",
-};
-
-static const char *esp32c5_ro_csrs[] = {
-	/* read-only CSRs, cannot be save/restored as the write would fail */
-	"csr_mintstatus", "mcpuid", "csr_uintstatus",
 };
 
 static const char *esp32c5_user_counter_csrs[] = {
@@ -166,11 +204,6 @@ static struct esp_riscv_reg_class esp32c5_registers[] = {
 	{
 		.reg_array = esp32c5_csrs,
 		.reg_array_size = ARRAY_SIZE(esp32c5_csrs),
-		.save_restore = true
-	},
-	{
-		.reg_array = esp32c5_ro_csrs,
-		.reg_array_size = ARRAY_SIZE(esp32c5_ro_csrs)
 	},
 	{
 		.reg_array = esp32c5_user_counter_csrs,
@@ -199,6 +232,8 @@ static int esp32c5_target_create(struct target *target)
 	esp_riscv->chip_specific_registers_size = ARRAY_SIZE(esp32c5_registers);
 	esp_riscv->is_dram_address = esp32c5_is_idram_address;
 	esp_riscv->is_iram_address = esp32c5_is_idram_address;
+	esp_riscv->examine_end = esp32c5_examine_end;
+	esp_riscv->stub_pma_entry = &esp32c5_stub_pma_entry;
 
 	if (esp_riscv_alloc_trigger_addr(target) != ERROR_OK)
 		return ERROR_FAIL;
@@ -270,6 +305,7 @@ struct target_type esp32c5_target = {
 	.name = "esp32c5",
 
 	.target_create = esp32c5_target_create,
+	.target_jim_configure = riscv_jim_configure,
 	.init_target = esp32c5_init_target,
 	.deinit_target = esp_riscv_deinit_target,
 	.examine = esp_riscv_examine,
@@ -284,6 +320,7 @@ struct target_type esp32c5_target = {
 	.assert_reset = esp_riscv_assert_reset,
 	.deassert_reset = riscv_deassert_reset,
 
+	.memory_ready = esp_riscv_memory_ready,
 	.read_memory = esp_riscv_read_memory,
 	.write_memory = esp_riscv_write_memory,
 

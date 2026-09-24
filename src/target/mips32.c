@@ -238,7 +238,6 @@ static const struct {
 
 static int mips32_get_core_reg(struct reg *reg)
 {
-	int retval;
 	struct mips32_core_reg *mips32_reg = reg->arch_info;
 	struct target *target = mips32_reg->target;
 	struct mips32_common *mips32_target = target_to_mips32(target);
@@ -246,9 +245,7 @@ static int mips32_get_core_reg(struct reg *reg)
 	if (target->state != TARGET_HALTED)
 		return ERROR_TARGET_NOT_HALTED;
 
-	retval = mips32_target->read_core_reg(target, mips32_reg->num);
-
-	return retval;
+	return mips32_target->read_core_reg(target, mips32_reg->num);
 }
 
 static int mips32_set_core_reg(struct reg *reg, uint8_t *buf)
@@ -734,8 +731,6 @@ int mips32_examine(struct target *target)
 	struct mips32_common *mips32 = target_to_mips32(target);
 
 	if (!target_was_examined(target)) {
-		target_set_examined(target);
-
 		/* we will configure later */
 		mips32->bp_scanned = 0;
 		mips32->num_inst_bpoints = 0;
@@ -770,8 +765,7 @@ static int mips32_configure_ibs(struct target *target)
 			(ejtag_info->ejtag_iba_step_size * i);
 
 	/* clear IBIS reg */
-	retval = target_write_u32(target, ejtag_info->ejtag_ibs_addr, 0);
-	return retval;
+	return target_write_u32(target, ejtag_info->ejtag_ibs_addr, 0);
 }
 
 static int mips32_configure_dbs(struct target *target)
@@ -797,8 +791,7 @@ static int mips32_configure_dbs(struct target *target)
 			(ejtag_info->ejtag_dba_step_size * i);
 
 	/* clear DBIS reg */
-	retval = target_write_u32(target, ejtag_info->ejtag_dbs_addr, 0);
-	return retval;
+	return target_write_u32(target, ejtag_info->ejtag_dbs_addr, 0);
 }
 
 int mips32_configure_break_unit(struct target *target)

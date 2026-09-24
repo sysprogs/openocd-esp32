@@ -82,7 +82,8 @@ static int efinix_read_bit_file(struct raw_bit_file *bit_file, const char *filen
 			return ERROR_PLD_FILE_LOAD_FAILED;
 		}
 
-		if (!isxdigit(buffer[0]) || !isxdigit(buffer[1])) {
+		if (!isxdigit((unsigned char)buffer[0]) ||
+				!isxdigit((unsigned char)buffer[1])) {
 			fclose(input_file);
 			free(bit_file->data);
 			bit_file->data = NULL;
@@ -199,9 +200,7 @@ static int efinix_load(struct pld_device *pld_device, const char *filename)
 
 	/* entering RUN/TEST for 100 cycles */
 	jtag_add_runtest(RUNTEST_FINISH_CYCLES, TAP_IDLE);
-	retval = jtag_execute_queue();
-
-	return retval;
+	return jtag_execute_queue();
 }
 
 static int efinix_get_ipdbg_hub(int user_num, struct pld_device *pld_device, struct pld_ipdbg_hub *hub)

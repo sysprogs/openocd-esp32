@@ -146,19 +146,16 @@ static bool jtag_poll_en = true;
 bool is_jtag_poll_safe(void)
 {
 	/* Polling can be disabled explicitly with set_enabled(false).
-	 * It can also be masked with mask().
-	 * It is also implicitly disabled while TRST is active and
-	 * while SRST is gating the JTAG clock.
-	 */
-	if (!jtag_poll_en)
+	 * It can also be masked with mask(). */
+	if (!jtag_poll_en || !jtag_poll)
 		return false;
 
-	if (!transport_is_jtag())
-		return jtag_poll;
-
-	if (!jtag_poll || jtag_trst != 0)
+	/* On JTAG transport it is also implicitly disabled while TRST is active */
+	if (transport_is_jtag() && jtag_trst == 1)
 		return false;
-	return jtag_srst == 0 || (jtag_reset_config & RESET_SRST_NO_GATING);
+
+	/* On any transport while SRST is gating the JTAG clock or other debug HW */
+	return jtag_srst != 1 || (jtag_reset_config & RESET_SRST_NO_GATING);
 }
 
 bool jtag_poll_get_enabled(void)
@@ -521,6 +518,10 @@ int jtag_add_tms_seq(unsigned int nbits, const uint8_t *seq, enum tap_state stat
 void jtag_add_pathmove(unsigned int num_states, const enum tap_state *path)
 {
 	enum tap_state cur_state = cmd_queue_cur_state;
+
+	// quit if there is nothing to do
+	if (num_states == 0)
+		return;
 
 	/* the last state has to be a stable state */
 	if (!tap_is_state_stable(path[num_states - 1])) {

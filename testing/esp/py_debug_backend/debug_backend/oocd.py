@@ -4,7 +4,10 @@ import socket
 import threading
 import time
 import re
-from pytest_embedded_jtag._telnetlib.telnetlib import Telnet # python 3.13 removed telnetlib, use this instead
+try:
+    from pytest_embedded_jtag._telnetlib.telnetlib import Telnet
+except ModuleNotFoundError:
+    from telnetlib import Telnet
 from .defs import *
 from . import log
 
@@ -32,7 +35,8 @@ class Oocd(threading.Thread):
                  host='127.0.0.1',
                  log_level=None,
                  log_stream_handler=None,
-                 log_file_handler=None):
+                 log_file_handler=None,
+                 log_file=None):
         """
             Constructor.
 
@@ -59,30 +63,33 @@ class Oocd(threading.Thread):
                 Logging stream handler for this object.
             log_file_handler : logging.Handler
                 Logging file handler for this object.
+            log_file : file to use for OpenOCD log_output.
         """
         if oocd_exec is None:
-            oocd_exec = os.environ.get("OPENOCD_BIN", "openocd"),
-        oocd_full_args = []
-        if oocd_scripts is None:
-            oocd_scripts = os.environ.get("OPENOCD_SCRIPTS", None)
-        if oocd_scripts is not None:
-            oocd_full_args += ['-s', oocd_scripts]
-        for c in oocd_cfg_cmds:
-            oocd_full_args += ['-c', '%s' % c]
-        for f in oocd_cfg_files:
-            oocd_full_args += ['-f', '%s' % f]
-        oocd_full_args += ['-d%d' % oocd_debug]
-        oocd_full_args += oocd_args
+            oocd_exec = os.environ.get("OPENOCD_BIN", "openocd")
 
         super(Oocd, self).__init__()
         self.do_work = True
         self._logger = log.logger_init('OpenOCD', log_level, log_stream_handler, log_file_handler)
         if oocd_exec is not None:
+            oocd_full_args = [oocd_exec]
+            if oocd_scripts is None:
+                oocd_scripts = os.environ.get("OPENOCD_SCRIPTS", None)
+            if oocd_scripts is not None:
+                oocd_full_args += ['-s', oocd_scripts]
+            for c in oocd_cfg_cmds:
+                oocd_full_args += ['-c', '%s' % c]
+            for f in oocd_cfg_files:
+                oocd_full_args += ['-f', '%s' % f]
+            if log_file:
+                oocd_full_args += ['-l', log_file]
+            oocd_full_args += ['-d%d' % oocd_debug]
+            oocd_full_args += oocd_args
             # start OpenOCD
             self._logger.debug('Start OpenOCD: {%s}', oocd_full_args)
             try:
                 self._oocd_proc = subprocess.Popen(
-                    bufsize=0, args=[oocd_exec] + oocd_full_args,
+                    bufsize=0, args=oocd_full_args,
                     stdin=None, stdout=self.STDOUT_DEST, stderr=subprocess.STDOUT,
                     creationflags=self.CREATION_FLAGS, universal_newlines=True,
                     errors="backslashreplace"
@@ -96,21 +103,27 @@ class Oocd(threading.Thread):
                 self._logger.error(self._oocd_proc.stdout.read())
                 raise RuntimeError("OpenOCD is closed!")
         # Open telnet connection to it
-        self._logger.debug('Open telnet conn to "%s"...', host)
-        try:
-            self._tn = Telnet(host, self.TELNET_PORT, 5)
-            self._tn.read_until(b'>', 5)
-        except Exception as e:
-            self._logger.error('Failed to open Telnet connection with OpenOCD (%s)!', e)
-            if e is EOFError and oocd_exec is not None:
-                if self._oocd_proc.stdout:
-                    out = self._oocd_proc.stdout.read()
-                    self._logger.debug(
-                        '================== OOCD OUTPUT START =================\n'
-                        '%s================== OOCD OUTPUT END =================\n',
-                        out)
-                self._oocd_proc.terminate()
-            raise e
+        RETRY_COUNT = 5
+        for i in range(RETRY_COUNT):
+            self._logger.debug('Open telnet conn to "%s"...', host)
+            try:
+                self._tn = Telnet(host, self.TELNET_PORT, 5)
+                self._tn.read_until(b'>', 5)
+                break
+            except Exception as e:
+                self._logger.error('Failed to open Telnet connection with OpenOCD (%s)!', e)
+                if i < RETRY_COUNT - 1:
+                    time.sleep(1)
+                    continue
+                if oocd_exec is not None:
+                    if self._oocd_proc.stdout:
+                        out = self._oocd_proc.stdout.read()
+                        self._logger.debug(
+                            '================== OOCD OUTPUT START =================\n'
+                            '%s================== OOCD OUTPUT END =================\n',
+                            out)
+                    self._oocd_proc.terminate()
+                raise e
         # Open TCL connection to it
         self._logger.debug('Open TCL conn to "%s"...', host)
         try:
@@ -138,7 +151,8 @@ class Oocd(threading.Thread):
     def stop(self):
         self._logger.debug('Close TCL conn')
         try:
-            self._tcl_send("exit")
+            if self._oocd_proc.poll() is None:
+                self._tcl_send("exit")
             self._tcl_sock.close()
         except:
             self._tcl_sock.shutdown(socket.SHUT_RDWR)
@@ -212,6 +226,12 @@ class Oocd(threading.Thread):
             resp = resp[:index_end]
         self._logger.debug('TELNET <-: %s' % resp)
         return resp.decode('utf-8')
+
+    def consume_output(self):
+        # Discard buffered telnet output so OpenOCD's blocking log writes don't stall it.
+        tn = getattr(self, '_tn', None)
+        if tn is not None:
+            tn.read_very_eager()
 
     # this function is used by 'get_reg' and
     # also can be used to parse output of the 'reg' command executed via GDB's 'monitor'

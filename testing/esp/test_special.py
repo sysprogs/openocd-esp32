@@ -22,29 +22,34 @@ class DebuggerSpecialTestsImpl:
     """ Special test cases generic for dual and single core modes
     """
 
-    @only_for_arch(['xtensa'])
-    def test_sample(self):
+    def test_hw_rev(self):
         """
-            This test checks PC samples captured using OpenOCD's profile commands
-            1) Select appropriate sub-test number on target.
-            2) Execute the command while the target is running.
-            3) Check program continues uninterrupted.
-            4) Interpret profiled samples using gprof and check results.
+            This test checks that the chip revision read from the target using esptool matches the revision obtained from OpenOCD
         """
-        profile_time = 3
+        rev = int(self.oocd.cmd_exec("[target current] cget -revision").strip())
+        # avoid simultaneous access to UART with SerialReader
+        if self.uart_reader:
+            self.uart_reader.pause()
+        cmd = ['esptool.py', '-p', self.port_names[0], 'chip_id']
+        proc = subprocess.run(cmd, capture_output=True)
+        proc.check_returncode()
+        if self.uart_reader:
+            self.uart_reader.resume()
+        match = re.search(r'\(revision v(\d+).(\d+)\)', proc.stdout.decode('UTF-8'))
+        rev2 = int(match.group(1)) * 100 + int(match.group(2))
+        self.assertEqual(rev, rev2)
+        time.sleep(2.0) # some extra time for openocd to recover after hw reset
 
-        self.select_sub_test("blink")
+    def _do_sampling(self, profile_time, options=''):
+        self.oocd.cmd_exec("targets %s" % self.oocd.targets()[self.CORES_NUM - 1])
         self.resume_exec()
-        self.oocd.cmd_exec(f"profile {profile_time} test_sample.gprof")
+        self.oocd.cmd_exec(f"profile {profile_time} test_sample.gprof {options}")
 
-        # Check execution continues uninterrupted
-        state, _ = self.gdb.get_target_state()
-        self.assertTrue(state == dbg.TARGET_STATE_RUNNING)
-        self.stop_exec()
-        bps = ['gpio_set_level', 'vTaskDelay']
-        for f in bps:
-            self.add_bp(f)
-            self.run_to_bp_and_check_basic(dbg.TARGET_STOP_REASON_BP, f, run_bt=False)
+        for i in range(profile_time):
+            state, _ = self.gdb.get_target_state()
+            if state != dbg.TARGET_STATE_RUNNING:
+                break
+            self.alive_sleep(1)
 
         orig_elf = self.test_app_cfg.build_app_elf_path()
         patched_elf = orig_elf + '.gprof'
@@ -57,15 +62,82 @@ class DebuggerSpecialTestsImpl:
         proc = subprocess.run(cmd, capture_output=True)
         proc.check_returncode()
 
-        def parse_gprof_line(line):
-            items = line.split()
-            return (float(items[0]), float(items[1]), float(items[2]), items[3])
+        get_logger().debug(proc.stdout.decode('UTF-8'))
+        lines = proc.stdout.decode('UTF-8').split('\n')
+        lines = [x for x in lines if 'sample_func' in x]
+        return lines
+
+    def _parse_gprof_line(self, line):
+        items = line.split()
+        # (percentage of samples, cummulative runtime, runtime spent in the function, function name)
+        return (float(items[0]), float(items[1]), float(items[2]), items[3])
+
+    @only_for_arch(['xtensa'])
+    def test_sample_simple(self):
+        """
+            This test checks PC samples captured using OpenOCD's profile commands.
+            1) Select appropriate sub-test number on target.
+            2) Execute the profile command while the target is running.
+            3) Interpret profiled samples using gprof and check results.
+            4) For the 5 tested functions, each should have half the number of samples of the previous one.
+        """
+        profile_time = 10
+        self.add_bp('sample_simple_done')
+        lines = self._do_sampling(profile_time)
 
         # Check results
-        lines = proc.stdout.decode('UTF-8').split('\n')
-        top_perc, _, top_t, top_f = parse_gprof_line(lines[5])
-        self.assertTrue(abs(top_t / top_perc * 100 - profile_time) < profile_time / 10)
-        self.assertEqual(top_f, "esp_cpu_wait_for_intr")
+        self.assertEqual(len(lines), 5)
+        prev_perc = None
+        for i in range(5):
+            perc, _, _, f = self._parse_gprof_line(lines[i])
+            self.assertEqual(f, f"sample_func{i + 1}")
+            if prev_perc is not None:
+                self.assertTrue(abs(2 * perc - prev_perc) < 10)
+            prev_perc = perc
+
+    @only_for_arch(['xtensa'])
+    def test_sample_simple_with_range(self):
+        """
+            This test checks PC samples captured using OpenOCD's profile commands, with specified range.
+            1) Select appropriate sub-test number on target.
+            2) Execute the profile command while the target is running.
+            3) Interpret profiled samples using gprof and check results.
+            4) From the 5 tested functions, only selected 2 should be reported.
+        """
+        profile_time = 10
+        self.add_bp('sample_simple_done')
+        start = self.gdb.extract_exec_addr(self.gdb.data_eval_expr('sample_func2'))
+        end = self.gdb.extract_exec_addr(self.gdb.data_eval_expr('sample_func4'))
+        lines = self._do_sampling(profile_time, f'{start} {end}')
+
+        # Check results
+        self.assertEqual(len(lines), 2)
+        perc1, _, _, f = self._parse_gprof_line(lines[0])
+        self.assertEqual(f, f"sample_func2")
+        perc2, _, _, f = self._parse_gprof_line(lines[1])
+        self.assertEqual(f, f"sample_func3")
+        self.assertTrue(abs(2 * perc2 - perc1) < 10)
+
+    @only_for_arch(['xtensa'])
+    def test_sample_large_bucket(self):
+        """
+            This test checks PC samples captured using OpenOCD's profile commands, in case of bucket overrun.
+            The test checks expected sample proportion for two functions with the overrun and without,
+            to ensure the overrun is processed correctly.
+            1) Select appropriate sub-test number on target.
+            2) Execute the profile command while the target is running.
+            3) Interpret profiled samples using gprof and check results 
+        """
+        profile_time = 10
+        lines = self._do_sampling(profile_time)
+
+        # Check results
+        self.assertEqual(len(lines), 2)
+        perc1, _, _, f = self._parse_gprof_line(lines[0])
+        self.assertEqual(f, f"sample_func6")
+        perc2, _, _, f = self._parse_gprof_line(lines[1])
+        self.assertEqual(f, f"sample_func7")
+        self.assertTrue(abs(5 * perc2 - perc1) < 10)
 
     def test_restart_debug_from_crash(self):
         """
@@ -93,6 +165,7 @@ class DebuggerSpecialTestsImpl:
         self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'vTaskDelay', ['vTaskDelay0'])
         self.clear_bps()
 
+    @skip_for_chip(["esp32c61", "esp32h4"], "skipped - OCD-1390")
     def test_debugging_works_after_hw_reset(self):
         """
             This test checks that debugging works after HW reset.
@@ -102,25 +175,15 @@ class DebuggerSpecialTestsImpl:
             5) Wait some time.
             6) Run simple debug session.
         """
-        self.select_sub_test("blink")
-        self.resume_exec()
-        time.sleep(2.0)
-        assert self.port_name is not None
-        # avoid simultaneous access to UART with SerialReader
-        if self.uart_reader:
-            self.uart_reader.pause()
-        cmd = ['esptool.py', '-p', self.port_name, 'chip_id']
-        # TODO OCD-868
-        if testee_info.hw_id == 'esp32s3-builtin':
-            cmd = ['esptool.py', '-p', self.port_name, '--no-stub', 'chip_id']
-        proc = subprocess.run(cmd)
-        proc.check_returncode()
-        if self.uart_reader:
-            self.uart_reader.resume()
-        time.sleep(2.0)
-        self.stop_exec()
-        self.prepare_app_for_debugging(self.test_app_cfg.app_off)
-        self._debug_image()
+        for port in self.port_names:
+            self.select_sub_test("blink")
+            self.resume_exec()
+            time.sleep(2.0)
+            self.esptool_reset(port=port)
+            time.sleep(2.0)
+            self.stop_exec()
+            self.prepare_app_for_debugging(self.test_app_cfg.app_off)
+            self._debug_image()
 
     def _do_test_bp_and_wp_set_by_program(self):
         # breakpoint at 'target_bp_func1' entry
@@ -139,7 +202,7 @@ class DebuggerSpecialTestsImpl:
             # watchpoint hit on read var in 'target_bp_func2'
             self.run_to_bp_and_check_location(dbg.TARGET_STOP_REASON_SIGTRAP, 'target_bp_func2', 'target_wp_var2_2')
 
-    @skip_for_hw_id(['esp32s3-builtin'], "skipped - OCD-868")
+    @skip_for_chip(["esp32c5", "esp32h4"], "skipped - OCD-1391")
     def test_debugging_works_after_esptool_flash(self):
         """
             This test checks that debugging works after flashing with esptool.
@@ -152,10 +215,7 @@ class DebuggerSpecialTestsImpl:
         self.select_sub_test("blink")
         self.resume_exec()
         time.sleep(2.0)
-        assert self.port_name is not None
-        tested_args = [
-            ('-p', self.port_name),
-        ]
+        tested_args = [('-p', port) for port in self.port_names]
         with open(os.path.join(self.test_app_cfg.build_bins_dir(), 'flasher_args.json'), 'rb') as f:
             args = json.load(f)
             # replace all arguments with'-' with '_', for compatibility with both esptool v4/v5
@@ -210,13 +270,14 @@ class DebuggerSpecialTestsImpl:
                                 "Halt cause (5) - (PMP Load access fault)",
                                 "Halt cause (7) - (PMP Store access fault)"]
 
-        if testee_info.arch == "xtensa":
-            bps.append("exception_bp_5")
-            bps.append("exception_bp_6")
-            sub_tests.append("pseudo_debug")
-            sub_tests.append("pseudo_coprocessor")
-            expected_strings.append("Halt cause (Unhandled debug exception)")
-            expected_strings.append("Halt cause (Coprocessor exception)")
+        # TODO OCD-767
+        #if testee_info.arch == "xtensa":
+        #    bps.append("exception_bp_5")
+        #    bps.append("exception_bp_6")
+        #    sub_tests.append("pseudo_debug")
+        #    sub_tests.append("pseudo_coprocessor")
+        #    expected_strings.append("Halt cause (Unhandled debug exception)")
+        #    expected_strings.append("Halt cause (Coprocessor exception)")
 
         bps.append("assert_failure_bp")
         sub_tests.append("assert_failure")
@@ -255,29 +316,20 @@ class DebuggerSpecialTestsImpl:
 				# On assert and abort panics, file line numbers or PC value can be vary.
                 # Therefore, we will use regex pattern for the matching expected strings.
                 pattern = re.compile(expected_strings[i])
-                if testee_info.arch == "xtensa":
-                    match = re.search(pattern, target_output)
-                    self.assertTrue(match)
-                # On RISC-V, when the SIGTRAP signal is received from GDB, there is no corresponding MI response from the target.
-                # As a result, the OpenOCD output is not visible in the gdb logs.
-                # Therefore, we will need to search for the expected strings in the OpenOCD log file instead.
-                else:
-                    log_path = get_logger().handlers[1].baseFilename
-                    found_line_count = 0
-                    with open(log_path) as file:
-                        for line in file:
-                            match = re.search(pattern, line)
-                            if match:
-                                found_line_count += 1
-                                break
-                    self.assertTrue(found_line_count)
+                if testee_info.arch == "riscv32":
+                    # On RISC-V, when the SIGTRAP signal is received from GDB, there is no corresponding MI response from the target.
+                    # As a result, the OpenOCD output is not visible in the gdb logs.
+                    # Therefore, we will need to search for the expected strings in the telnet console output instead.
+                    target_output = self.oocd._tn.read_very_eager().decode('UTF-8')
+                match = re.search(pattern, target_output)
+                self.assertTrue(match)
             else:
-               self.assertTrue(expected_strings[i] in target_output)
+                self.assertTrue(expected_strings[i] in target_output)
             self.gdb.target_reset()
             self.add_bp('app_main')
             self.run_to_bp(dbg.TARGET_STOP_REASON_BP, 'app_main')
 
-    @only_for_chip(['esp32p4', 'esp32s3'])
+    @only_for_chip(['esp32p4', 'esp32s3', 'esp32s31'])
     def test_pie_registers(self):
         """
             This test checks that PIE registers are accessed correctly.
@@ -362,8 +414,55 @@ class DebuggerSpecialTestsImpl:
         self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'pie_disable', ['pie_disable'], outmost_func_name='pie_registers_task')
         check_mul(a, b)
 
+    def _check_target_running(self):
+        targets = self.oocd.targets()
+        for i in range(self.CORES_NUM):
+            state = self.oocd.target_state(targets[i])
+            self.assertEqual(state, 'running')
 
-@only_for_chip(["esp32", "esp32s2", "esp32s3", "esp32c5", "esp32c61"], 'skipped - OCD-1154')
+    @skip_for_chip(["esp32h4"], "skipped - OCD-1399")
+    def test_cores_states_after_esptool_connection(self):
+        """
+            This test checks that cores are in running or halted state after esptool connection.
+            1) Select appropriate sub-test number on target.
+            2) Resume target and wait some time.
+            3) Check that all targets are in state 'running'.
+            4) Run `esptool.py` to get chip ID and reset target.
+            5) Wait some time.
+            6) Check that all targets are in state 'running'.
+        """
+        self.select_sub_test("blink")
+        self.resume_exec()
+        time.sleep(2.0)
+        self._check_target_running()
+        for port in self.port_names:
+            self.esptool_reset(port=port)
+            time.sleep(2.0)
+            self._check_target_running()
+            self.stop_exec()
+            self.esptool_reset(port=port)
+            time.sleep(2.0)
+            self._check_target_running()
+
+    def test_cores_states_after_reset(self):
+        """
+            This test checks execution after reset run.
+            1) Pre-select appropriate sub-test to run after reset.
+            2) Reset target and wait some time.
+            3) Check that all targets are in state 'running'.
+            4) Check that program is running by hitting breakpoints in the code.
+        """
+        self.pre_select_sub_test('blink')
+        self.gdb.target_reset(action='run')
+        time.sleep(3)
+        self._check_target_running()
+        self.gdb.exec_interrupt()
+        bps = ['gpio_set_level', 'vTaskDelay']
+        for f in bps:
+            self.add_bp(f)
+            self.run_to_bp_and_check_basic(dbg.TARGET_STOP_REASON_BP, f, run_bt=False)
+
+@only_for_chip(["esp32", "esp32s2", "esp32s3", "esp32c5", "esp32c61", "esp32p4", "esp32h4", "esp32s31"])
 class PsramTestsImpl:
     """ PSRAM specific test cases generic for dual and single core modes
     """
@@ -421,43 +520,16 @@ class PsramTestsImpl:
 class DebuggerSpecialTestsDual(DebuggerGenericTestAppTestsDual, DebuggerSpecialTestsImpl):
     """ Test cases for dual core mode
     """
-    def test_cores_states_after_esptool_connection(self):
-        """
-            This test checks that cores are in running or halted state after esptool connection.
-            1) Select appropriate sub-test number on target.
-            2) Resume target and wait some time.
-            3) Check that all targets are in state 'running'.
-            4) Run `esptool.py` to get chip ID and reset target.
-            5) Wait some time.
-            6) Check that all targets are in state 'running'.
-        """
-        self.select_sub_test("blink")
-        self.resume_exec()
-        time.sleep(2.0)
-        for target in self.oocd.targets():
-            state = self.oocd.target_state(target)
-            self.assertEqual(state, 'running')
-        assert self.port_name is not None
-        # avoid simultaneous access to UART with SerialReader
-        if self.uart_reader:
-            self.uart_reader.pause()
-        cmd = ['esptool.py', '-p', self.port_name, 'chip_id']
-        # TODO OCD-868
-        if testee_info.hw_id == 'esp32s3-builtin':
-            cmd = ['esptool.py', '-p', self.port_name, '--no-stub', 'chip_id']
-        proc = subprocess.run(cmd)
-        proc.check_returncode()
-        if self.uart_reader:
-            self.uart_reader.resume()
-        time.sleep(2.0)
-        for target in self.oocd.targets():
-            state = self.oocd.target_state(target)
-            self.assertEqual(state, 'running')
+    pass
 
 
 class DebuggerSpecialTestsSingle(DebuggerGenericTestAppTestsSingle, DebuggerSpecialTestsImpl):
     """ Test cases for single core mode
     """
+
+    @skip_for_chip(['esp32s31'], "not applicable")
+    def test_pie_registers(self):
+        super(DebuggerGenericTestAppTestsSingle, self).test_pie_registers()
 
     def test_gdb_regs_mapping(self):
         """
@@ -515,15 +587,23 @@ class DebuggerSpecialTestsSingle(DebuggerGenericTestAppTestsSingle, DebuggerSpec
             if reg == "timeh":
                 continue
 
-            if reg == 'mexstatus':
-                # this register is not safe to write
+            if reg in ['mexstatus', 'priv']:
+                # these registers are not safe to write
                 set_reg_and_check(reg, None)
                 continue
 
-            if reg == 'pc':
+            if reg in ['dscratch0', 'dscratch1']:
+                # need not retain value between abstract commands
+                continue
+
+            if reg in ['pc', 'dpc']:
                 # set to reasonable value, because GDB tries to read memory @ pc
                 set_reg_and_check(reg, 0x40000400)
                 continue
+
+            if reg == 'q0' and testee_info.chip == 'esp32s31':
+                # pie registers are only accessible from cpu1 on esp32s31
+                break
 
             set_reg_and_check(reg, 0)
             set_reg_and_check(reg, 0xffffffff)
@@ -553,7 +633,6 @@ class PsramTestAppTestsSingle(DebuggerGenericTestAppTests):
         self.test_app_cfg.bin_dir = os.path.join('output', 'psram_single')
         self.test_app_cfg.build_dir = os.path.join('builds', 'psram_single')
 
-
 class PsramTestsDual(PsramTestAppTestsDual, PsramTestsImpl):
     """ Test cases via GDB in dual core mode
     """
@@ -574,4 +653,47 @@ class PsramTestsSingle(PsramTestAppTestsSingle, PsramTestsImpl):
 
     def tearDown(self):
         PsramTestAppTestsSingle.tearDown(self)
+        PsramTestsImpl.tearDown(self)
+
+class PsramTestAppTestsDual32MB(DebuggerGenericTestAppTests):
+    """ Base class to run tests which use PSRAM test app in dual core mode
+    """
+
+    def __init__(self, methodName='runTest'):
+        super(PsramTestAppTestsDual32MB, self).__init__(methodName)
+        self.test_app_cfg.bin_dir = os.path.join('output', 'psram_dual_32MB')
+        self.test_app_cfg.build_dir = os.path.join('builds', 'psram_dual_32MB')
+
+
+class PsramTestAppTestsSingle32MB(DebuggerGenericTestAppTests):
+    """ Base class to run tests which use PSRAM test app in single core mode
+    """
+
+    def __init__(self, methodName='runTest'):
+        super(PsramTestAppTestsSingle32MB, self).__init__(methodName)
+        self.test_app_cfg.bin_dir = os.path.join('output', 'psram_single_32MB')
+        self.test_app_cfg.build_dir = os.path.join('builds', 'psram_single_32MB')
+
+@only_for_chip(["esp32s3"])
+class PsramTestsDual32MB(PsramTestAppTestsDual32MB, PsramTestsImpl):
+    """ Test cases via GDB in dual core mode
+    """
+    def setUp(self):
+        PsramTestAppTestsDual32MB.setUp(self)
+        PsramTestsImpl.setUp(self)
+
+    def tearDown(self):
+        PsramTestAppTestsDual32MB.tearDown(self)
+        PsramTestsImpl.tearDown(self)
+
+@only_for_chip(["esp32s3"])
+class PsramTestsSingle32MB(PsramTestAppTestsSingle32MB, PsramTestsImpl):
+    """ Test cases via GDB in single core mode
+    """
+    def setUp(self):
+        PsramTestAppTestsSingle32MB.setUp(self)
+        PsramTestsImpl.setUp(self)
+
+    def tearDown(self):
+        PsramTestAppTestsSingle32MB.tearDown(self)
         PsramTestsImpl.tearDown(self)

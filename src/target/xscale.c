@@ -334,7 +334,6 @@ static int xscale_read_tx(struct target *target, int consume)
 	enum tap_state path[3];
 	enum tap_state noconsume_path[6];
 	int retval;
-	struct timeval timeout, now;
 	struct scan_field fields[3];
 	uint8_t field0_in = 0x0;
 	uint8_t field0_check_value = 0x2;
@@ -369,8 +368,8 @@ static int xscale_read_tx(struct target *target, int consume)
 	uint8_t tmp;
 	fields[2].in_value = &tmp;
 
-	gettimeofday(&timeout, NULL);
-	timeval_add_time(&timeout, 1, 0);
+	// 1 second timeout
+	int64_t then = timeval_ms() + 1000;
 
 	for (;; ) {
 		/* if we want to consume the register content (i.e. clear TX_READY),
@@ -393,8 +392,7 @@ static int xscale_read_tx(struct target *target, int consume)
 			return ERROR_TARGET_TIMEOUT;
 		}
 
-		gettimeofday(&now, NULL);
-		if (timeval_compare(&now, &timeout) > 0) {
+		if (timeval_ms() > then) {
 			LOG_ERROR("time out reading TX register");
 			return ERROR_TARGET_TIMEOUT;
 		}
@@ -418,7 +416,6 @@ static int xscale_write_rx(struct target *target)
 {
 	struct xscale_common *xscale = target_to_xscale(target);
 	int retval;
-	struct timeval timeout, now;
 	struct scan_field fields[3];
 	uint8_t field0_out = 0x0;
 	uint8_t field0_in = 0x0;
@@ -446,8 +443,8 @@ static int xscale_write_rx(struct target *target)
 	uint8_t tmp;
 	fields[2].in_value = &tmp;
 
-	gettimeofday(&timeout, NULL);
-	timeval_add_time(&timeout, 1, 0);
+	// 1 second timeout
+	int64_t then = timeval_ms() + 1000;
 
 	/* poll until rx_read is low */
 	LOG_DEBUG("polling RX");
@@ -463,9 +460,7 @@ static int xscale_write_rx(struct target *target)
 			return retval;
 		}
 
-		gettimeofday(&now, NULL);
-		if ((now.tv_sec > timeout.tv_sec) ||
-			((now.tv_sec == timeout.tv_sec) && (now.tv_usec > timeout.tv_usec))) {
+		if (timeval_ms() > then) {
 			LOG_ERROR("time out writing RX register");
 			return ERROR_TARGET_TIMEOUT;
 		}
@@ -2027,8 +2022,7 @@ static int xscale_disable_mmu_caches(struct target *target, int mmu,
 		return retval;
 
 	/* execute cpwait to ensure outstanding operations complete */
-	retval = xscale_send_u32(target, 0x53);
-	return retval;
+	return xscale_send_u32(target, 0x53);
 }
 
 static int xscale_enable_mmu_caches(struct target *target, int mmu,
@@ -2059,8 +2053,7 @@ static int xscale_enable_mmu_caches(struct target *target, int mmu,
 		return retval;
 
 	/* execute cpwait to ensure outstanding operations complete */
-	retval = xscale_send_u32(target, 0x53);
-	return retval;
+	return xscale_send_u32(target, 0x53);
 }
 
 static int xscale_set_breakpoint(struct target *target,
@@ -3736,5 +3729,7 @@ struct target_type xscale_target = {
 	.deinit_target = xscale_deinit_target,
 
 	.virt2phys = xscale_virt2phys,
-	.mmu = xscale_mmu
+	.mmu = xscale_mmu,
+
+	.insn_set = armv4_5_insn_set,
 };

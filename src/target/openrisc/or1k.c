@@ -1124,8 +1124,6 @@ static int or1k_examine(struct target *target)
 
 	if (!target_was_examined(target)) {
 
-		target_set_examined(target);
-
 		int running;
 
 		int retval = du_core->or1k_is_cpu_running(&or1k->jtag, &running);
@@ -1202,13 +1200,11 @@ static int or1k_checksum_memory(struct target *target, target_addr_t address,
 static int or1k_profiling(struct target *target, uint32_t *samples,
 		uint32_t max_num_samples, uint32_t *num_samples, uint32_t seconds)
 {
-	struct timeval timeout, now;
 	struct or1k_common *or1k = target_to_or1k(target);
 	struct or1k_du *du_core = or1k_to_du(or1k);
 	int retval = ERROR_OK;
 
-	gettimeofday(&timeout, NULL);
-	timeval_add_time(&timeout, seconds, 0);
+	int64_t then = timeval_ms() + seconds * 1000LL;
 
 	LOG_INFO("Starting or1k profiling. Sampling npc as fast as we can...");
 
@@ -1234,8 +1230,7 @@ static int or1k_profiling(struct target *target, uint32_t *samples,
 
 		samples[sample_count++] = reg_value;
 
-		gettimeofday(&now, NULL);
-		if ((sample_count >= max_num_samples) || timeval_compare(&now, &timeout) > 0) {
+		if (sample_count >= max_num_samples || timeval_ms() > then) {
 			LOG_INFO("Profiling completed. %" PRIu32 " samples.", sample_count);
 			break;
 		}

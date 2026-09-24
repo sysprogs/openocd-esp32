@@ -383,8 +383,7 @@ static int arm926ejs_disable_mmu_caches(struct target *target, int mmu,
 		cp15_control &= ~0x1000U;
 	}
 
-	retval = arm926ejs->write_cp15(target, 0, 0, 1, 0, cp15_control);
-	return retval;
+	return arm926ejs->write_cp15(target, 0, 0, 1, 0, cp15_control);
 }
 
 static int arm926ejs_enable_mmu_caches(struct target *target, int mmu,
@@ -411,8 +410,7 @@ static int arm926ejs_enable_mmu_caches(struct target *target, int mmu,
 	if (i_cache)
 		cp15_control |= 0x1000U;
 
-	retval = arm926ejs->write_cp15(target, 0, 0, 1, 0, cp15_control);
-	return retval;
+	return arm926ejs->write_cp15(target, 0, 0, 1, 0, cp15_control);
 }
 
 static int arm926ejs_post_debug_entry(struct target *target)
@@ -469,8 +467,7 @@ static int arm926ejs_post_debug_entry(struct target *target)
 	if (retval != ERROR_OK)
 		return retval;
 	cache_dbg_ctrl |= 0x7;
-	retval = arm926ejs->write_cp15(target, 7, 0, 15, 0, cache_dbg_ctrl);
-	return retval;
+	return arm926ejs->write_cp15(target, 7, 0, 15, 0, cache_dbg_ctrl);
 }
 
 static void arm926ejs_pre_restore_context(struct target *target)
@@ -829,4 +826,6 @@ struct target_type arm926ejs_target = {
 
 	.read_phys_memory = arm926ejs_read_phys_memory,
 	.write_phys_memory = arm926ejs_write_phys_memory,
+
+	.insn_set = armv4_5_insn_set,
 };

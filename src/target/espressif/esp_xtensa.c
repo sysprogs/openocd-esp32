@@ -13,6 +13,8 @@
 #include <stdint.h>
 #include <target/smp.h>
 #include <target/register.h>
+#include <target/target.h>
+#include <target/target_type.h>
 #include "esp_semihosting.h"
 #include "esp_xtensa_algorithm.h"
 #include "esp_xtensa.h"
@@ -21,7 +23,7 @@
 
 #define XTENSA_EXCCAUSE(reg_val)         ((reg_val) & 0x3F)
 
-static const char *xtensa_get_exception_reason(struct target *target, enum esp_xtensa_exception_cause exccause_code)
+const char *esp_xtensa_get_exception_reason(uint32_t exccause_code)
 {
 	switch (exccause_code) {
 	case ILLEGAL_INSTRUCTION:
@@ -146,7 +148,7 @@ static void esp_xtensa_print_exception_reason(struct target *target)
 	if (target_to_xtensa(target)->core_config->exceptions) {
 		int exccause_val = XTENSA_EXCCAUSE(xtensa_reg_get(target, XT_REG_IDX_EXCCAUSE));
 		LOG_TARGET_INFO(target, "Halt cause (%d) - (%s)", exccause_val,
-			xtensa_get_exception_reason(target, exccause_val));
+			esp_xtensa_get_exception_reason(exccause_val));
 	} else {
 		LOG_TARGET_ERROR(target, "Exception option is not enabled!");
 	}
@@ -222,6 +224,14 @@ int esp_xtensa_reset_reason_read(struct target *target)
 		return ERROR_OK;
 
 	if (orig_state != TARGET_HALTED) {
+		if (!strcmp(target->type->name, "esp32s3")) {
+			/* TODO - workaround needed for esp32s3.
+			   Seems halting can interrupt esptool handshake and esptool fails with
+			   "A fatal error occurred: The chip stopped responding." */
+			esp_xtensa->reset_reason = ESP_XTENSA_RESET_RSN_DEFERRED;
+			LOG_TARGET_DEBUG(target, "Reset reason read deferred, will be read on next halt");
+			return ERROR_OK;
+		}
 		/* call `xtensa_halt` instead of `target_halt` to avoid timedout HALT warnings */
 		ret = xtensa_halt(target);
 		if (ret != ERROR_OK) {
@@ -384,7 +394,6 @@ int esp_xtensa_breakpoint_remove(struct target *target, struct breakpoint *break
 int esp_xtensa_profiling(struct target *target, uint32_t *samples,
 	uint32_t max_num_samples, uint32_t *num_samples, uint32_t seconds)
 {
-	struct timeval timeout, now;
 	struct xtensa *xtensa = target_to_xtensa(target);
 	int retval = ERROR_OK;
 	int res;
@@ -393,8 +402,7 @@ int esp_xtensa_profiling(struct target *target, uint32_t *samples,
 	#define MIN_PASS 200
 	#define MAX_PASS 1000
 
-	gettimeofday(&timeout, NULL);
-	timeval_add_time(&timeout, seconds, 0);
+	int64_t then = timeval_ms() + seconds * 1000LL;
 
 	uint8_t buf[sizeof(uint32_t) * MAX_PASS];
 
@@ -439,12 +447,19 @@ int esp_xtensa_profiling(struct target *target, uint32_t *samples,
 			uint32_t sample32 = buf_get_u32(buf + i * sizeof(uint32_t), 0, 32);
 			samples[sample_count++] = sample32;
 		}
-		gettimeofday(&now, NULL);
-		if (sample_count >= max_num_samples || timeval_compare(&now, &timeout) > 0) {
+		if (sample_count >= max_num_samples || timeval_ms() > then) {
 			LOG_TARGET_INFO(target, "Profiling completed. %" PRIu32 " samples.", sample_count);
 			break;
 		}
-		keep_alive();
+		res = xtensa_dm_core_status_read(&xtensa->dbg_mod);
+		if (res != ERROR_OK) {
+			LOG_TARGET_ERROR(target, "Failed to read core status!");
+			return res;
+		}
+		if (xtensa_is_stopped(target)) {
+			LOG_TARGET_INFO(target, "Target became halted, stop profiling. %" PRIu32 " samples.", sample_count);
+			break;
+		}
 	}
 
 	*num_samples = sample_count;

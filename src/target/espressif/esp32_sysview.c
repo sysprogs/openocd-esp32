@@ -314,11 +314,25 @@ static uint16_t esp_sysview_parse_packet(uint8_t *pkt_buf,
 	return event_id;
 }
 
+bool esp32_sysview_all_stopped(struct esp32_apptrace_cmd_ctx *ctx)
+{
+	struct esp32_sysview_cmd_data *cmd_data = ctx->cmd_priv;
+	for (unsigned int i = 0; i < ctx->cores_num; i++) {
+		if (!cmd_data->sv_core_stopped[i])
+			return false;
+	}
+	return true;
+}
+
 static int esp32_sysview_write_packet(struct esp32_sysview_cmd_data *cmd_data,
-	int pkt_core_id, uint32_t pkt_len, uint8_t *pkt_buf, uint32_t delta_len, uint8_t *delta_buf)
+	int pkt_core_id, uint16_t event_id, uint32_t pkt_len, uint8_t *pkt_buf,
+	uint32_t delta_len, uint8_t *delta_buf)
 {
 	if (!cmd_data->data_dests[pkt_core_id].write)
 		return ERROR_FAIL;
+
+	if (cmd_data->sv_core_stopped[pkt_core_id])
+		return ERROR_OK;
 
 	int res = cmd_data->data_dests[pkt_core_id].write(cmd_data->data_dests[pkt_core_id].priv, pkt_buf, pkt_len);
 
@@ -334,6 +348,8 @@ static int esp32_sysview_write_packet(struct esp32_sysview_cmd_data *cmd_data,
 			return res;
 		}
 	}
+	if (event_id == SYSVIEW_EVTID_TRACE_STOP)
+		cmd_data->sv_core_stopped[pkt_core_id] = 1;
 	return ERROR_OK;
 }
 
@@ -386,6 +402,7 @@ static int esp32_sysview_process_packet(struct esp32_apptrace_cmd_ctx *ctx,
 	}
 	int res = esp32_sysview_write_packet(cmd_data,
 		pkt_core_id,
+		event_id,
 		wr_len,
 		pkt_buf,
 		new_delta_len,
@@ -396,9 +413,9 @@ static int esp32_sysview_process_packet(struct esp32_apptrace_cmd_ctx *ctx,
 		if (pkt_core_id == i)
 			continue;
 		switch (event_id) {
-		/* messages below should be sent to trace destinations for all cores */
+		/* Write these events to every core dest. TRACE_STOP stays on the source
+		 * core only (or is added later by esp32_sysview_finish_dests). */
 		case SYSVIEW_EVTID_TRACE_START:
-		case SYSVIEW_EVTID_TRACE_STOP:
 		case SYSVIEW_EVTID_SYSTIME_CYCLES:
 		case SYSVIEW_EVTID_SYSTIME_US:
 		case SYSVIEW_EVTID_SYSDESC:
@@ -429,6 +446,7 @@ static int esp32_sysview_process_packet(struct esp32_apptrace_cmd_ctx *ctx,
 			LOG_DEBUG("sysview: Redirect %d bytes of event %d to dest %d", wr_len, event_id, i);
 			res = esp32_sysview_write_packet(cmd_data,
 				i,
+				event_id,
 				wr_len,
 				pkt_buf,
 				new_delta_len,
@@ -443,6 +461,29 @@ static int esp32_sysview_process_packet(struct esp32_apptrace_cmd_ctx *ctx,
 		default:
 			break;
 		}
+	}
+	return ERROR_OK;
+}
+
+int esp32_sysview_finish_dests(struct esp32_apptrace_cmd_ctx *ctx)
+{
+	struct esp32_sysview_cmd_data *cmd_data = ctx->cmd_priv;
+	/* TRACE_STOP (0x0B) + zero timestamp delta */
+	uint8_t stop_pkt[] = { SYSVIEW_EVTID_TRACE_STOP, 0x00 };
+
+	for (unsigned int i = 0; i < ctx->cores_num; i++) {
+		if (cmd_data->sv_core_stopped[i])
+			continue;
+		LOG_WARNING("sysview: TRACE_STOP missing for core %u, adding stop record manually", i);
+		int res = esp32_sysview_write_packet(cmd_data,
+			i,
+			SYSVIEW_EVTID_TRACE_STOP,
+			sizeof(stop_pkt),
+			stop_pkt,
+			0,
+			NULL);
+		if (res != ERROR_OK)
+			return res;
 	}
 	return ERROR_OK;
 }
@@ -531,8 +572,6 @@ int esp32_sysview_process_data(struct esp32_apptrace_cmd_ctx *ctx,
 			data + processed);
 		if (res != ERROR_OK)
 			return res;
-		if (event_id == SYSVIEW_EVTID_TRACE_STOP)
-			cmd_data->sv_trace_running = 0;
 		ctx->tot_len += pkt_len;
 		processed += pkt_len;
 	}
@@ -541,7 +580,7 @@ int esp32_sysview_process_data(struct esp32_apptrace_cmd_ctx *ctx,
 	if (ctx->tot_len > cmd_data->apptrace.skip_len &&
 		(ctx->tot_len - cmd_data->apptrace.skip_len >= cmd_data->apptrace.max_len)) {
 		ctx->running = 0;
-		if (duration_measure(&ctx->read_time) != 0) {
+		if (duration_measure(&ctx->read_time) != ERROR_OK) {
 			LOG_ERROR("Failed to stop trace read time measure!");
 			return ERROR_FAIL;
 		}

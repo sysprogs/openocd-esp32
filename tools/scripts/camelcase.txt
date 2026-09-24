@@ -161,7 +161,6 @@ CreateFile
 CloseHandle
 FormatMessage
 GetModuleFileName
-GetSystemTimeAsFileTime
 GetTickCount
 GetVersionEx
 HighPart
@@ -170,6 +169,8 @@ MsgWaitForMultipleObjects
 PeekMessage
 PeekNamedPipe
 QuadPart
+QueryPerformanceCounter
+QueryPerformanceFrequency
 SetConsoleCtrlHandler
 Sleep
 WaitForSingleObject
@@ -177,8 +178,6 @@ WSACleanup
 WSAGetLastError
 WSASetLastError
 WSAStartup
-dwHighDateTime
-dwLowDateTime
 dwPlatformId
 dwOSVersionInfoSize
 

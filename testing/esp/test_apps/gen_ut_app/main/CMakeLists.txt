@@ -1,14 +1,8 @@
-# we can not detect IDF version until ${CMAKE_CURRENT_SOURCE_DIR} is properly set by
-# 'register_component' or 'idf_component_register', so just check for old-fashioned 'register_component' here
-if(COMMAND register_component)
-	file(GLOB GEN_UT_SRCS "*.c" "*.S")
-	set(COMPONENT_SRCS ${GEN_UT_SRCS})
-	set(COMPONENT_ADD_INCLUDEDIRS ".")
-	register_component()
-else()
-	idf_component_register(SRCS ${GEN_UT_SRCS}
+file(GLOB GEN_UT_SRCS "*.c" "*.S")
+idf_component_register(SRCS ${GEN_UT_SRCS}
+						PRIV_REQUIRES vfs esp_driver_gptimer spi_flash app_trace esp_psram
+						REQUIRES ulp
 						INCLUDE_DIRS ".")
-endif()
 
 file(TO_NATIVE_PATH "${CMAKE_CURRENT_BINARY_DIR}/ut_idf_ver.h" idf_ver_header_path)
 file(TO_NATIVE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/get_idf_ver.py" idf_ver_script)
@@ -74,7 +68,7 @@ target_link_libraries(${COMPONENT_LIB} INTERFACE "-u unused_func6")
 target_link_libraries(${COMPONENT_LIB} INTERFACE "-u unused_func7")
 
 if(CONFIG_ULP_COPROC_ENABLED)
-	if(NOT (CONFIG_IDF_TARGET_ESP32P4 OR CONFIG_IDF_TARGET_ESP32C5 OR CONFIG_IDF_TARGET_ESP32C6))
+	if(NOT (CONFIG_IDF_TARGET_ESP32P4 OR CONFIG_IDF_TARGET_ESP32C5 OR CONFIG_IDF_TARGET_ESP32C6 OR CONFIG_IDF_TARGET_ESP32S31))
 		message(FATAL_ERROR "ULP not supported for this target")
 	endif()
 	ulp_add_project("lp_core_${COMPONENT_NAME}" "${CMAKE_SOURCE_DIR}/main/lp_core/")

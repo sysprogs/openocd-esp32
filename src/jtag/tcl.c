@@ -130,7 +130,7 @@ COMMAND_HANDLER(handle_jtag_command_drscan)
 	if (CMD_ARGC > 3 && !strcmp("-endstate", CMD_ARGV[CMD_ARGC - 2])) {
 		const char *state_name = CMD_ARGV[CMD_ARGC - 1];
 		endstate = tap_state_by_name(state_name);
-		if (endstate < 0) {
+		if (endstate == TAP_INVALID) {
 			command_print(CMD, "endstate: %s invalid", state_name);
 			return ERROR_COMMAND_ARGUMENT_INVALID;
 		}
@@ -183,7 +183,7 @@ COMMAND_HANDLER(handle_jtag_command_pathmove)
 
 	for (unsigned int i = 0; i < CMD_ARGC; i++) {
 		states[i] = tap_state_by_name(CMD_ARGV[i]);
-		if (states[i] < 0) {
+		if (states[i] == TAP_INVALID) {
 			command_print(CMD, "endstate: %s invalid", CMD_ARGV[i]);
 			return ERROR_COMMAND_ARGUMENT_INVALID;
 		}
@@ -719,7 +719,7 @@ static const struct command_registration jtag_subcommand_handlers[] = {
 			"and appends it to the scan chain.",
 		.usage = "basename tap_type '-irlen' count "
 			"['-enable'|'-disable'] "
-			"['-expected_id' number] "
+			"['-expected-id' number] "
 			"['-ignore-version'] "
 			"['-ignore-bypass'] "
 			"['-ircapture' number] "

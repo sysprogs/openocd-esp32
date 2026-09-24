@@ -407,6 +407,29 @@ static int esp32_apptrace_block_free(struct esp32_apptrace_cmd_ctx *ctx, struct 
 	return ERROR_OK;
 }
 
+/* On SysView stop, called synchronously before finalize/TRACE_STOP so any still-queued
+ * uplink data is written first; otherwise sv_core_stopped would drop those packets. */
+static int esp32_apptrace_process_ready_blocks(struct esp32_apptrace_cmd_ctx *ctx)
+{
+	while (!list_empty(&ctx->ready_trace_blocks)) {
+		struct esp32_apptrace_block *block = esp32_apptrace_ready_block_get(ctx);
+		if (!block)
+			break;
+		int res = esp32_apptrace_handle_trace_block(ctx, block);
+		if (res != ERROR_OK) {
+			LOG_ERROR("Failed to process queued trace block %" PRId32 " bytes!", block->data_len);
+			esp32_apptrace_block_free(ctx, block);
+			return res;
+		}
+		res = esp32_apptrace_block_free(ctx, block);
+		if (res != ERROR_OK) {
+			LOG_ERROR("Failed to free queued trace block!");
+			return res;
+		}
+	}
+	return ERROR_OK;
+}
+
 static int esp32_apptrace_wait_tracing_finished(struct esp32_apptrace_cmd_ctx *ctx)
 {
 	int64_t timeout = timeval_ms() + (LOG_LEVEL_IS(LOG_LVL_DEBUG) ? 70000 : 5000);
@@ -520,7 +543,7 @@ int esp32_apptrace_cmd_ctx_init(struct esp32_apptrace_cmd_ctx *cmd_ctx, struct c
 		cmd_ctx->stats.min_blk_read_time = 1000000.0;
 		cmd_ctx->stats.min_blk_proc_time = 1000000.0;
 	}
-	if (duration_start(&cmd_ctx->idle_time) != 0) {
+	if (duration_start(&cmd_ctx->idle_time) != ERROR_OK) {
 		command_print(cmd, "Failed to start idle time measurement!");
 		esp32_apptrace_cmd_ctx_cleanup(cmd_ctx);
 		return ERROR_FAIL;
@@ -943,7 +966,7 @@ static int esp32_apptrace_process_data(struct esp32_apptrace_cmd_ctx *ctx,
 	/* check for stop condition */
 	if (ctx->tot_len > cmd_data->skip_len && (ctx->tot_len - cmd_data->skip_len >= cmd_data->max_len)) {
 		ctx->running = 0;
-		if (duration_measure(&ctx->read_time) != 0) {
+		if (duration_measure(&ctx->read_time) != ERROR_OK) {
 			LOG_ERROR("Failed to stop trace read time measure!");
 			return ERROR_FAIL;
 		}
@@ -1043,7 +1066,7 @@ static int esp32_apptrace_check_connection(struct esp32_apptrace_cmd_ctx *ctx)
 			}
 			if (ctx->stop_tmo != -1.0) {
 				/* re-start idle time measurement */
-				if (duration_start(&ctx->idle_time) != 0) {
+				if (duration_start(&ctx->idle_time) != ERROR_OK) {
 					LOG_ERROR("Failed to re-start idle time measure!");
 					return ERROR_FAIL;
 				}
@@ -1128,7 +1151,7 @@ static int esp32_apptrace_poll(void *priv)
 			ctx->last_blk_id = max_block_id;
 		}
 		if (ctx->stop_tmo != -1.0) {
-			if (duration_measure(&ctx->idle_time) != 0) {
+			if (duration_measure(&ctx->idle_time) != ERROR_OK) {
 				ctx->running = 0;
 				LOG_ERROR("Failed to measure idle time!");
 				return ERROR_FAIL;
@@ -1148,7 +1171,7 @@ static int esp32_apptrace_poll(void *priv)
 		return ERROR_FAIL;
 	}
 	if (ctx->tot_len == 0) {
-		if (duration_start(&ctx->read_time) != 0) {
+		if (duration_start(&ctx->read_time) != ERROR_OK) {
 			ctx->running = 0;
 			LOG_ERROR("Failed to start trace read time measurement!");
 			return ERROR_FAIL;
@@ -1162,7 +1185,7 @@ static int esp32_apptrace_poll(void *priv)
 	}
 	if (s_time_stats_enable) {
 		/* read block */
-		if (duration_start(&blk_proc_time) != 0) {
+		if (duration_start(&blk_proc_time) != ERROR_OK) {
 			ctx->running = 0;
 			LOG_ERROR("Failed to start block read time measurement!");
 			return ERROR_FAIL;
@@ -1182,7 +1205,7 @@ static int esp32_apptrace_poll(void *priv)
 	block->data_len = target_state[fired_target_num].data_len;
 	ctx->raw_tot_len += block->data_len;
 	if (s_time_stats_enable) {
-		if (duration_measure(&blk_proc_time) != 0) {
+		if (duration_measure(&blk_proc_time) != ERROR_OK) {
 			ctx->running = 0;
 			LOG_ERROR("Failed to measure block read time!");
 			return ERROR_FAIL;
@@ -1194,7 +1217,7 @@ static int esp32_apptrace_poll(void *priv)
 		if (brt < ctx->stats.min_blk_read_time)
 			ctx->stats.min_blk_read_time = brt;
 
-		if (duration_start(&blk_proc_time) != 0) {
+		if (duration_start(&blk_proc_time) != ERROR_OK) {
 			ctx->running = 0;
 			LOG_ERROR("Failed to start block proc time measurement!");
 			return ERROR_FAIL;
@@ -1240,14 +1263,14 @@ static int esp32_apptrace_poll(void *priv)
 	}
 	if (ctx->stop_tmo != -1.0) {
 		/* start idle time measurement */
-		if (duration_start(&ctx->idle_time) != 0) {
+		if (duration_start(&ctx->idle_time) != ERROR_OK) {
 			ctx->running = 0;
 			LOG_ERROR("Failed to start idle time measure!");
 			return ERROR_FAIL;
 		}
 	}
 	if (s_time_stats_enable) {
-		if (duration_measure(&blk_proc_time) != 0) {
+		if (duration_measure(&blk_proc_time) != ERROR_OK) {
 			ctx->running = 0;
 			LOG_ERROR("Failed to stop block proc time measure!");
 			return ERROR_FAIL;
@@ -1269,7 +1292,7 @@ static inline bool is_sysview_mode(int mode)
 
 static void esp32_apptrace_cmd_stop(struct esp32_apptrace_cmd_ctx *ctx)
 {
-	if (duration_measure(&ctx->read_time) != 0)
+	if (duration_measure(&ctx->read_time) != ERROR_OK)
 		LOG_ERROR("Failed to stop trace read time measurement!");
 	int res = target_unregister_timer_callback(esp32_apptrace_poll, ctx);
 	if (res != ERROR_OK)
@@ -1299,7 +1322,6 @@ static int esp32_sysview_start(struct esp32_apptrace_cmd_ctx *ctx)
 	uint8_t cmds[] = { SEGGER_SYSVIEW_COMMAND_ID_START };
 	uint32_t fired_target_num = 0;
 	struct esp32_apptrace_target_state target_state[ESP32_APPTRACE_MAX_CORES_NUM] = {{0}};
-	struct esp32_sysview_cmd_data *cmd_data = ctx->cmd_priv;
 
 	/* get current block id */
 	int res = esp32_apptrace_get_data_info(ctx, target_state, &fired_target_num);
@@ -1319,17 +1341,17 @@ static int esp32_sysview_start(struct esp32_apptrace_cmd_ctx *ctx)
 		LOG_ERROR("sysview: Failed to start tracing!");
 		return res;
 	}
-	cmd_data->sv_trace_running = 1;
 	return res;
 }
 
 static int esp32_sysview_stop(struct esp32_apptrace_cmd_ctx *ctx)
 {
-	uint32_t old_block_id, fired_target_num = 0, empty_target_num = 0;
+	uint32_t old_block_id, fired_target_num = 0;
 	struct esp32_apptrace_target_state target_state[ESP32_APPTRACE_MAX_CORES_NUM];
 	struct esp32_sysview_cmd_data *cmd_data = ctx->cmd_priv;
 	uint8_t cmds[] = { SEGGER_SYSVIEW_COMMAND_ID_STOP };
 	struct duration wait_time;
+	struct duration total_time;
 
 	struct esp32_apptrace_block *block = esp32_apptrace_free_block_get(ctx);
 	if (!block) {
@@ -1361,7 +1383,9 @@ static int esp32_sysview_stop(struct esp32_apptrace_cmd_ctx *ctx)
 			LOG_ERROR("sysview: Failed to read data on (%s)!", target_name(ctx->cpus[fired_target_num]));
 			return res;
 		}
-		/* process data */
+		res = esp32_apptrace_process_ready_blocks(ctx);
+		if (res != ERROR_OK)
+			return res;
 		block->data_len = target_state[fired_target_num].data_len;
 		res = esp32_apptrace_handle_trace_block(ctx, block);
 		if (res != ERROR_OK) {
@@ -1369,25 +1393,41 @@ static int esp32_sysview_stop(struct esp32_apptrace_cmd_ctx *ctx)
 			return res;
 		}
 	}
-	/* stop tracing and ack target data */
-	res = esp_apptrace_usr_block_write(ctx->hw, ctx->cpus[fired_target_num], target_state[fired_target_num].block_id,
-		cmds,
-		sizeof(cmds));
+	/* Membufs are shared, so write STOP once at the newest block_id. Only the
+	 * writing core gets host data; asserting it on other cores makes them treat
+	 * later uplink bytes as a host header (SysView down buf is only 32 bytes). */
+	uint32_t sync_block_id = target_state[0].block_id;
+	uint32_t min_block_id = target_state[0].block_id;
+	/* Find the newest block_id */
+	for (unsigned int k = 1; k < ctx->cores_num; k++) {
+		if (target_state[k].block_id > sync_block_id)
+			sync_block_id = target_state[k].block_id;
+		if (target_state[k].block_id < min_block_id)
+			min_block_id = target_state[k].block_id;
+	}
+	/* After wrap, one core can still show max while the other already shows 0;
+	 * 0 is the newer id in that case. */
+	if (ctx->cores_num > 1 && sync_block_id == ctx->hw->max_block_id && min_block_id == 0)
+		sync_block_id = 0;
+
+	res = esp_apptrace_usr_block_write(ctx->hw, ctx->cpus[0], sync_block_id, cmds, sizeof(cmds));
 	if (res != ERROR_OK) {
-		LOG_ERROR("sysview: Failed to stop tracing!");
+		LOG_ERROR("sysview: Failed to write STOP to '%s'!", target_name(ctx->cpus[0]));
 		return res;
 	}
-	if (ctx->cores_num > 1) {
-		empty_target_num = fired_target_num ? 0 : 1;
-		/* ack target data on another CPU */
-		res = ctx->hw->ctrl_reg_write(ctx->cpus[empty_target_num], target_state[fired_target_num].block_id,
-			0 /*target data ack*/,
-			true /*host connected*/,
-			false /*no host data*/);
-		if (res != ERROR_OK) {
-			LOG_ERROR("sysview: Failed to ack data on target '%s' (%d)!",
-				target_name(ctx->cpus[empty_target_num]), res);
-			return res;
+	for (unsigned int k = 0; k < ctx->cores_num; k++) {
+		target_state[k].block_id = sync_block_id;
+		/* Sync block id on all cores */
+		if (k > 0) {
+			res = ctx->hw->ctrl_reg_write(ctx->cpus[k],
+				sync_block_id,
+				0 /*acked*/,
+				true /*host connected*/,
+				false /*no host data*/);
+			if (res != ERROR_OK) {
+				LOG_ERROR("sysview: Failed to sync block id on '%s'!", target_name(ctx->cpus[k]));
+				return res;
+			}
 		}
 	}
 	/* resume targets to allow command processing */
@@ -1408,15 +1448,21 @@ static int esp32_sysview_stop(struct esp32_apptrace_cmd_ctx *ctx)
 	}
 	/* wait for block switch (command sent), so we can disconnect from targets */
 	old_block_id = target_state[fired_target_num].block_id;
-	if (duration_start(&wait_time) != 0) {
+	if (duration_start(&wait_time) != ERROR_OK) {
 		LOG_ERROR("Failed to start trace stop timeout measurement!");
+		return ERROR_FAIL;
+	}
+
+	/* Check for total deadline */
+	if (duration_start(&total_time) != ERROR_OK) {
+		LOG_ERROR("Failed to start trace stop deadline measurement!");
 		return ERROR_FAIL;
 	}
 
 	/* we are waiting for the last data from tracing block and also there can be data in the pended
 	 * data buffer */
 	/* so we are expecting two TRX block switches at most or stopping due to timeout */
-	while (cmd_data->sv_trace_running) {
+	while (!esp32_sysview_all_stopped(ctx)) {
 		res = esp32_apptrace_get_data_info(ctx, target_state, &fired_target_num);
 		if (res != ERROR_OK) {
 			LOG_ERROR("sysview: Failed to read targets data info!");
@@ -1430,30 +1476,18 @@ static int esp32_sysview_stop(struct esp32_apptrace_cmd_ctx *ctx)
 		}
 		if (target_state[fired_target_num].block_id != old_block_id) {
 			if (target_state[fired_target_num].data_len) {
-				/* read last data and ack them */
+				/* Read without ack; ack all cores after parse with host data clear. */
 				res = ctx->hw->data_read(ctx->cpus[fired_target_num],
 					target_state[fired_target_num].data_len,
 					block->data,
 					target_state[fired_target_num].block_id,
-					true /*ack target data*/);
+					false /*no ack yet*/);
 				if (res != ERROR_OK) {
 					LOG_ERROR("sysview: Failed to read last data on (%s)!", target_name(ctx->cpus[fired_target_num]));
 				} else {
-					if (ctx->cores_num > 1) {
-						/* ack target data on another CPU */
-						empty_target_num = fired_target_num ? 0 : 1;
-						res = ctx->hw->ctrl_reg_write(ctx->cpus[empty_target_num],
-							target_state[fired_target_num].block_id,
-							0 /*all read*/,
-							true /*host connected*/,
-							false /*no host data*/);
-						if (res != ERROR_OK) {
-							LOG_ERROR("sysview: Failed to ack data on target '%s' (%d)!",
-								target_name(ctx->cpus[empty_target_num]), res);
-							return res;
-						}
-					}
-					/* process data */
+					res = esp32_apptrace_process_ready_blocks(ctx);
+					if (res != ERROR_OK)
+						return res;
 					block->data_len = target_state[fired_target_num].data_len;
 					res = esp32_apptrace_handle_trace_block(ctx, block);
 					if (res != ERROR_OK) {
@@ -1461,27 +1495,63 @@ static int esp32_sysview_stop(struct esp32_apptrace_cmd_ctx *ctx)
 							block->data_len);
 						return res;
 					}
+					for (unsigned int k = 0; k < ctx->cores_num; k++) {
+						res = ctx->hw->ctrl_reg_write(ctx->cpus[k],
+							target_state[fired_target_num].block_id,
+							0 /*all read*/,
+							true /*host connected*/,
+							false /*no host data*/);
+						if (res != ERROR_OK) {
+							LOG_ERROR("sysview: Failed to ack data on target '%s' (%d)!",
+								target_name(ctx->cpus[k]), res);
+							return res;
+						}
+					}
 				}
 				old_block_id = target_state[fired_target_num].block_id;
+				/* keep reading as long as data arrives. Restart the idle timeout so a
+				 * large final bytes are not lost before the TRACE_STOP record is read
+				 */
+				if (duration_start(&wait_time) != ERROR_OK) {
+					LOG_ERROR("Failed to restart trace stop timeout measurement!");
+					return ERROR_FAIL;
+				}
 			}
 		}
-		if (duration_measure(&wait_time) != 0) {
+		if (duration_measure(&wait_time) != ERROR_OK) {
 			LOG_ERROR("Failed to start trace stop timeout measurement!");
 			return ERROR_FAIL;
 		}
+		/* idle timeout: stop if no new block arrives */
 		const float stop_tmo = LOG_LEVEL_IS(LOG_LVL_DEBUG) ? 30.0 : 0.5;
 		if (duration_elapsed(&wait_time) >= stop_tmo) {
 			LOG_INFO("Stop waiting for the last data due to timeout.");
 			break;
 		}
+		/* Check for total deadline */
+		const float total_tmo = LOG_LEVEL_IS(LOG_LVL_DEBUG) ? 30.0 : 5.0;
+		if (duration_measure(&total_time) == ERROR_OK && duration_elapsed(&total_time) >= total_tmo) {
+			LOG_WARNING("sysview: TRACE_STOP not seen within %.1f s, forcing stop.", total_tmo);
+			break;
+		}
 	}
 
+	res = esp32_apptrace_process_ready_blocks(ctx);
+	if (res != ERROR_OK)
+		return res;
+
+	res = esp32_sysview_finish_dests(ctx);
+	if (res != ERROR_OK)
+		LOG_ERROR("sysview: Failed to finalize core destinations (%d)!", res);
+
 	if (cmd_data->multicore_fd > 0) {
-		res = esp32_sysview_combine_files(cmd_data->multicore_fd,
+		int combine_res = esp32_sysview_combine_files(cmd_data->multicore_fd,
 			((struct esp32_apptrace_dest_file_data *)cmd_data->data_dests[0].priv)->fout,
 			((struct esp32_apptrace_dest_file_data *)cmd_data->data_dests[1].priv)->fout);
 		close(cmd_data->multicore_fd);
 		cmd_data->multicore_fd = -1;
+		if (res == ERROR_OK)
+			res = combine_res;
 	}
 
 	return res;
@@ -1602,7 +1672,7 @@ static int esp32_cmd_apptrace_generic(struct command_invocation *cmd, int mode, 
 		esp32_apptrace_cmd_stop(&s_at_cmd_ctx);
 		return ERROR_OK;
 	} else if (strcmp(argv[0], "status") == 0) {
-		if (s_at_cmd_ctx.running && duration_measure(&s_at_cmd_ctx.read_time) != 0)
+		if (s_at_cmd_ctx.running && duration_measure(&s_at_cmd_ctx.read_time) != ERROR_OK)
 			LOG_ERROR("Failed to measure trace read time!");
 		esp32_apptrace_print_stats(&s_at_cmd_ctx);
 		return ERROR_OK;

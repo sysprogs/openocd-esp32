@@ -34,7 +34,7 @@ test_on_windows_arm64:
   needs:
     - job: build_windows_arm64
   variables:
-    PLATFORM_NAME: "windows-arm64"
+    PLATFORM_NAME: "win-arm64"
   timeout: 10m
 
 test_on_macos:
@@ -96,7 +96,7 @@ tests_on_linux:
 
 .test_board_detector_template:
   stage: test_host
-  image: $CI_DOCKER_REGISTRY/target-test-env-v5.5:2
+  image: ${CI_REGISTRY}/ci/images/idf-v5.5-target-test:1
   tags:
     - $CHIP_NAME
     - $JTAG_IFACE
@@ -182,6 +182,7 @@ test_board_detector_brnowin10:
       - esp-config.json
     when: always
     expire_in: 1 day
+  allow_failure: true
   before_script: []
   script:
     - $ARCHIVE_NAME=$(cat "$DIST_ART_DIR/dist_name_$PLATFORM_NAME")

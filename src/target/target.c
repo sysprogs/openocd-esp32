@@ -30,12 +30,14 @@
 #include "config.h"
 #endif
 
+#include <stdlib.h>
 #include <helper/align.h>
 #include <helper/list.h>
 #include <helper/nvp.h>
 #include <helper/time_support.h>
 #include <jtag/jtag.h>
 #include <flash/nor/core.h>
+#include <target/oocd_capstone.h>
 
 #include "target.h"
 #include "target_type.h"
@@ -103,6 +105,7 @@ static struct target_type *target_types[] = {
 	&esp32p4_target,
 	&esp32s2_target,
 	&esp32s3_target,
+	&esp32s31_target,
 	&esp32_target,
 	&fa526_target,
 	&feroceon_target,
@@ -127,7 +130,7 @@ static struct target_timer_callback *target_timer_callbacks;
 static int64_t target_timer_next_event_value;
 static OOCD_LIST_HEAD(target_reset_callback_list);
 static OOCD_LIST_HEAD(target_trace_callback_list);
-static const int polling_interval = TARGET_DEFAULT_POLLING_INTERVAL;
+static unsigned int polling_interval = TARGET_DEFAULT_POLLING_INTERVAL;
 static OOCD_LIST_HEAD(empty_smp_targets);
 
 enum nvp_assert {
@@ -501,7 +504,7 @@ int target_poll(struct target *target)
 	/* We can't poll until after examine */
 	if (!target_was_examined(target)) {
 		/* Fail silently lest we pollute the log */
-		return ERROR_FAIL;
+		return ERROR_TARGET_NOT_EXAMINED;
 	}
 
 	retval = target->type->poll(target);
@@ -527,10 +530,10 @@ int target_poll(struct target *target)
 int target_halt(struct target *target)
 {
 	int retval;
-	/* We can't poll until after examine */
+
 	if (!target_was_examined(target)) {
-		LOG_ERROR("Target not examined yet");
-		return ERROR_FAIL;
+		LOG_TARGET_ERROR(target, "not examined");
+		return ERROR_TARGET_NOT_EXAMINED;
 	}
 
 	retval = target->type->halt(target);
@@ -578,10 +581,9 @@ int target_resume(struct target *target, bool current, target_addr_t address,
 {
 	int retval;
 
-	/* We can't poll until after examine */
 	if (!target_was_examined(target)) {
-		LOG_ERROR("Target not examined yet");
-		return ERROR_FAIL;
+		LOG_TARGET_ERROR(target, "not examined");
+		return ERROR_TARGET_NOT_EXAMINED;
 	}
 
 	target_call_event_callbacks(target, TARGET_EVENT_RESUME_START);
@@ -667,18 +669,8 @@ static int no_mmu(struct target *target, bool *enabled)
 	return ERROR_OK;
 }
 
-/**
- * Reset the @c examined flag for the given target.
- * Pure paranoia -- targets are zeroed on allocation.
- */
-static inline void target_reset_examined(struct target *target)
-{
-	target->examined = false;
-}
-
 static int default_examine(struct target *target)
 {
-	target_set_examined(target);
 	return ERROR_OK;
 }
 
@@ -762,8 +754,8 @@ const char *target_type_name(const struct target *target)
 static int target_soft_reset_halt(struct target *target)
 {
 	if (!target_was_examined(target)) {
-		LOG_ERROR("Target not examined yet");
-		return ERROR_FAIL;
+		LOG_TARGET_ERROR(target, "not examined");
+		return ERROR_TARGET_NOT_EXAMINED;
 	}
 	if (!target->type->soft_reset_halt) {
 		LOG_ERROR("Target %s does not support soft_reset_halt",
@@ -800,7 +792,8 @@ int target_run_algorithm(struct target *target,
 	int retval = ERROR_FAIL;
 
 	if (!target_was_examined(target)) {
-		LOG_ERROR("Target not examined yet");
+		LOG_TARGET_ERROR(target, "not examined");
+		retval = ERROR_TARGET_NOT_EXAMINED;
 		goto done;
 	}
 	if (!target->type->run_algorithm) {
@@ -841,7 +834,8 @@ int target_start_algorithm(struct target *target,
 	int retval = ERROR_FAIL;
 
 	if (!target_was_examined(target)) {
-		LOG_ERROR("Target not examined yet");
+		LOG_TARGET_ERROR(target, "not examined");
+		retval = ERROR_TARGET_NOT_EXAMINED;
 		goto done;
 	}
 	if (!target->type->start_algorithm) {
@@ -1401,7 +1395,8 @@ int target_get_gdb_reg_list(struct target *target,
 	int result = ERROR_FAIL;
 
 	if (!target_was_examined(target)) {
-		LOG_ERROR("Target not examined yet");
+		LOG_TARGET_ERROR(target, "not examined");
+		result = ERROR_TARGET_NOT_EXAMINED;
 		goto done;
 	}
 
@@ -1440,6 +1435,11 @@ int target_step(struct target *target,
 		bool current, target_addr_t address, bool handle_breakpoints)
 {
 	int retval;
+
+	if (!target_was_examined(target)) {
+		LOG_TARGET_ERROR(target, "not examined");
+		return ERROR_TARGET_NOT_EXAMINED;
+	}
 
 	target_call_event_callbacks(target, TARGET_EVENT_STEP_START);
 
@@ -1529,6 +1529,7 @@ static int target_init_one(struct command_context *cmd_ctx,
 		struct target *target)
 {
 	target_reset_examined(target);
+	target_reset_active_polled(target);
 
 	struct target_type *type = target->type;
 	if (!type->examine)
@@ -1707,6 +1708,18 @@ int target_register_trace_callback(int (*callback)(struct target *target,
 	return ERROR_OK;
 }
 
+static int target_timer_callback_set_period(struct target_timer_callback *cb, unsigned int time_ms)
+{
+	if (!cb)
+		return ERROR_FAIL;
+
+	cb->time_ms = time_ms;
+	cb->when = timeval_ms() + time_ms;
+	target_timer_next_event_value = MIN(target_timer_next_event_value, cb->when);
+
+	return ERROR_OK;
+}
+
 int target_register_timer_callback(int (*callback)(void *priv),
 		unsigned int time_ms, enum target_timer_type type, void *priv)
 {
@@ -1724,16 +1737,12 @@ int target_register_timer_callback(int (*callback)(void *priv),
 	(*callbacks_p) = malloc(sizeof(struct target_timer_callback));
 	(*callbacks_p)->callback = callback;
 	(*callbacks_p)->type = type;
-	(*callbacks_p)->time_ms = time_ms;
 	(*callbacks_p)->removed = false;
-
-	(*callbacks_p)->when = timeval_ms() + time_ms;
-	target_timer_next_event_value = MIN(target_timer_next_event_value, (*callbacks_p)->when);
 
 	(*callbacks_p)->priv = priv;
 	(*callbacks_p)->next = NULL;
 
-	return ERROR_OK;
+	return target_timer_callback_set_period(*callbacks_p, time_ms);
 }
 
 int target_unregister_event_callback(int (*callback)(struct target *target,
@@ -1797,17 +1806,30 @@ int target_unregister_trace_callback(int (*callback)(struct target *target,
 	return ERROR_OK;
 }
 
+static struct target_timer_callback *target_find_timer_callback(int (*callback)(void *priv),
+		void *priv)
+{
+	if (!callback)
+		return NULL;
+
+	for (struct target_timer_callback *c = target_timer_callbacks;
+	     c; c = c->next) {
+		if (c->callback == callback && c->priv == priv)
+			return c;
+	}
+
+	return NULL;
+}
+
 int target_unregister_timer_callback(int (*callback)(void *priv), void *priv)
 {
 	if (!callback)
 		return ERROR_COMMAND_SYNTAX_ERROR;
 
-	for (struct target_timer_callback *c = target_timer_callbacks;
-	     c; c = c->next) {
-		if ((c->callback == callback) && (c->priv == priv)) {
-			c->removed = true;
-			return ERROR_OK;
-		}
+	struct target_timer_callback *cb = target_find_timer_callback(callback, priv);
+	if (cb) {
+		cb->removed = true;
+		return ERROR_OK;
 	}
 
 	return ERROR_FAIL;
@@ -2236,6 +2258,22 @@ uint32_t target_get_working_area_avail(struct target *target)
 	return max_size;
 }
 
+static void free_smp_target_list(struct list_head *smp_targets)
+{
+	assert(smp_targets);
+	if (smp_targets == &empty_smp_targets)
+		return;
+
+	struct target_list *head, *tmp;
+	list_for_each_entry_safe(head, tmp, smp_targets, lh) {
+		list_del(&head->lh);
+		head->target->smp = 0;
+		head->target->smp_targets = &empty_smp_targets;
+		free(head);
+	}
+	free(smp_targets);
+}
+
 static void target_destroy(struct target *target)
 {
 	breakpoint_remove_all(target);
@@ -2261,19 +2299,7 @@ static void target_destroy(struct target *target)
 
 	rtos_destroy(target);
 
-	/* release the targets SMP list */
-	if (target->smp) {
-		struct target_list *head, *tmp;
-
-		list_for_each_entry_safe(head, tmp, target->smp_targets, lh) {
-			list_del(&head->lh);
-			head->target->smp = 0;
-			free(head);
-		}
-		if (target->smp_targets != &empty_smp_targets)
-			free(target->smp_targets);
-		target->smp = 0;
-	}
+	free_smp_target_list(target->smp_targets);
 
 	free(target->gdb_port_override);
 	free(target->type);
@@ -2314,7 +2340,6 @@ void target_quit(void)
 
 int target_arch_state(struct target *target)
 {
-	int retval;
 	if (!target) {
 		LOG_WARNING("No target has been configured");
 		return ERROR_OK;
@@ -2323,8 +2348,7 @@ int target_arch_state(struct target *target)
 	if (target->state != TARGET_HALTED)
 		return ERROR_OK;
 
-	retval = target->type->arch_state(target);
-	return retval;
+	return target->type->arch_state(target);
 }
 
 static int target_get_gdb_fileio_info_default(struct target *target,
@@ -2346,10 +2370,7 @@ static int target_gdb_fileio_end_default(struct target *target,
 int target_profiling_default(struct target *target, uint32_t *samples,
 		uint32_t max_num_samples, uint32_t *num_samples, uint32_t seconds)
 {
-	struct timeval timeout, now;
-
-	gettimeofday(&timeout, NULL);
-	timeval_add_time(&timeout, seconds, 0);
+	int64_t then = timeval_ms() + seconds * 1000LL;
 
 	LOG_INFO("Starting profiling. Halting and resuming the"
 			" target as often as we can...");
@@ -2380,8 +2401,7 @@ int target_profiling_default(struct target *target, uint32_t *samples,
 		if (retval != ERROR_OK)
 			break;
 
-		gettimeofday(&now, NULL);
-		if ((sample_count >= max_num_samples) || timeval_compare(&now, &timeout) >= 0) {
+		if (sample_count >= max_num_samples || timeval_ms() >= then) {
 			LOG_INFO("Profiling completed. %" PRIu32 " samples.", sample_count);
 			break;
 		}
@@ -2389,6 +2409,20 @@ int target_profiling_default(struct target *target, uint32_t *samples,
 
 	*num_samples = sample_count;
 	return retval;
+}
+
+static int target_insn_set(struct command_invocation *cmd, struct target *target,
+						   const char **insn_set)
+{
+	if (target->type->insn_set)
+		return target->type->insn_set(cmd, target, insn_set);
+
+	command_print(cmd, "Instruction-set detection not implemented on target %s",
+				  target_name(target));
+	command_print(cmd, "Change target or specify one of the instruction set:");
+	oocd_cs_list_insn_types(cmd);
+
+	return ERROR_NOT_IMPLEMENTED;
 }
 
 /* Single aligned words are guaranteed to use 16 or 32 bit access
@@ -2524,8 +2558,8 @@ int target_checksum_memory(struct target *target, target_addr_t address, uint32_
 {
 	int retval;
 	if (!target_was_examined(target)) {
-		LOG_ERROR("Target not examined yet");
-		return ERROR_FAIL;
+		LOG_TARGET_ERROR(target, "not examined");
+		return ERROR_TARGET_NOT_EXAMINED;
 	}
 
 	if (target->type->checksum_memory) {
@@ -2556,8 +2590,8 @@ int target_blank_check_memory(struct target *target,
 	uint8_t erased_value, unsigned int *checked)
 {
 	if (!target_was_examined(target)) {
-		LOG_ERROR("Target not examined yet");
-		return ERROR_FAIL;
+		LOG_TARGET_ERROR(target, "not examined");
+		return ERROR_TARGET_NOT_EXAMINED;
 	}
 
 	if (!target->type->blank_check_memory)
@@ -2837,10 +2871,10 @@ COMMAND_HANDLER(handle_targets_command)
 	return retval;
 }
 
-/* every 300ms we check for reset & powerdropout and issue a "reset halt" if so. */
+/* every polling_interval we check for reset & powerdropout */
 
-static int power_dropout;
-static int srst_asserted;
+static int sensed_power_dropout;
+static int sensed_srst_asserted;
 
 static int run_power_restore;
 static int run_power_dropout;
@@ -2852,29 +2886,29 @@ static int sense_handler(void)
 	static int prev_srst_asserted;
 	static int prev_power_dropout;
 
-	int retval = jtag_power_dropout(&power_dropout);
+	int retval = jtag_power_dropout(&sensed_power_dropout);
 	if (retval != ERROR_OK)
 		return retval;
 
 	int power_restored;
-	power_restored = prev_power_dropout && !power_dropout;
+	power_restored = prev_power_dropout && !sensed_power_dropout;
 	if (power_restored)
 		run_power_restore = 1;
 
 	int64_t current = timeval_ms();
 	static int64_t last_power;
 	bool wait_more = last_power + 2000 > current;
-	if (power_dropout && !wait_more) {
+	if (sensed_power_dropout && !wait_more) {
 		run_power_dropout = 1;
 		last_power = current;
 	}
 
-	retval = jtag_srst_asserted(&srst_asserted);
+	retval = jtag_srst_asserted(&sensed_srst_asserted);
 	if (retval != ERROR_OK)
 		return retval;
 
 	int srst_deasserted;
-	srst_deasserted = prev_srst_asserted && !srst_asserted;
+	srst_deasserted = prev_srst_asserted && !sensed_srst_asserted;
 
 	static int64_t last_srst;
 	wait_more = last_srst + 2000 > current;
@@ -2883,11 +2917,11 @@ static int sense_handler(void)
 		last_srst = current;
 	}
 
-	if (!prev_srst_asserted && srst_asserted)
+	if (!prev_srst_asserted && sensed_srst_asserted)
 		run_srst_asserted = 1;
 
-	prev_srst_asserted = srst_asserted;
-	prev_power_dropout = power_dropout;
+	prev_srst_asserted = sensed_srst_asserted;
+	prev_power_dropout = sensed_power_dropout;
 
 	if (srst_deasserted || power_restored) {
 		/* Other than logging the event we can't do anything here.
@@ -2899,11 +2933,24 @@ static int sense_handler(void)
 	return ERROR_OK;
 }
 
+static int handle_one_target(struct target *target)
+{
+	if (!target_active_polled(target) || !target->tap->enabled)
+		return ERROR_OK;
+
+	int res = target_poll(target);
+	if (res == ERROR_OK)
+		return res;
+
+	LOG_TARGET_ERROR(target, "Polling failed, trying to reexamine");
+	target_reset_examined(target);
+	return target_examine_one(target);
+}
+
 /* process target state changes */
 static int handle_target(void *priv)
 {
 	Jim_Interp *interp = (Jim_Interp *)priv;
-	int retval = ERROR_OK;
 
 	if (!is_jtag_poll_safe()) {
 		/* polling is disabled currently */
@@ -2954,61 +3001,36 @@ static int handle_target(void *priv)
 		recursive = 0;
 	}
 
+	/* FIXME: sensed SRST state should be treated similarly as
+	 * active SRST control and honour reset config RESET_SRST_NO_GATING */
+	if (sensed_power_dropout || sensed_srst_asserted)
+		return ERROR_OK;
+
+	int retval = ERROR_OK;
 	/* Poll targets for state changes unless that's globally disabled.
 	 * Skip targets that are currently disabled.
 	 */
 	for (struct target *target = all_targets;
 			is_jtag_poll_safe() && target;
 			target = target->next) {
-
-		if (!target_was_examined(target))
+		/* This function only gets called every polling_interval, so
+		 * allow some slack in the time comparison. Otherwise, if we
+		 * schedule for now+polling_interval, the next poll won't
+		 * actually happen until a polling_interval later. */
+		if (timeval_ms() + polling_interval / 2 < target->backoff.next_attempt)
 			continue;
 
-		if (!target->tap->enabled)
-			continue;
-
-		if (target->backoff.times > target->backoff.count) {
-			/* do not poll this time as we failed previously */
-			target->backoff.count++;
-			continue;
+		int tgt_res = handle_one_target(target);
+		if (tgt_res != ERROR_OK) {
+			retval = tgt_res;
+			target->backoff.interval = MAX(polling_interval,
+					MIN(target->backoff.interval * 2u + 1u, TARGET_MAX_POLLING_INTERVAL_MS));
+		} else {
+			target->backoff.interval = polling_interval;
 		}
-		target->backoff.count = 0;
-
-		/* only poll target if we've got power and srst isn't asserted */
-		if (!power_dropout && !srst_asserted) {
-			/* polling may fail silently until the target has been examined */
-			retval = target_poll(target);
-			if (retval != ERROR_OK) {
-				/* 100ms polling interval. Increase interval between polling up to 5000ms */
-				if (target->backoff.times * polling_interval < 5000) {
-					target->backoff.times *= 2;
-					target->backoff.times++;
-				}
-
-				/* Do *not* tell gdb the target halted. This might just
-				 * be a hiccup.  We have no reason to believe the target
-				 * is halted, and if it is running while gdb thinks it's
-				 * halted things just get unnecessarily confused.  gdb
-				 * users can hit ^C if the need to interact with the
-				 * target. */
-			}
-			if (target->backoff.times > 0) {
-				LOG_TARGET_ERROR(target, "Polling failed, trying to reexamine");
-				target_reset_examined(target);
-				retval = target_examine_one(target);
-				/* Target examination could have failed due to unstable connection,
-				 * but we set the examined flag anyway to repoll it later */
-				if (retval != ERROR_OK) {
-					target_set_examined(target);
-					LOG_TARGET_ERROR(target, "Examination failed, GDB will be halted. Polling again in %dms",
-						 target->backoff.times * polling_interval);
-					return retval;
-				}
-			}
-
-			/* Since we succeeded, we reset backoff count */
-			target->backoff.times = 0;
-		}
+		target->backoff.next_attempt = timeval_ms() + target->backoff.interval;
+		LOG_TARGET_DEBUG_IO(target, "target_poll() -> %d, next attempt in %ums",
+				 tgt_res, target->backoff.interval);
 	}
 
 	return retval;
@@ -3020,7 +3042,7 @@ COMMAND_HANDLER(handle_reg_command)
 
 	struct target *target = get_current_target(CMD_CTX);
 	if (!target_was_examined(target)) {
-		LOG_ERROR("Target not examined yet");
+		command_print(CMD, "Error: [%s] not examined", target_name(target));
 		return ERROR_TARGET_NOT_EXAMINED;
 	}
 	struct reg *reg = NULL;
@@ -3183,6 +3205,36 @@ COMMAND_HANDLER(handle_poll_command)
 		return ERROR_COMMAND_SYNTAX_ERROR;
 
 	return retval;
+}
+
+COMMAND_HANDLER(handle_poll_interval_command)
+{
+	int retval;
+	unsigned int ms;
+
+	switch (CMD_ARGC) {
+	case 0:
+		command_print(CMD, "%d", polling_interval);
+		break;
+	case 1:
+		retval = parse_uint(CMD_ARGV[0], &ms);
+		if (retval != ERROR_OK)
+			return ERROR_COMMAND_ARGUMENT_INVALID;
+
+		/* If the timer callback has been registered, update the timer callback period */
+		struct target_timer_callback *cb = target_find_timer_callback(&handle_target, CMD_CTX->interp);
+		if (cb) {
+			retval = target_timer_callback_set_period(cb, ms);
+			if (retval != ERROR_OK)
+				return retval;
+		}
+		polling_interval = ms;
+		break;
+	default:
+		return ERROR_COMMAND_SYNTAX_ERROR;
+	}
+
+	return ERROR_OK;
 }
 
 COMMAND_HANDLER(handle_wait_halt_command)
@@ -3765,7 +3817,7 @@ COMMAND_HANDLER(handle_load_image_command)
 		free(buffer);
 	}
 
-	if ((retval == ERROR_OK) && (duration_measure(&bench) == ERROR_OK)) {
+	if (retval == ERROR_OK && duration_measure(&bench) == ERROR_OK) {
 		command_print(CMD, "downloaded %" PRIu32 " bytes "
 				"in %fs (%0.3f KiB/s)", image_size,
 				duration_elapsed(&bench), duration_kbps(&bench, image_size));
@@ -3822,7 +3874,7 @@ COMMAND_HANDLER(handle_dump_image_command)
 
 	free(buffer);
 
-	if ((retval == ERROR_OK) && (duration_measure(&bench) == ERROR_OK)) {
+	if (retval == ERROR_OK && duration_measure(&bench) == ERROR_OK) {
 		size_t filesize;
 		retval = fileio_size(fileio, &filesize);
 		if (retval != ERROR_OK)
@@ -3973,7 +4025,7 @@ static COMMAND_HELPER(handle_verify_image_command_internal, enum verify_mode ver
 done:
 	if (diffs > 0)
 		retval = ERROR_FAIL;
-	if ((retval == ERROR_OK) && (duration_measure(&bench) == ERROR_OK)) {
+	if (retval == ERROR_OK && duration_measure(&bench) == ERROR_OK) {
 		command_print(CMD, "verified %" PRIu32 " bytes "
 				"in %fs (%0.3f KiB/s)", image_size,
 				duration_elapsed(&bench), duration_kbps(&bench, image_size));
@@ -4300,11 +4352,53 @@ static void write_string(FILE *f, char *s)
 
 typedef unsigned char UNIT[2];  /* unit of profiling */
 
-/* Dump a gmon.out histogram file. */
-static void write_gmon(uint32_t *samples, uint32_t sample_num, const char *filename, bool with_range,
-			uint32_t start_address, uint32_t end_address, struct target *target, uint32_t duration_ms)
+static void write_gmon_hist(FILE *f, const uint32_t *samples, const uint32_t *counts, uint32_t sample_num,
+			float sample_rate, struct target *target)
 {
-	uint32_t i;
+	uint32_t min = samples[0];
+	uint32_t max = samples[sample_num - 1];
+
+	/* max should be (largest sample + 1)
+	 * Refer to binutils/gprof/hist.c (find_histogram_for_pc) */
+	max++;
+
+	/* The ratio ((double)((max - min) / 2) / num_buckets) must match across
+	 * all histograms in this file. To avoid trunction in the /2, we must have
+	 * an even length address space for compatibility with binutils <=2.44.
+	 * Refer to binutils/gprof/hist.c (calculation of n_hist_scale)*/
+	if ((max - min) % 2)
+		max++;
+	uint32_t address_space = max - min;
+
+	uint8_t zero = 0;  /* GMON_TAG_TIME_HIST */
+	write_data(f, &zero, 1);
+
+	/* append binary memory gmon.out &profile_hist_hdr ((char*)&profile_hist_hdr + sizeof(struct gmon_hist_hdr)) */
+	write_long(f, min, target);			/* low_pc */
+	write_long(f, max, target);			/* high_pc */
+	write_long(f, address_space / sizeof(UNIT), target);	/* # of buckets */
+	write_long(f, sample_rate, target);
+	write_string(f, "seconds");
+	for (size_t i = strlen("seconds"); i < 15; i++)
+		write_data(f, &zero, 1);
+	write_string(f, "s");
+
+	/*append binary memory gmon.out profile_hist_data (profile_hist_data + profile_hist_hdr.hist_size) */
+	for (uint32_t i = 0, bidx = 0; bidx < address_space; bidx += sizeof(UNIT)) {
+		uint32_t val = 0;
+		uint32_t bmax = min + bidx + sizeof(UNIT);
+		while (i < sample_num && samples[i] < bmax)
+			val += counts[i++];
+		uint8_t data[2];
+		h_u16_to_le(data, val);
+		write_data(f, data, 2);
+	}
+}
+
+/* Dump a gmon.out histogram file. */
+static void write_gmon(const uint32_t *samples, const uint32_t *counts, uint32_t sample_num, const char *filename,
+			struct target *target, uint32_t duration_ms, float sample_rate)
+{
 	FILE *f = fopen(filename, "wb");
 	if (!f)
 		return;
@@ -4314,104 +4408,43 @@ static void write_gmon(uint32_t *samples, uint32_t sample_num, const char *filen
 	write_long(f, 0, target); /* padding */
 	write_long(f, 0, target); /* padding */
 
-	uint8_t zero = 0;  /* GMON_TAG_TIME_HIST */
-	write_data(f, &zero, 1);
+	while (sample_num > 0) {
+		uint32_t this_pass = 1;
+		const uint32_t bucket_max = UINT16_MAX;
 
-	/* figure out bucket size */
-	uint32_t min;
-	uint32_t max;
-	if (with_range) {
-		min = start_address;
-		max = end_address;
-	} else {
-		min = samples[0];
-		max = samples[0];
-		for (i = 0; i < sample_num; i++) {
-			if (min > samples[i])
-				min = samples[i];
-			if (max < samples[i])
-				max = samples[i];
+		if (counts[0] > bucket_max) {
+			/* if the next sample has more than UINT16_MAX hits, write it in one-address histograms */
+			uint32_t remaining = counts[0];
+			while (remaining > bucket_max) {
+				write_gmon_hist(f, samples, &bucket_max, 1, sample_rate, target);
+				remaining -= bucket_max;
+			}
+			write_gmon_hist(f, samples, &remaining, 1, sample_rate, target);
+		} else {
+			/* if address gap exceeds this, make another histogram */
+			const uint32_t MAX_GAP = 32;
+
+			/* figure out bucket size */
+			uint32_t max = samples[0];
+			while (this_pass < sample_num && samples[this_pass] - max < MAX_GAP && counts[this_pass] <= bucket_max)
+				max = samples[this_pass++];
+
+			write_gmon_hist(f, samples, counts, this_pass, sample_rate, target);
 		}
-
-		/* max should be (largest sample + 1)
-		 * Refer to binutils/gprof/hist.c (find_histogram_for_pc) */
-		if (max < UINT32_MAX)
-			max++;
-
-		/* gprof requires (max - min) >= 2 */
-		while ((max - min) < 2) {
-			if (max < UINT32_MAX)
-				max++;
-			else
-				min--;
-		}
+		samples += this_pass;
+		counts += this_pass;
+		sample_num -= this_pass;
 	}
-
-	uint32_t address_space = max - min;
-
-	/* FIXME: What is the reasonable number of buckets?
-	 * The profiling result will be more accurate if there are enough buckets. */
-	static const uint32_t max_buckets = 128 * 1024 * 1024; /* maximum buckets. */
-	uint32_t num_buckets = address_space / sizeof(UNIT);
-	if (num_buckets > max_buckets)
-		num_buckets = max_buckets;
-	int *buckets = malloc(sizeof(int) * num_buckets);
-	if (!buckets) {
-		fclose(f);
-		return;
-	}
-	memset(buckets, 0, sizeof(int) * num_buckets);
-	for (i = 0; i < sample_num; i++) {
-		uint32_t address = samples[i];
-
-		if ((address < min) || (max <= address))
-			continue;
-
-		long long a = address - min;
-		long long b = num_buckets;
-		long long c = address_space;
-		int index_t = (a * b) / c; /* danger!!!! int32 overflows */
-		buckets[index_t]++;
-	}
-
-	/* append binary memory gmon.out &profile_hist_hdr ((char*)&profile_hist_hdr + sizeof(struct gmon_hist_hdr)) */
-	write_long(f, min, target);			/* low_pc */
-	write_long(f, max, target);			/* high_pc */
-	write_long(f, num_buckets, target);	/* # of buckets */
-
-	/*append binary memory gmon.out profile_hist_data (profile_hist_data + profile_hist_hdr.hist_size) */
-
-	char *data = malloc(2 * num_buckets);
-	if (!data) {
-		free(buckets);
-		fclose(f);
-		return;
-	}
-
-	for (i = 0; i < num_buckets; i++) {
-		int val;
-		val = buckets[i];
-		if (val > UINT16_MAX) {
-			LOG_WARNING("profiler bucket saturated, will read as %d, dropped %d samples", UINT16_MAX, val - UINT16_MAX);
-			sample_num -= (val - UINT16_MAX);
-			val = UINT16_MAX;
-		}
-		data[i * 2] = val & 0xff;
-		data[i * 2 + 1] = (val >> 8) & 0xff;
-	}
-
-	float sample_rate = sample_num / (duration_ms / 1000.0);
-	write_long(f, sample_rate, target);
-	write_string(f, "seconds");
-	for (i = 0; i < (15-strlen("seconds")); i++)
-		write_data(f, &zero, 1);
-	write_string(f, "s");
-
-	free(buckets);
-	write_data(f, data, num_buckets * 2);
-	free(data);
 
 	fclose(f);
+}
+
+// comparison function for qsort(). Returns -1, 0 or +1
+static int compare_pc32(const void *p1, const void *p2)
+{
+	uint32_t lhs = *(const uint32_t *)p1;
+	uint32_t rhs = *(const uint32_t *)p2;
+	return (lhs > rhs) - (lhs < rhs);
 }
 
 /* profiling samples the CPU PC as quickly as OpenOCD is able,
@@ -4462,7 +4495,7 @@ COMMAND_HANDLER(handle_profile_command)
 		free(samples);
 		return retval;
 	}
-	uint32_t duration_ms = timeval_ms() - timestart_ms;
+	uint64_t duration_ms = timeval_ms() - timestart_ms;
 
 	assert(num_of_samples <= MAX_PROFILE_SAMPLE_NUM);
 
@@ -4496,12 +4529,59 @@ COMMAND_HANDLER(handle_profile_command)
 		return retval;
 	}
 
-	write_gmon(samples, num_of_samples, CMD_ARGV[1],
-		   with_range, start_address, end_address, target, duration_ms);
+	if (!num_of_samples) {
+		command_print(CMD, "Wrote no samples");
+		free(samples);
+		return ERROR_OK;
+	}
+
+	if (with_range) {
+		uint32_t num_filtered_samples = 0;
+		for (uint32_t in = 0; in < num_of_samples; ++in) {
+			uint32_t sample = samples[in];
+			if (sample >= start_address && sample < end_address)
+				samples[num_filtered_samples++] = sample;
+		}
+		duration_ms = (duration_ms * num_filtered_samples + num_of_samples / 2) / num_of_samples;
+		if (duration_ms < 1)
+			duration_ms = 0;
+		num_of_samples = num_filtered_samples;
+
+		if (!num_of_samples) {
+			command_print(CMD, "Wrote no samples in the requested range");
+			free(samples);
+			return ERROR_OK;
+		}
+	}
+
+	qsort(samples, num_of_samples, sizeof(samples[0]), compare_pc32);
+
+	uint32_t *counts = malloc(sizeof(uint32_t) * num_of_samples);
+	if (!counts) {
+		LOG_ERROR("No memory to store sample counts.");
+		free(samples);
+		return ERROR_FAIL;
+	}
+	counts[0] = 1;
+	uint32_t num_unique_samples = 1;
+	for (uint32_t in = 1; in < num_of_samples; ++in) {
+		uint32_t sample = samples[in];
+		if (sample != samples[num_unique_samples - 1]) {
+			samples[num_unique_samples] = sample;
+			counts[num_unique_samples] = 1;
+			num_unique_samples++;
+		} else {
+			counts[num_unique_samples - 1]++;
+		}
+	}
+
+	float sample_rate = num_of_samples / (duration_ms / 1000.0);
+	write_gmon(samples, counts, num_unique_samples, CMD_ARGV[1], target, duration_ms, sample_rate);
 	command_print(CMD, "Wrote %s", CMD_ARGV[1]);
+	free(counts);
 
 	free(samples);
-	return retval;
+	return ERROR_OK;
 }
 
 COMMAND_HANDLER(handle_target_read_memory)
@@ -4839,6 +4919,10 @@ COMMAND_HANDLER(handle_target_get_reg)
 	const int length = Jim_ListLength(CMD_CTX->interp, next_argv);
 
 	const struct target *target = get_current_target(CMD_CTX);
+	if (target->state != TARGET_HALTED) {
+		command_print(CMD, "Error: [%s] not halted", target_name(target));
+		return ERROR_TARGET_NOT_HALTED;
+	}
 
 	for (int i = 0; i < length; i++) {
 		Jim_Obj *elem = Jim_ListGetIndex(CMD_CTX->interp, next_argv, i);
@@ -4899,6 +4983,11 @@ COMMAND_HANDLER(handle_set_reg_command)
 
 	const struct target *target = get_current_target(CMD_CTX);
 	assert(target);
+	if (target->state != TARGET_HALTED) {
+		command_print(CMD, "Error: [%s] not halted", target_name(target));
+		return ERROR_TARGET_NOT_HALTED;
+	}
+
 
 	for (unsigned int i = 0; i < length; i += 2) {
 		const char *reg_name = Jim_String(dict[i]);
@@ -4964,6 +5053,7 @@ enum target_cfg_param {
 	TCFG_DEFER_EXAMINE,
 	TCFG_GDB_PORT,
 	TCFG_GDB_MAX_CONNECTIONS,
+	TCFG_REVISION, /* ESPRESSIF */
 };
 
 static struct nvp nvp_config_opts[] = {
@@ -4981,6 +5071,7 @@ static struct nvp nvp_config_opts[] = {
 	{ .name = "-defer-examine",    .value = TCFG_DEFER_EXAMINE },
 	{ .name = "-gdb-port",         .value = TCFG_GDB_PORT },
 	{ .name = "-gdb-max-connections",   .value = TCFG_GDB_MAX_CONNECTIONS },
+	{ .name = "-revision",          .value = TCFG_REVISION }, /* ESPRESSIF */
 	{ .name = NULL, .value = -1 }
 };
 
@@ -5363,6 +5454,18 @@ static COMMAND_HELPER(target_configure, struct target *target, unsigned int inde
 			}
 			/* loop for more */
 			break;
+		/* ESPRESSIF */
+		case TCFG_REVISION:
+			/* not settable */
+			if (is_configure) {
+				command_print(CMD, "not settable: %s", n->name);
+				return ERROR_COMMAND_ARGUMENT_INVALID;
+			}
+			if (index != CMD_ARGC)
+				return ERROR_COMMAND_SYNTAX_ERROR;
+			command_print(CMD, "%u", target->hw_rev);
+			/* loop for more */
+			break;
 		}
 	}
 
@@ -5502,8 +5605,10 @@ COMMAND_HANDLER(handle_target_reset)
 	/* do the assert */
 	if (n->value == NVP_ASSERT) {
 		int retval = target->type->assert_reset(target);
-		if (target->defer_examine)
+		if (target->defer_examine) {
 			target_reset_examined(target);
+			target_reset_active_polled(target);
+		}
 		return retval;
 	}
 
@@ -5625,6 +5730,36 @@ COMMAND_HANDLER(handle_target_invoke_event)
 	struct target *target = get_current_target(CMD_CTX);
 	target_handle_event(target, n->value);
 	return ERROR_OK;
+}
+
+COMMAND_HANDLER(handle_target_disassemble)
+{
+	struct target *target = get_current_target(CMD_CTX);
+
+	if (CMD_ARGC < 1 || CMD_ARGC > 3)
+		return ERROR_COMMAND_SYNTAX_ERROR;
+
+	if (CMD_ARGC == 1 && !strcmp("list", CMD_ARGV[0]))
+		return oocd_cs_list_insn_types(CMD);
+
+	target_addr_t address;
+	COMMAND_PARSE_ADDRESS(CMD_ARGV[0], address);
+
+	unsigned int count = 1;
+	if (CMD_ARGC > 1)
+		COMMAND_PARSE_NUMBER(uint, CMD_ARGV[1], count);
+
+	const char *insn_set;
+	if (CMD_ARGC > 2) {
+		insn_set = CMD_ARGV[2];
+	} else {
+		int retval = target_insn_set(CMD, target, &insn_set);
+		if (retval != ERROR_OK)
+			return retval;
+		LOG_TARGET_DEBUG(target, "instruction set \"%s\"", insn_set);
+	}
+
+	return oocd_cs_disassemble(CMD, target, address, count, insn_set);
 }
 
 static const struct command_registration target_instance_command_handlers[] = {
@@ -5809,6 +5944,13 @@ static const struct command_registration target_instance_command_handlers[] = {
 		.handler = handle_target_invoke_event,
 		.help = "invoke handler for specified event",
 		.usage = "event_name",
+	},
+	{
+		.name = "disassemble",
+		.mode = COMMAND_EXEC,
+		.handler = handle_target_disassemble,
+		.help = "disassemble instructions",
+		.usage = "list | address [count [instruction_set]]",
 	},
 	COMMAND_REGISTRATION_DONE
 };
@@ -6137,8 +6279,11 @@ COMMAND_HANDLER(handle_target_smp)
 		if (new)
 			list_add_tail(&new->lh, lh);
 	}
-	/*  now parse the list of cpu and put the target in smp mode*/
 	struct target_list *curr;
+	foreach_smp_target(curr, lh) {
+		struct target *target = curr->target;
+		free_smp_target_list(target->smp_targets);
+	}
 	foreach_smp_target(curr, lh) {
 		struct target *target = curr->target;
 		target->smp = smp_group;
@@ -6150,6 +6295,9 @@ COMMAND_HANDLER(handle_target_smp)
 	int retval = get_target_with_common_rtos_type(CMD, lh, &rtos_target);
 	if (retval == ERROR_OK && rtos_target)
 		retval = rtos_smp_init(rtos_target);
+
+	if (retval != ERROR_OK)
+		free_smp_target_list(lh);
 
 	return retval;
 }
@@ -6306,7 +6454,7 @@ COMMAND_HANDLER(handle_fast_load_image_command)
 		free(buffer);
 	}
 
-	if ((retval == ERROR_OK) && (duration_measure(&bench) == ERROR_OK)) {
+	if (retval == ERROR_OK && duration_measure(&bench) == ERROR_OK) {
 		command_print(CMD, "Loaded %" PRIu32 " bytes "
 				"in %fs (%0.3f KiB/s)", image_size,
 				duration_elapsed(&bench), duration_kbps(&bench, image_size));
@@ -6368,6 +6516,13 @@ static const struct command_registration target_command_handlers[] = {
 		.help = "configure target",
 		.chain = target_subcommand_handlers,
 		.usage = "",
+	},
+	{
+		.name = "poll_interval",
+		.handler = handle_poll_interval_command,
+		.mode = COMMAND_ANY,
+		.help = "print or set the target state polling interval",
+		.usage = "[milliseconds]",
 	},
 	COMMAND_REGISTRATION_DONE
 };
@@ -6873,6 +7028,13 @@ static const struct command_registration target_exec_command_handlers[] = {
 		.mode = COMMAND_EXEC,
 		.help = "Test the target's memory access functions",
 		.usage = "size",
+	},
+	{
+		.name = "disassemble",
+		.mode = COMMAND_EXEC,
+		.handler = handle_target_disassemble,
+		.help = "disassemble instructions",
+		.usage = "list | address [count [instruction_set]]",
 	},
 
 	COMMAND_REGISTRATION_DONE
