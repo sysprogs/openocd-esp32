@@ -110,7 +110,6 @@ add_library(ocdflashnor
 	mspm0.c
 	rp2xxx.c
 	artery.c
-	esp32h4.c
-	esp32p4_hw_rev3.c)
+	esp32h4.c)
 
 target_include_directories(ocdflashnor PRIVATE ../../..)

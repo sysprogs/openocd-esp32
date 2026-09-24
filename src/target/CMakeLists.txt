@@ -85,7 +85,6 @@ add_library(target
 	riscv/riscv_semihosting.c
 	riscv/riscv-011.c
 	riscv/riscv-013.c
-	a64_disassembler.c
 	adi_v5_dapdirect.c
 	arc.c
 	arc_cmd.c
@@ -137,7 +136,8 @@ add_library(target
 	espressif/esp32h21.c
 	riscv/riscv-011_reg.c
 	riscv/riscv-013_reg.c
-	riscv/riscv_reg.c)
+	riscv/riscv_reg.c
+	espressif/esp32s31.c)
 target_include_directories(target PRIVATE ../..)
 	
 SET_TARGET_PROPERTIES(target PROPERTIES COMPILE_FLAGS -I${CMAKE_CURRENT_BINARY_DIR})

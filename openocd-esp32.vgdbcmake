@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <VisualGDBProjectSettings2 xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
-  <Project xsi:type="com.visualgdb.project.portable">
+  <Project xsi:type="com.visualgdb.project.windows">
     <CustomSourceDirectories>
       <Directories />
       <PathStyle>Unknown</PathStyle>
@@ -11,7 +11,7 @@
   <Build xsi:type="com.visualgdb.build.cmake">
     <BuildLogMode xsi:nil="true" />
     <ToolchainID>
-      <ID>com.visualgdb.mingw64</ID>
+      <ID>com.visualgdb.mingw32</ID>
       <Version>
         <GCC>15.2.0</GCC>
         <GDB>16.3</GDB>
@@ -20,23 +20,19 @@
     </ToolchainID>
     <RelativeSourceDirectory />
     <ConfigurationType>DEBUG</ConfigurationType>
-    <BinaryDirectory>build/$(ConfigurationName)</BinaryDirectory>
+    <BinaryDirectory>VisualGDB/$(ConfigurationName)</BinaryDirectory>
+    <MainCMakeTarget>openocd</MainCMakeTarget>
     <MakeCommandTemplate>
       <SkipWhenRunningCommandList>false</SkipWhenRunningCommandList>
       <RemoteHost>
         <HostName>BuildMachine</HostName>
         <Transport>BuiltinShortcut</Transport>
       </RemoteHost>
-      <Command>$(ToolchainNinja)</Command>
+      <Command>$(VISUALGDB_DIR)\ninja.exe</Command>
       <Arguments />
       <WorkingDirectory>$(BuildDir)</WorkingDirectory>
       <Environment>
-        <Records>
-          <Record>
-            <VariableName>X</VariableName>
-            <Value>Y;Y=Z</Value>
-          </Record>
-        </Records>
+        <Records />
         <EnvironmentSetupFiles />
       </Environment>
       <BackgroundMode xsi:nil="true" />
@@ -47,22 +43,17 @@
         <HostName>BuildMachine</HostName>
         <Transport>BuiltinShortcut</Transport>
       </RemoteHost>
-      <Command>$(ToolchainCMake)</Command>
-      <Arguments>-DXYZ</Arguments>
+      <Command>$(SYSPROGS_CMAKE_PATH)</Command>
       <Environment>
-        <Records>
-          <Record>
-            <VariableName>X</VariableName>
-            <Value>Y;Y=Z</Value>
-          </Record>
-        </Records>
+        <Records />
         <EnvironmentSetupFiles />
       </Environment>
       <BackgroundMode xsi:nil="true" />
     </CMakeCommand>
     <UpdateSourcesInCMakeFile>false</UpdateSourcesInCMakeFile>
-    <ExportCompileCommands>false</ExportCompileCommands>
+    <ExportCompileCommands>true</ExportCompileCommands>
     <DisableToolchainFile>false</DisableToolchainFile>
+    <ExtraModuleDirectories />
     <CMakeMakefileType>Ninja</CMakeMakefileType>
     <DeployAsRoot>false</DeployAsRoot>
     <CMakeCleanMode>RemoveBuildDirectory</CMakeCleanMode>
@@ -77,16 +68,33 @@
         <AlwaysConsiderOutdated>false</AlwaysConsiderOutdated>
         <SortTargetsByName>true</SortTargetsByName>
         <RedundantTargetMode>HideOuterProjectTargets</RedundantTargetMode>
-        <SortSourcesByName>true</SortSourcesByName>
+        <SortSourcesByName>false</SortSourcesByName>
         <BuildAllTargetsInSubdir>false</BuildAllTargetsInSubdir>
-        <FoldSingleItemPathLevels>true</FoldSingleItemPathLevels>
+        <FoldSingleItemPathLevels>false</FoldSingleItemPathLevels>
       </ProjectItemSettings>
+      <TargetSpecificSettings>
+        <CMakeTargetSpecificSettings>
+          <TargetID>openocd</TargetID>
+          <Debug>
+            <Arguments>-f interface/esp_usb_jtag.cfg -c "adapter_khz 3000" -f target/esp32c3.cfg </Arguments>
+            <WorkingDirectory>E:\projects\sysprogs-github\openocd-esp32\tcl</WorkingDirectory>
+          </Debug>
+          <Deployment>
+            <Mode>Auto</Mode>
+            <DeployIfNotSpecificallyReferenced>false</DeployIfNotSpecificallyReferenced>
+            <DoNotDeployVersionedBinaries>false</DoNotDeployVersionedBinaries>
+          </Deployment>
+          <HeaderDiscoveryMode>Default</HeaderDiscoveryMode>
+          <ResourceDirectories />
+        </CMakeTargetSpecificSettings>
+      </TargetSpecificSettings>
       <SetLDLibraryPathFromDependentArtifacts>true</SetLDLibraryPathFromDependentArtifacts>
-      <ProjectGUID>4149fa4b-b3e3-493e-9c94-cef870181d20</ProjectGUID>
+      <ProjectGUID>fa2455f7-c96c-4cb1-8a04-11891a85074f</ProjectGUID>
       <VirtualFolders />
       <ConfigurationNameCase>Upper</ConfigurationNameCase>
       <DefaultHeaderDiscoveryMode>None</DefaultHeaderDiscoveryMode>
       <EnableFastUpToDateCheck>true</EnableFastUpToDateCheck>
+      <StartupTarget>openocd</StartupTarget>
       <DetectMissingSolutionConfigurations>false</DetectMissingSolutionConfigurations>
     </ProjectModeSettings>
     <LoadCMakePresets>false</LoadCMakePresets>
@@ -114,8 +122,8 @@
     <Enabled>Unknown</Enabled>
     <ExtraSettings>
       <HideErrorsInSystemHeaders>true</HideErrorsInSystemHeaders>
-      <SupportLightweightReferenceAnalysis>true</SupportLightweightReferenceAnalysis>
-      <CheckForClangFormatFiles>true</CheckForClangFormatFiles>
+      <SupportLightweightReferenceAnalysis>false</SupportLightweightReferenceAnalysis>
+      <CheckForClangFormatFiles xsi:nil="true" />
       <FormattingEngine xsi:nil="true" />
     </ExtraSettings>
     <CodeAnalyzerSettings>
@@ -127,6 +135,14 @@
   <Debug xsi:type="com.visualgdb.debug.local">
     <AdditionalStartupCommands />
     <AdditionalGDBSettings>
+      <FilterSpuriousStoppedNotifications>false</FilterSpuriousStoppedNotifications>
+      <ForceSingleThreadedMode>false</ForceSingleThreadedMode>
+      <UseAppleExtensions>false</UseAppleExtensions>
+      <CanAcceptCommandsWhileRunning>false</CanAcceptCommandsWhileRunning>
+      <MakeLogFile>false</MakeLogFile>
+      <IgnoreModuleEventsWhileStepping>true</IgnoreModuleEventsWhileStepping>
+      <UseRelativePathsOnly>false</UseRelativePathsOnly>
+      <ExitAction>None</ExitAction>
       <Features>
         <DisableAutoDetection>false</DisableAutoDetection>
         <UseFrameParameter>false</UseFrameParameter>
@@ -138,19 +154,11 @@
         <SupportTargetCommand>false</SupportTargetCommand>
         <ReliableBreakpointNotifications>false</ReliableBreakpointNotifications>
       </Features>
-      <EnableSmartStepping>false</EnableSmartStepping>
-      <FilterSpuriousStoppedNotifications>false</FilterSpuriousStoppedNotifications>
-      <ForceSingleThreadedMode>false</ForceSingleThreadedMode>
-      <UseAppleExtensions>false</UseAppleExtensions>
-      <CanAcceptCommandsWhileRunning>false</CanAcceptCommandsWhileRunning>
-      <MakeLogFile>false</MakeLogFile>
-      <IgnoreModuleEventsWhileStepping>true</IgnoreModuleEventsWhileStepping>
-      <UseRelativePathsOnly>false</UseRelativePathsOnly>
-      <ExitAction>None</ExitAction>
       <DisableDisassembly>false</DisableDisassembly>
       <ExamineMemoryWithXCommand>false</ExamineMemoryWithXCommand>
       <StepIntoNewInstanceEntry>main</StepIntoNewInstanceEntry>
       <ExamineRegistersInRawFormat>true</ExamineRegistersInRawFormat>
+      <EnableSmartStepping>false</EnableSmartStepping>
       <DisableSignals>false</DisableSignals>
       <EnableAsyncExecutionMode>false</EnableAsyncExecutionMode>
       <AsyncModeSupportsBreakpoints>true</AsyncModeSupportsBreakpoints>
@@ -171,5 +179,6 @@
     </LaunchGDBSettings>
     <GenerateCtrlBreakInsteadOfCtrlC>false</GenerateCtrlBreakInsteadOfCtrlC>
     <SuppressArgumentVariablesCheck>false</SuppressArgumentVariablesCheck>
+    <RunLiveMemoryAgentAsRoot>true</RunLiveMemoryAgentAsRoot>
   </Debug>
 </VisualGDBProjectSettings2>

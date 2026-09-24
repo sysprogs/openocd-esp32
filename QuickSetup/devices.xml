@@ -25,6 +25,12 @@
 		<ScriptFile>target/esp32s3.cfg</ScriptFile>
 	</TargetDeviceFamily>
 	<TargetDeviceFamily>
+		<ID>ESP32S31</ID>
+		<Name>ESP32S31</Name>
+		<MatchRegex>^ESP32S31$</MatchRegex>
+		<ScriptFile>target/esp32s31.cfg</ScriptFile>
+	</TargetDeviceFamily>
+	<TargetDeviceFamily>
 		<ID>ESP32C2</ID>
 		<Name>ESP32C2</Name>
 		<MatchRegex>^ESP32C2$</MatchRegex>
